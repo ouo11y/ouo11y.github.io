@@ -1,0 +1,87 @@
+---
+title: '4. The browser SDK'
+description: Add @ouo11y/browser to the React app for sessions, errors, fetch tracing, Web Vitals and replay, with trace headers to the API.
+sidebar: { order: 4, label: '4. The browser SDK' }
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import QuickstartFile from '../../../../../components/QuickstartFile.astro';
+import Sequence from '../../../../../components/diagrams/Sequence.astro';
+
+`@ouo11y/browser` is built on the OpenTelemetry JavaScript SDK. One `initRUM` call starts a session, records errors and Web Vitals, traces every `fetch`, and records a replay. The part that ties this page to the last one is `propagateTo`: calls to your API carry the browser's trace context, so the API's spans join the browser's trace.
+
+## Step 6. Instrument the web app
+
+Stop Vite with <kbd>Ctrl+C</kbd> in its terminal tab (you are in `~/Desktop/tiny-shop/frontend`), then:
+
+```bash
+npm install @ouo11y/browser@0.2.1
+```
+
+### 6a. Initialise the SDK
+
+Create `frontend/src/rum.js`:
+
+<QuickstartFile qs="tiny-shop" path="result/frontend/src/rum.js" />
+
+- **The package is `@ouo11y/browser`.** Importing `@ouo/browser` (its old name) fails with "could not be resolved".
+- **`propagateTo`** lists the URLs that get the `traceparent` and `baggage` headers. That is what joins the API's spans to the browser's trace and carries `session.id` to the backend. Use a RegExp: OpenTelemetry compares a plain string with the **whole** request URL, so `"http://localhost:5001"` matches no call at all and the backend quietly starts its own trace.
+- **The project token** is public by design: it ships in every page, like any RUM key.
+
+Collector moved to 14318 in step 4c? Create `frontend/.env.local`; the replay URL is only derived on its own when the endpoint is on 4318:
+
+```txt title="frontend/.env.local"
+VITE_OUO_ENDPOINT=http://localhost:14318
+VITE_OUO_REPLAY_ENDPOINT=http://localhost:14319
+```
+
+### 6b. Load it before React
+
+Replace `frontend/src/main.jsx` with:
+
+<QuickstartFile qs="tiny-shop" path="result/frontend/src/main.jsx" />
+
+### 6c. Use it in the app
+
+Replace `frontend/src/App.jsx` with:
+
+<QuickstartFile qs="tiny-shop" path="result/frontend/src/App.jsx" />
+
+Compared with page 1: the API URL now comes from `rum.js` (the same value `propagateTo` uses), and **Add** records a custom `cart.added` event.
+
+The other files Vite created stay as they were. For comparison, the finished ones (your version numbers may be newer):
+
+<QuickstartFile qs="tiny-shop" path="result/frontend/package.json" open={false} />
+<QuickstartFile qs="tiny-shop" path="result/frontend/vite.config.js" open={false} />
+<QuickstartFile qs="tiny-shop" path="result/frontend/index.html" open={false} />
+
+### 6d. Run it
+
+```bash
+npm run dev
+```
+
+## What you should see
+
+Reload http://localhost:5173 and open **DevTools → Console**: `[ouo] @ouo11y/browser@0.2.1 initialised {...}`.
+
+In the **Network** tab, each call to the API now has an `OPTIONS` preflight before it: the browser is asking the API to accept `traceparent` and `baggage`, and `cors()` in `server.js` says yes.
+
+<Sequence
+  caption="Why the OPTIONS requests appear: the trace headers are not on the browser's list of simple headers, so it asks the API first."
+  actors={['Page', 'Browser', 'API']}
+  steps={[
+    { from: 0, to: 1, label: 'fetch /api/products', note: 'SDK adds traceparent, baggage' },
+    { from: 1, to: 2, label: 'OPTIONS /api/products', note: 'Access-Control-Request-Headers: baggage, traceparent' },
+    { from: 2, to: 1, label: '204', note: 'cors(): these headers are allowed', tone: 'ok' },
+    { from: 1, to: 2, label: 'GET /api/products', note: 'traceparent: 00-<trace id>-<span id>-01' },
+    { from: 2, to: 1, label: '200 [products]', tone: 'ok' },
+    { from: 1, to: 0, label: 'the three products' },
+  ]}
+/>
+
+You also see the SDK sending its own telemetry to the collector: spans to `localhost:4318/v1/traces`, events to `localhost:4318/v1/logs`, and replay chunks to `localhost:4319/v1/replay/chunks`.
+
+<Aside>No `OPTIONS` before the API calls? `propagateTo` does not match the API URL, or the page was not reloaded after you edited `rum.js`.</Aside>
+
+Both apps are instrumented. Next, use the shop and look at the result.

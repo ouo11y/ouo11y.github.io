@@ -1,0 +1,133 @@
+---
+title: '3. Backend traces'
+description: Trace the Express API with the OpenTelemetry Node SDK, add manual spans, and find its traces in Tempo.
+sidebar: { order: 3, label: '3. Backend traces' }
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import QuickstartFile from '../../../../../components/QuickstartFile.astro';
+import SpanTree from '../../../../../components/diagrams/SpanTree.astro';
+
+The API gets the plain OpenTelemetry Node SDK: nothing from ouo11y. The auto-instrumentation creates a span for every HTTP request and Express middleware; you add your own spans for the work inside a request.
+
+## Step 5. Instrument the backend
+
+Stop the API with <kbd>Ctrl+C</kbd> in its terminal tab, then:
+
+```bash
+cd ~/Desktop/tiny-shop/backend
+```
+
+```bash
+npm install @opentelemetry/api @opentelemetry/sdk-node @opentelemetry/sdk-trace @opentelemetry/exporter-trace-otlp-http @opentelemetry/instrumentation-http @opentelemetry/instrumentation-express @opentelemetry/baggage-span-processor @opentelemetry/resources @opentelemetry/semantic-conventions
+```
+
+What each package is for:
+
+| Package | For |
+|---|---|
+| `@opentelemetry/api` | what your code calls (`trace.getTracer`) |
+| `@opentelemetry/sdk-node` | runs the SDK |
+| `@opentelemetry/sdk-trace` | the span processors |
+| `@opentelemetry/exporter-trace-otlp-http` | sends spans to the collector |
+| `@opentelemetry/instrumentation-http`, `instrumentation-express` | create the HTTP server and Express spans for you |
+| `@opentelemetry/baggage-span-processor` | copies the browser's session id onto your spans (page 4) |
+| `@opentelemetry/resources`, `semantic-conventions` | name the service |
+
+### 5a. Initialise the SDK
+
+Create `backend/instrumentation.js`:
+
+<QuickstartFile qs="tiny-shop" path="result/backend/instrumentation.js" />
+
+Three things to know about it:
+
+- **The credential.** The collector accepts nothing without `Authorization: Basic base64("<project id>:<project token>")`. The quickstart ships the `demo` project; check the value with `printf 'demo:pt_dev_demo_0000000000000000' | base64`.
+- **The endpoint.** `http://localhost:4318` unless you moved the collector in step 4c; then start the API with `OUO_OTLP_ENDPOINT=http://localhost:14318` (shown below).
+- **OpenTelemetry JS 3.0.** `BatchSpanProcessor` comes from `@opentelemetry/sdk-trace` and takes `{ exporter }`. Snippets written for 2.x use `sdk-trace-base` and `new BatchSpanProcessor(exporter)`; that version starts fine and crashes at the first export.
+
+The resource attributes are OpenTelemetry semantic conventions: `service.name`, `service.version` and `deployment.environment.name`. They are how you find this service in Tempo below.
+
+### 5b. Add manual spans
+
+Replace `backend/server.js` with:
+
+<QuickstartFile qs="tiny-shop" path="result/backend/server.js" />
+
+`startActiveSpan` makes the new span the current one while the callback runs, so the spans started inside it become its children, and all of them become children of the HTTP span the auto-instrumentation opened for the request. Always `end()` a span you started.
+
+`db.system.name` is the OpenTelemetry name for the kind of database; the `app.` attributes are this app's own, a prefix OpenTelemetry leaves to applications.
+
+### 5c. Run it with the SDK loaded first
+
+The SDK has to load **before** Express, so the instrumentation can patch it. Save that as the start script:
+
+```bash
+npm pkg set scripts.start="node --require ./instrumentation.js server.js"
+```
+
+```bash
+npm start
+```
+
+It prints `[otel] tracing to http://localhost:4318/v1/traces`. Collector on 14318 (step 4c)? Stop it and start it this way instead:
+
+```bash
+OUO_OTLP_ENDPOINT=http://localhost:14318 npm start
+```
+
+Your `backend/package.json` now has that `start` script and the packages above. The finished one, for comparison (your version numbers may be newer):
+
+<QuickstartFile qs="tiny-shop" path="result/backend/package.json" open={false} />
+
+Send some traffic from another tab:
+
+```bash
+curl -X POST -H 'content-type: application/json' -d '{"items":[1,2]}' localhost:5001/api/checkout
+```
+
+```bash
+curl localhost:5001/api/fail
+```
+
+The first answers `{"ok":true,"orderId":...}`, the second `{"error":"inventory service unavailable"}`.
+
+### 5d. See the backend traces in Grafana
+
+Wait up to a minute (Tempo's search catches up; open a trace by id and it is there sooner), then in Grafana: **Explore**, data source **Tempo**, **TraceQL** tab:
+
+```txt title="TraceQL"
+{ resource.service.name = "tiny-shop-backend" }
+```
+
+## What you should see
+
+Two traces at least. Open the `POST /api/checkout` one:
+
+<SpanTree
+  duration={170}
+  caption="The checkout trace from curl. The root is the API's HTTP span; the tick on charge card is its payment accepted event. Durations are illustrative; the sleeps in server.js set them roughly."
+  spans={[
+    { name: 'POST /api/checkout', service: 'tiny-shop-backend', depth: 0, from: 0, to: 158, note: 'HTTP server span, auto-instrumentation' },
+    { name: 'middleware - corsMiddleware', depth: 1, from: 1, to: 2 },
+    { name: 'middleware - jsonParser', depth: 1, from: 2, to: 4 },
+    { name: 'request handler - /api/checkout', depth: 1, from: 4, to: 5 },
+    { name: 'checkout', depth: 1, from: 5, to: 157, note: 'manual · app.cart.items = 2' },
+    { name: 'validate cart', depth: 2, from: 5, to: 36, note: 'manual' },
+    { name: 'charge card', depth: 2, from: 36, to: 157, note: 'manual · event "payment accepted"', events: [{ at: 157, label: 'payment accepted' }] },
+  ]}
+/>
+
+`POST /api/checkout`, then the Express middleware spans, then `checkout` with `validate cart` and `charge card` (with its `payment accepted` event under **Events**). The `GET /api/fail` trace is red, with the exception recorded on it:
+
+<SpanTree
+  duration={10}
+  caption="The failing call's HTTP span (its Express middleware spans left out): red, with the exception and status message that server.js sets."
+  spans={[
+    { name: 'GET /api/fail', service: 'tiny-shop-backend', depth: 0, from: 0, to: 3, tone: 'bad', note: 'status error · exception: inventory service unavailable' },
+  ]}
+/>
+
+<Aside>Nothing in Tempo after a minute? Check the API's terminal for errors and the [troubleshooting table](/docs/quickstarts/1-tiny-shop/clean-up/#when-something-does-not-work).</Aside>
+
+The backend is traced on its own. Next, the browser starts the trace.
