@@ -1,0 +1,239 @@
+---
+import Base from '../layouts/Base.astro';
+import PostList from '../components/PostList.astro';
+import { listPosts, site } from '../lib/site';
+
+const [blog, newsletter, announcements] = await Promise.all([
+  listPosts('blog'), listPosts('newsletter'), listPosts('announcements'),
+]);
+const tiny = `${site.repo}/tree/main/examples/quickstarts/tiny-shop-otel`;
+---
+<Base>
+  <header class="hero">
+    <div class="wrap" style="text-align:center">
+      <span class="pill"><span class="dot"></span>Open source · OpenTelemetry-native · self-hosted</span>
+      <h1 style="max-width:860px;margin-inline:auto">No vendor should tell you <em>how to observe</em> your own system.</h1>
+      <p class="lede" style="margin:0 auto 32px">ouo11y is Open Unified Observability: real user sessions, errors, crashes, traces and replay from web and mobile, joined to your backend in one place. Built on OpenTelemetry, open source, and yours to change.</p>
+      <div class="ctas" style="justify-content:center">
+        <a class="btn primary" href="/docs/start/two-paths/">Get started</a>
+        <a class="btn" href="/docs/start/principles/">Read our principles →</a>
+      </div>
+      <p class="meta" style="margin-top:20px"><b>ouo11y</b> · say "oh-you-oh-eleven-why", or just "ouo"</p>
+    </div>
+  </header>
+
+  <section class="alt" id="principles">
+    <div class="wrap">
+      <p class="eyebrow">What we stand for</p>
+      <h2>Six promises, written down.</h2>
+      <p class="section-lede">These are the rules we build by. If ouo11y ever breaks one of them, it is a bug: <a href={`${site.github}`}>tell us on GitHub</a>.</p>
+      <div class="grid">
+        <div class="card">
+          <div class="icon"><svg viewBox="0 0 24 24"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5M14 4l-4 16"/></svg></div>
+          <h3>Open source</h3>
+          <p>SDKs, collector, plugin and deploy files are Apache-2.0; the session service is AGPL-3.0. Read it, run it, fork it.</p>
+        </div>
+        <div class="card">
+          <div class="icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12l3 3 5-6"/></svg></div>
+          <h3>OpenTelemetry compliant</h3>
+          <p>Every signal is OTLP with OTel semantic conventions. No proprietary wire format, no private agent. Leaving ouo11y loses neither your data nor your instrumentation.</p>
+        </div>
+        <div class="card">
+          <div class="icon"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 10v10"/></svg></div>
+          <h3>End-to-end, unified</h3>
+          <p>One dashboard for the whole story: the tap, the request, the backend spans, the log line and the replay of what the user saw.</p>
+        </div>
+        <div class="card">
+          <div class="icon"><svg viewBox="0 0 24 24"><path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/></svg></div>
+          <h3>Everything customizable</h3>
+          <p>Your collector pipeline, your storage, your dashboards, your sampling, your retention. Defaults that work, and no knob we hide from you.</p>
+        </div>
+        <div class="card">
+          <div class="icon"><svg viewBox="0 0 24 24"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2.4-.6-.6-2.4z"/></svg></div>
+          <h3>Our SDK is optional</h3>
+          <p>Use <code>@ouo11y/browser</code> to start in five minutes, or instrument with plain OpenTelemetry and rrweb. ouo11y reads both the same way.</p>
+        </div>
+        <div class="card">
+          <div class="icon"><svg viewBox="0 0 24 24"><path d="M4 12h12M12 6l6 6-6 6"/><path d="M20 4v16"/></svg></div>
+          <h3><code>ouo.*</code> is temporary</h3>
+          <p>Where OTel has no convention yet, we use an <code>ouo.</code> prefix. When OTel defines one, we move to it and say so in the changelog.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="story">
+    <div class="wrap">
+      <p class="eyebrow">One dashboard, the whole story</p>
+      <h2>From a user's tap to the database, and back.</h2>
+      <p class="section-lede">Most tools show you a chart per team. ouo11y shows you what happened to one person: W3C Trace Context joins browser and mobile spans to your backend spans, and every signal carries the same <code>session.id</code>.</p>
+      <div class="card" style="padding:24px;box-shadow:var(--shadow)" aria-label="Data flow: apps send OTLP to the collector, which writes to Loki, Tempo and Mimir; rum-api builds sessions; Grafana shows them.">
+        <svg viewBox="0 0 960 250" role="img" class="flow" style="width:100%;height:auto;display:block">
+          <defs>
+            <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+              <path d="M0,0 L10,5 L0,10 z" fill="var(--ink-3)"/>
+            </marker>
+          </defs>
+          <rect class="box" x="10" y="20" width="170" height="54" rx="10"/>
+          <text x="26" y="44">Web app</text><text class="sub" x="26" y="61">our SDK or plain OTel</text>
+          <rect class="box" x="10" y="98" width="170" height="54" rx="10"/>
+          <text x="26" y="122">Mobile app</text><text class="sub" x="26" y="139">React Native · iOS</text>
+          <rect class="box" x="10" y="176" width="170" height="54" rx="10"/>
+          <text x="26" y="200">Your backend</text><text class="sub" x="26" y="217">any OTel SDK</text>
+          <rect class="box hl" x="260" y="80" width="190" height="90" rx="12"/>
+          <text x="280" y="114">OTel Collector</text>
+          <text class="sub" x="280" y="133">ouo11y distribution</text>
+          <text class="sub" x="280" y="150">or your own build</text>
+          <rect class="box" x="530" y="20" width="150" height="54" rx="10"/>
+          <text x="546" y="44">Loki</text><text class="sub" x="546" y="61">events · logs</text>
+          <rect class="box" x="530" y="98" width="150" height="54" rx="10"/>
+          <text x="546" y="122">Tempo</text><text class="sub" x="546" y="139">traces</text>
+          <rect class="box" x="530" y="176" width="150" height="54" rx="10"/>
+          <text x="546" y="200">Mimir</text><text class="sub" x="546" y="217">metrics</text>
+          <rect class="box" x="750" y="20" width="200" height="72" rx="10"/>
+          <text x="766" y="48">rum-api</text><text class="sub" x="766" y="66">sessions · health · replay</text>
+          <rect class="box hl" x="750" y="140" width="200" height="90" rx="12"/>
+          <text x="766" y="170">Grafana</text>
+          <text class="sub" x="766" y="189">one dashboard:</text>
+          <text class="sub" x="766" y="206">timeline · traces · replay</text>
+          <path class="edge live" d="M180,47 C220,47 220,105 258,105"/>
+          <path class="edge live" d="M180,125 L258,125"/>
+          <path class="edge live" d="M180,203 C220,203 220,145 258,145"/>
+          <path class="edge" d="M450,105 C490,105 490,47 528,47"/>
+          <path class="edge" d="M450,125 L528,125"/>
+          <path class="edge" d="M450,145 C490,145 490,203 528,203"/>
+          <path class="edge" d="M680,47 L748,52"/>
+          <path class="edge" d="M680,125 C715,125 715,72 748,68"/>
+          <path class="edge" d="M850,92 L850,138"/>
+          <path class="edge" d="M680,203 C715,203 715,190 748,190"/>
+        </svg>
+      </div>
+      <div class="grid" style="margin-top:16px">
+        <div class="card"><h3>What did the user see?</h3><p>Session replay that seeks to the moment of the error, with inputs masked by default.</p></div>
+        <div class="card"><h3>Why was it slow?</h3><p>The browser's fetch span is the root of the backend trace, so a slow checkout opens straight into the slow query.</p></div>
+        <div class="card"><h3>Is this release healthy?</h3><p>Healthy, errored and crashed sessions per platform and version, minutes after you ship.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="alt" id="paths">
+    <div class="wrap">
+      <p class="eyebrow">Your instrumentation, your call</p>
+      <h2>Use our SDK, or don't.</h2>
+      <p class="section-lede">ouo11y reads OpenTelemetry. Our SDK is a shortcut, not a requirement: anything that sends the same OTLP signals gets the same sessions, traces and replays.</p>
+      <div class="grid two">
+        <div>
+          <h3 style="margin:0 0 6px">The shortcut: <code>@ouo11y/browser</code></h3>
+          <p class="meta" style="margin:0 0 12px">Five minutes. Sessions, errors, Web Vitals, fetch tracing and replay, with the conventions already right.</p>
+          <pre class="code"><span class="k">import</span> {'{'} initRUM {'}'} <span class="k">from</span> <span class="s">"@ouo11y/browser"</span>;
+
+<span class="f">initRUM</span>({'{'}
+  endpoint: <span class="s">"https://otel.example.com"</span>,
+  projectId: <span class="s">"web-store"</span>,
+  projectToken: <span class="s">"pt_..."</span>,
+  service: {'{'} name: <span class="s">"web-store"</span>, version: <span class="s">"1.4.2"</span> {'}'},
+  replay: {'{'} enabled: <span class="k">true</span> {'}'},
+{'}'});</pre>
+          <p style="margin-top:12px"><a href="/docs/instrument/ouo-sdk/">Use the SDK →</a></p>
+        </div>
+        <div>
+          <h3 style="margin:0 0 6px">Do it yourself: plain OpenTelemetry</h3>
+          <p class="meta" style="margin:0 0 12px">The OTel JS SDK, rrweb and web-vitals. Not one line of ouo code in your app.</p>
+          <pre class="code"><span class="c">// what ouo11y needs, and nothing else</span>
+resource   service.name, service.version
+every span session.id, user.id
+log events <span class="s">session.start</span> · <span class="s">exception</span>
+           <span class="s">http.request.failed</span> · <span class="s">web_vital</span>
+           <span class="s">navigation</span> · <span class="s">session.end</span>
+replay     rrweb chunks → collector :4319
+transport  OTLP/HTTP → collector :4318</pre>
+          <p style="margin-top:12px"><a href="/docs/instrument/bring-your-own-otel/">Read the contract →</a> · <a href={tiny}>Tiny Shop example</a></p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="semconv">
+    <div class="wrap split">
+      <div>
+        <p class="eyebrow">OTel first, ouo second</p>
+        <h2>Every <code>ouo.</code> attribute is a placeholder.</h2>
+        <p class="section-lede" style="margin-bottom:16px">You will see <code>ouo.</code> in our code and your data where OpenTelemetry has no convention yet. That prefix is a promise, not a brand: when OTel defines the attribute, or tells us how to do it the OTel way, we switch, ship both names during a migration window, and document it.</p>
+        <p><a href="/docs/concepts/semantic-conventions/">See the full list and its status →</a></p>
+      </div>
+      <div class="card" style="box-shadow:var(--shadow)">
+        <table style="width:100%;border-collapse:collapse;font-size:14px">
+          <thead><tr><th style="text-align:left;padding:6px 0;color:var(--ink-3);font-weight:600">Today</th><th style="text-align:left;padding:6px 0;color:var(--ink-3);font-weight:600">OTel status</th></tr></thead>
+          <tbody>
+            <tr><td style="padding:8px 0;border-top:1px solid var(--line)"><code>session.id</code>, <code>user.id</code></td><td style="border-top:1px solid var(--line)">already OTel</td></tr>
+            <tr><td style="padding:8px 0;border-top:1px solid var(--line)"><code>web_vital</code> event</td><td style="border-top:1px solid var(--line)"><code>browser.web_vital</code>, in development</td></tr>
+            <tr><td style="padding:8px 0;border-top:1px solid var(--line)"><code>navigation</code> event</td><td style="border-top:1px solid var(--line)"><code>browser.navigation</code>, in development</td></tr>
+            <tr><td style="padding:8px 0;border-top:1px solid var(--line)"><code>ouo.exception.fatal</code></td><td style="border-top:1px solid var(--line)">no convention yet</td></tr>
+            <tr><td style="padding:8px 0;border-top:1px solid var(--line)"><code>ouo.session.end_reason</code></td><td style="border-top:1px solid var(--line)">no convention yet</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="alt" id="open">
+    <div class="wrap split">
+      <div>
+        <p class="eyebrow">Open by design</p>
+        <h2>Run it where your data lives.</h2>
+        <p class="section-lede">Kubernetes with Helm, a single VM with Docker, or your laptop with Compose. It lands in the Grafana, Loki, Tempo and Mimir you may already run. Anything you embed in your own app is Apache-2.0.</p>
+        <div class="ctas"><a class="btn" href="/docs/start/quickstart/">Run it locally</a><a class="btn" href="/docs/customize/">What you can change</a></div>
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:14px">
+        <tr><td style="padding:12px 0;border-bottom:1px solid var(--line)">Browser, React Native and iOS SDKs</td><td style="text-align:right;border-bottom:1px solid var(--line)"><code>Apache-2.0</code></td></tr>
+        <tr><td style="padding:12px 0;border-bottom:1px solid var(--line)">Grafana app plugin</td><td style="text-align:right;border-bottom:1px solid var(--line)"><code>Apache-2.0</code></td></tr>
+        <tr><td style="padding:12px 0;border-bottom:1px solid var(--line)">Collector distribution, Helm chart, deploy files</td><td style="text-align:right;border-bottom:1px solid var(--line)"><code>Apache-2.0</code></td></tr>
+        <tr><td style="padding:12px 0;border-bottom:1px solid var(--line)">Examples and guides</td><td style="text-align:right;border-bottom:1px solid var(--line)"><code>Apache-2.0</code></td></tr>
+        <tr><td style="padding:12px 0;border-bottom:1px solid var(--line)">rum-api (session service)</td><td style="text-align:right;border-bottom:1px solid var(--line)"><code>AGPL-3.0</code></td></tr>
+      </table>
+    </div>
+  </section>
+
+  <section id="latest">
+    <div class="wrap">
+      <p class="eyebrow">Latest</p>
+      <h2>Know-how, news and updates.</h2>
+      <div class="grid" style="margin-top:28px">
+        <div><h3 style="margin:0 0 12px"><a href="/blog/">Blog</a></h3><PostList section="blog" entries={blog.slice(0, 2)} /></div>
+        <div><h3 style="margin:0 0 12px"><a href="/newsletter/">Newsletter</a></h3><PostList section="newsletter" entries={newsletter.slice(0, 2)} /></div>
+        <div><h3 style="margin:0 0 12px"><a href="/announcements/">Announcements</a></h3><PostList section="announcements" entries={announcements.slice(0, 2)} /></div>
+      </div>
+    </div>
+  </section>
+
+  <section style="padding-top:0">
+    <div class="wrap">
+      <div class="band">
+        <h2>Talk to us.</h2>
+        <p>Questions, a pilot on your own infrastructure, or a strong opinion about OpenTelemetry: we read every email.</p>
+        <div class="ctas" style="justify-content:center">
+          <a class="btn primary" href={`mailto:${site.email.hello}`}>{site.email.hello}</a>
+          <a class="btn" href={site.github}>ouo11y on GitHub</a>
+        </div>
+      </div>
+    </div>
+  </section>
+</Base>
+
+<style>
+  .hero { padding: 88px 0 64px; }
+  .flow text { font: 600 13px ui-sans-serif, system-ui, sans-serif; fill: var(--ink); }
+  .flow .sub { font-weight: 400; font-size: 11px; fill: var(--ink-3); }
+  .flow .box { fill: var(--bg); stroke: var(--line); stroke-width: 1.5; }
+  .flow .box.hl { stroke: var(--accent); fill: var(--accent-soft); }
+  .flow .edge { stroke: var(--ink-3); stroke-width: 1.5; fill: none; marker-end: url(#arrow); }
+  .flow .edge.live { stroke: var(--accent); stroke-dasharray: 5 6; animation: flow 1.2s linear infinite; }
+  @keyframes flow { to { stroke-dashoffset: -11; } }
+  @media (prefers-reduced-motion: reduce) { .flow .edge.live { animation: none; } }
+  .band { text-align: center; padding: 64px 24px; border-radius: 20px; background: linear-gradient(135deg, #1f2a44, #0f2f4a 60%, #0a3a56); color: #e6edf7; }
+  .band h2 { color: #fff; }
+  .band p { color: #b6c4d8; max-width: 620px; margin: 0 auto 28px; font-size: 17px; }
+  .band .btn { background: transparent; color: #fff; border-color: rgba(255,255,255,.3); }
+  .band .btn.primary { background: #5ac8fa; border-color: #5ac8fa; color: #06101f; }
+  @media (max-width: 860px) { .hero { padding-top: 56px; } }
+</style>

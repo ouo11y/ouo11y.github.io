@@ -1,0 +1,28 @@
+/* Match the marketing pages: same accent and ink. */
+:root {
+  --sl-color-accent-low: #0b2a3d;
+  --sl-color-accent: #0a84c6;
+  --sl-color-accent-high: #bfe6fb;
+  --sl-color-white: #e6edf7;
+  --sl-color-gray-1: #dbe4f0;
+  --sl-color-gray-2: #a8b5c8;
+  --sl-color-gray-3: #7d8ba1;
+  --sl-color-gray-4: #4b5a72;
+  --sl-color-gray-5: #1f2a44;
+  --sl-color-gray-6: #111a2e;
+  --sl-color-black: #0b1120;
+}
+:root[data-theme='light'] {
+  --sl-color-accent-low: #e0f2fe;
+  --sl-color-accent: #0a6fa6;
+  --sl-color-accent-high: #0b3954;
+  --sl-color-white: #0f172a;
+  --sl-color-gray-1: #1e293b;
+  --sl-color-gray-2: #334155;
+  --sl-color-gray-3: #64748b;
+  --sl-color-gray-4: #94a3b8;
+  --sl-color-gray-5: #e2e8f0;
+  --sl-color-gray-6: #f1f5f9;
+  --sl-color-gray-7: #f7f8fb;
+  --sl-color-black: #ffffff;
+}

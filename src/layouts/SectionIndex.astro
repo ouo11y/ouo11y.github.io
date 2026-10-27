@@ -1,0 +1,24 @@
+---
+import Base from './Base.astro';
+import PostList from '../components/PostList.astro';
+import { listPosts, sections, site, type Section } from '../lib/site';
+
+interface Props { section: Section; }
+const { section } = Astro.props;
+const { title, blurb } = sections[section];
+const entries = await listPosts(section);
+---
+<Base title={title} description={blurb}>
+  <section>
+    <div class="wrap narrow">
+      <p class="eyebrow">ouo11y</p>
+      <h1>{title}</h1>
+      <p class="lede">{blurb}</p>
+      <p class="meta" style="margin:0 0 32px">
+        Follow with <a href={`/${section}/rss.xml`}>RSS</a>
+        {section === 'newsletter' && <> or ask for the email edition at <a href={`mailto:${site.email.news}?subject=Subscribe`}>{site.email.news}</a></>}.
+      </p>
+      <PostList section={section} entries={entries} />
+    </div>
+  </section>
+</Base>

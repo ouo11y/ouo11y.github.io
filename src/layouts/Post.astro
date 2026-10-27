@@ -1,0 +1,28 @@
+---
+import type { CollectionEntry } from 'astro:content';
+import { render } from 'astro:content';
+import Base from './Base.astro';
+import { fmtDate, sections, type Section } from '../lib/site';
+
+interface Props { section: Section; entry: CollectionEntry<Section>; }
+const { section, entry } = Astro.props;
+const { Content } = await render(entry);
+const { title, description, date, authors, tags } = entry.data;
+---
+<Base title={title} description={description}>
+  <article>
+    <section style="padding-bottom:24px">
+      <div class="wrap narrow">
+        <p class="eyebrow"><a href={`/${section}/`}>{sections[section].title}</a></p>
+        <h1 style="font-size:clamp(30px,5vw,46px)">{title}</h1>
+        <p class="lede">{description}</p>
+        <p class="meta">{fmtDate(date)} · {authors.join(', ')}</p>
+        <p>{tags.map((t) => <span class="tag">{t}</span>)}</p>
+      </div>
+    </section>
+    <div class="wrap narrow prose"><Content /></div>
+    <div class="wrap narrow" style="margin-top:48px">
+      <a class="btn" href={`/${section}/`}>← All {sections[section].title.toLowerCase()}</a>
+    </div>
+  </article>
+</Base>
