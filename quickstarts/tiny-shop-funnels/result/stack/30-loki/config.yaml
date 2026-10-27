@@ -1,0 +1,45 @@
+# Loki 3.x single binary, filesystem storage, native OTLP ingestion on 3100.
+# Only service_name, deployment_environment_name, event_name and ouo_platform become labels;
+# everything else (session.id, user.id, trace_id, your log attributes) is structured metadata.
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  log_level: warn
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: "2024-01-01"
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  allow_structured_metadata: true   # required for OTLP
+  otlp_config:
+    resource_attributes:
+      ignore_defaults: true         # the defaults would index per-browser ids
+      attributes_config:
+        - action: index_label
+          attributes: [service.name, deployment.environment.name, ouo.platform]
+    log_attributes:
+      - action: index_label
+        attributes: [event.name, ouo.platform]
+
+analytics:
+  reporting_enabled: false

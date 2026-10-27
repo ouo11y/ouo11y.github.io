@@ -1,0 +1,24 @@
+{
+  "name": "tiny-shop-funnels-frontend",
+  "private": true,
+  "version": "1.0.0",
+  "description": "ouo quickstart: React shop whose pages and custom events make a funnel",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@ouo11y/browser": "0.2.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.1.2",
+    "vite": "^8.3.4"
+  }
+}

@@ -1,0 +1,26 @@
+# Tempo 3.x single binary with local storage. Receives OTLP from the collector on 4317, serves
+# queries on 3200 (Grafana streams search results over that port, hence stream_over_http).
+stream_over_http_enabled: true
+
+server:
+  http_listen_port: 3200
+  log_level: warn
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+
+querier:
+  frontend_worker:
+    frontend_address: 127.0.0.1:9095
+
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /var/tempo/wal
+    local:
+      path: /var/tempo/blocks

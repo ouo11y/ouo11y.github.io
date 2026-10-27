@@ -1,0 +1,19 @@
+# Grafana with the ouo11y RUM app plugin: the UI for everything above. It reads Tempo, Loki and
+# Mimir directly and sessions from rum-api through the plugin. Port 3000, admin / testing567.
+# provisioning/ sets up the datasources and the plugin.
+services:
+  grafana:
+    # `latest` follows each release. Tested with 0.5.0: pin `grafana:0.5.0` or
+    # `grafana@sha256:57607a3616c88867644be1f69abb4681ca73df05d6bf2682543418f0dfeb622f` to stay on it.
+    image: ghcr.io/ouo11y/grafana:latest
+    ports:
+      - "${OUO_GRAFANA_PORT:-3000}:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: testing567
+      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: ouo11y-rum-app
+      GF_SECURITY_DISABLE_FRONTEND_SANDBOX_FOR_PLUGINS: ouo11y-rum-app
+      OUO_READ_TOKEN: rt_dev_0000000000000000   # read by provisioning/plugins; equals rum-api's
+    volumes:
+      - ./provisioning:/etc/grafana/provisioning:ro
+    depends_on: [loki, tempo, mimir, rum-api]

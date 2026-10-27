@@ -1,0 +1,14 @@
+# Mimir: stores metrics. The collector pushes the API's OTLP metrics to /otlp; Grafana queries
+# it with PromQL on 9009 (/prometheus). Port 9009 is published on loopback for curl.
+services:
+  mimir:
+    image: grafana/mimir:3.2.1
+    command: ["-config.file=/etc/mimir/config.yaml"]
+    ports:
+      - "127.0.0.1:${OUO_MIMIR_PORT:-9009}:9009"
+    volumes:
+      - ./config.yaml:/etc/mimir/config.yaml:ro
+      - mimir-data:/data
+
+volumes:
+  mimir-data:

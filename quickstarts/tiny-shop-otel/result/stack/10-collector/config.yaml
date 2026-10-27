@@ -1,0 +1,83 @@
+# ouo-collector pipelines, a trimmed copy of the full stack's config (no Sentry bridge, no
+# rate limits). Receivers: OTLP/HTTP on 4318 and replay chunks on 4319, both behind the
+# project credential in projects.htpasswd. Exporters: Tempo, Loki, Mimir and rum-api.
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+  basicauth/server:
+    htpasswd:
+      file: /etc/otelcol/projects.htpasswd
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        include_metadata: true       # keeps the authenticated project for resource/project
+        auth:
+          authenticator: basicauth/server
+        cors:                        # the browser app runs on another origin
+          allowed_origins: ["http://localhost:*", "http://127.0.0.1:*"]
+          allowed_headers: [Authorization, Content-Type, Content-Encoding, traceparent, baggage]
+  ouoreplay:
+    endpoint: 0.0.0.0:4319
+    include_metadata: true
+    max_request_body_size: 8388608
+    auth:
+      authenticator: basicauth/server
+    cors:
+      allowed_origins: ["http://localhost:*", "http://127.0.0.1:*"]
+      allowed_headers: [Authorization, Content-Type, Content-Encoding, X-Ouo-Session-Id, X-Ouo-Seq]
+
+processors:
+  # Stamp the authenticated project id on every resource (and drop any value the client sent).
+  resource/project:
+    attributes:
+      - key: ouo.project.id
+        action: delete
+      - key: ouo.project.id
+        from_context: auth.username
+        action: upsert
+  # Copy the OTLP event name into the `event.name` attribute, which Loki turns into a label.
+  transform/events:
+    error_mode: ignore
+    log_statements:
+      - context: log
+        statements:
+          - set(log.attributes["event.name"], log.event_name) where log.event_name != "" and log.attributes["event.name"] == nil
+  batch:
+    timeout: 1s
+
+exporters:
+  otlp_grpc/tempo:
+    endpoint: tempo:4317
+    tls: { insecure: true }
+  otlp_http/loki:
+    endpoint: http://loki:3100/otlp
+    tls: { insecure: true }
+  otlp_http/mimir:
+    endpoint: http://mimir:9009/otlp
+    tls: { insecure: true }
+  ouoreplay:
+    endpoint: http://rum-api:8080
+    ingest_token: ${env:OUO_INGEST_TOKEN}
+
+service:
+  extensions: [health_check, basicauth/server]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [resource/project, batch]
+      exporters: [otlp_grpc/tempo]
+    logs:
+      receivers: [otlp]
+      processors: [resource/project, transform/events, batch]
+      exporters: [otlp_http/loki]
+    metrics:
+      receivers: [otlp]
+      processors: [resource/project, batch]
+      exporters: [otlp_http/mimir]
+    logs/replay:
+      receivers: [ouoreplay]
+      exporters: [ouoreplay]

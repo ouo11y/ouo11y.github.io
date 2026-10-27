@@ -1,0 +1,56 @@
+---
+// Columns of boxes joined by arrows. Pure HTML and CSS; stacks vertically on narrow screens.
+// <Flow caption="..." columns={[{ label: 'Apps', nodes: [{ title: 'Web app', sub: '@ouo11y/browser', tone: 'accent' }] }, ...]} />
+import '../../styles/diagram.css';
+
+interface Node { title: string; sub?: string; tone?: 'accent' | 'ok' | 'warn' | 'bad' | 'info'; }
+interface Column { label?: string; nodes: Node[]; arrow?: string; }
+interface Props { columns: Column[]; caption?: string; }
+const { columns, caption } = Astro.props;
+---
+<figure class="dg flow not-content" role="group" aria-label={caption}>
+  <div class="cols">
+    {columns.map((col, i) => (
+      <>
+        {i > 0 && <div class="arrow" aria-hidden="true"><span>{columns[i - 1].arrow ?? ''}</span></div>}
+        <div class="col">
+          {col.label && <div class="col-label">{col.label}</div>}
+          {col.nodes.map((n) => (
+            <div class:list={['node', n.tone && `tone-${n.tone}`, n.tone && 'toned']}>
+              <b>{n.title}</b>
+              {n.sub && <small set:html={n.sub} />}
+            </div>
+          ))}
+        </div>
+      </>
+    ))}
+  </div>
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<style>
+  .cols { display: flex; align-items: stretch; gap: 0; }
+  .col { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 10px; justify-content: center; }
+  .col-label { font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--dg-ink-3); }
+  .node { padding: 10px 12px; border: 1.5px solid var(--dg-line); border-radius: 10px; background: var(--dg-node); display: flex; flex-direction: column; gap: 2px; }
+  .node b { font-size: 14px; }
+  .node small { font-size: 12px; color: var(--dg-ink-3); }
+  .node.toned { border-color: var(--tone); background: color-mix(in srgb, var(--tone) 10%, var(--dg-node)); }
+  .arrow { flex: 0 0 56px; display: flex; align-items: center; justify-content: center; position: relative; }
+  .arrow::before { content: ""; position: absolute; left: 6px; right: 12px; top: 50%; height: 2px; background: repeating-linear-gradient(90deg, var(--dg-accent) 0 6px, transparent 6px 10px); background-size: 20px 2px; animation: dg-dash 1s linear infinite; }
+  .arrow::after { content: ""; position: absolute; right: 4px; top: calc(50% - 5px); border: 5px solid transparent; border-left: 8px solid var(--dg-accent); }
+  .arrow span { position: relative; top: -14px; font-size: 11px; color: var(--dg-ink-3); background: var(--dg-bg); padding: 0 4px; white-space: nowrap; }
+  @keyframes dg-dash { to { background-position: 20px 0; } }
+  @media (prefers-reduced-motion: reduce) { .arrow::before { animation: none; } }
+  .flow { container-type: inline-size; }
+  @container (max-width: 760px) {
+    .cols { flex-direction: column; }
+    .col { flex-direction: row; flex-wrap: wrap; align-items: stretch; }
+    .col-label { flex-basis: 100%; }
+    .node { flex: 1 1 140px; }
+    .arrow { flex-basis: 36px; }
+    .arrow::before { left: 50%; right: auto; top: 4px; bottom: 12px; width: 2px; height: auto; background: repeating-linear-gradient(180deg, var(--dg-accent) 0 6px, transparent 6px 10px); background-size: 2px 20px; }
+    .arrow::after { left: calc(50% - 5px); right: auto; top: auto; bottom: 2px; border: 5px solid transparent; border-top: 8px solid var(--dg-accent); }
+    .arrow span { position: absolute; top: 8px; left: calc(50% + 10px); }
+  }
+</style>

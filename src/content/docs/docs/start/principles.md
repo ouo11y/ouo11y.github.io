@@ -20,7 +20,7 @@ One dashboard for the whole story. A user's tap, the request it sent, the backen
 
 ## 4. No vendor should tell you how to observe your system
 
-Your system, your rules. Hence everything is customizable: the collector pipeline (sampling, redaction, routing, extra exporters), where data is stored and for how long, the dashboards, the session rules, the replay masking. We ship defaults that work, and we never hide a knob. See [Customize](/docs/customize/).
+Your system, your rules. Hence everything is customizable: the collector pipeline (sampling, redaction, routing, extra exporters), where data is stored and for how long, the dashboards, the session rules, the replay masking. We ship defaults that work, and we never hide a knob. See [Customize](/docs/operate/customize/).
 
 ## 5. We do not push you to use our SDK
 

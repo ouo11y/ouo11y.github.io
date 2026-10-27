@@ -1,0 +1,11 @@
+# The ouo stack for tiny-shop-funnels: one folder per service, each with its compose file and its
+# config. This file only lists them. Start everything from this folder: `docker compose up -d`.
+# Grafana http://localhost:3000 (admin / testing567), OTLP http://localhost:4318, replay :4319.
+# Ports taken? Export OUO_GRAFANA_PORT, OUO_OTLP_HTTP_PORT, OUO_REPLAY_PORT before `up`.
+name: tiny-shop-funnels   # compose project name: containers and the rum-api-data volume use it
+include:
+  - 10-collector/compose.yaml   # ingest: the only thing the apps talk to, replay included
+  - 20-tempo/compose.yaml       # traces
+  - 30-loki/compose.yaml        # browser events: page views and custom events, the funnel steps
+  - 50-rum-api/compose.yaml     # sessions, funnels, and where replay chunks are stored (built from source)
+  - 60-grafana/compose.yaml     # the UI: datasources and the ouo11y RUM app (built from source)

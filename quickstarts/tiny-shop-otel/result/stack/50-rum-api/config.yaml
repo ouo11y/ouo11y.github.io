@@ -1,0 +1,24 @@
+# rum-api configuration: where Loki and Tempo are, and the session timeouts.
+# The tokens come from the environment set in compose.yaml (-config.expand-env=true).
+# Replays are stored on the rum-api-data volume.
+server:
+  http_listen_address: ":8080"
+
+auth:
+  ingest_token: "${OUO_INGEST_TOKEN}"
+  read_token: "${OUO_READ_TOKEN}"
+
+loki:
+  url: http://loki:3100
+  datasource_uid: loki
+
+tempo:
+  url: http://tempo:3200
+  datasource_uid: tempo
+
+session:
+  inactivity: 30m
+  max_duration: 4h
+
+storage:
+  backend: filesystem

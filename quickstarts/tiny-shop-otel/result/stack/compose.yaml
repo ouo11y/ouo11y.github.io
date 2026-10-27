@@ -1,0 +1,11 @@
+# The ouo stack for tiny-shop-otel: one folder per service, each with its compose file and
+# its config. This file only lists them. Start everything from this folder: `docker compose up -d`.
+# Grafana http://localhost:3000 (admin / testing567), OTLP http://localhost:4318, replay :4319.
+# Ports taken? Export OUO_GRAFANA_PORT, OUO_OTLP_HTTP_PORT, OUO_REPLAY_PORT before `up`.
+include:
+  - 10-collector/compose.yaml   # ingest: the only thing the apps talk to
+  - 20-tempo/compose.yaml       # traces
+  - 30-loki/compose.yaml        # logs and browser events
+  - 40-mimir/compose.yaml       # metrics (none from this shop yet; the collector accepts /v1/metrics)
+  - 50-rum-api/compose.yaml     # sessions and replay for the Grafana plugin
+  - 60-grafana/compose.yaml     # the UI: datasources and the ouo11y RUM app

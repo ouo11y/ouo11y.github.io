@@ -1,0 +1,27 @@
+# Grafana with the ouo11y RUM app plugin: the UI for everything above. It reads Tempo and Loki
+# directly, and sessions, funnels and replays from rum-api through the plugin. Port 3000,
+# admin / testing567. provisioning/ sets up the datasources and the plugin.
+#
+# Built from source: the plugin's Funnels page is newer than the released
+# ghcr.io/ouo11y/grafana:0.4.0. Dockerfile (next to this file) builds plugins/ouo11y-rum-app of an
+# ouo11y checkout and copies it into grafana/grafana, like the released image. OUO11Y_REPO: the
+# checkout's root (default: this folder's place inside the repository). Once a grafana image with
+# funnels is tagged, replace `build:` with `image: ghcr.io/ouo11y/grafana:<that version>`.
+services:
+  grafana:
+    build:
+      context: .
+      additional_contexts:
+        ouo11y: ${OUO11Y_REPO:-../../../../../..}
+    image: tiny-shop-funnels/grafana:from-source
+    ports:
+      - "${OUO_GRAFANA_PORT:-3000}:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: testing567
+      GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS: ouo11y-rum-app
+      GF_SECURITY_DISABLE_FRONTEND_SANDBOX_FOR_PLUGINS: ouo11y-rum-app
+      OUO_READ_TOKEN: rt_dev_0000000000000000   # read by provisioning/plugins; equals rum-api's
+    volumes:
+      - ./provisioning:/etc/grafana/provisioning:ro
+    depends_on: [loki, tempo, rum-api]

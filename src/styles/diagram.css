@@ -1,0 +1,29 @@
+/* Diagram tokens: work on Starlight pages (--sl-*) and on site pages (--bg, --ink, ...). */
+.dg {
+  --dg-bg: var(--sl-color-bg-nav, var(--bg-2, #fff));
+  --dg-node: var(--sl-color-bg, var(--bg, #f7f8fb));
+  --dg-ink: var(--sl-color-white, var(--ink, #0f172a));
+  --dg-ink-2: var(--sl-color-gray-2, var(--ink-2, #475569));
+  --dg-ink-3: var(--sl-color-gray-3, var(--ink-3, #64748b));
+  --dg-line: var(--sl-color-hairline, var(--line, #e2e8f0));
+  --dg-accent: var(--sl-color-accent, var(--accent, #0a6fa6));
+  --dg-accent-soft: var(--sl-color-accent-low, var(--accent-soft, #e0f2fe));
+  --dg-ok: #16a34a; --dg-warn: #d97706; --dg-bad: #e5484d; --dg-info: #7c3aed;
+  margin: 1.5rem 0;
+  padding: 20px;
+  border: 1px solid var(--dg-line);
+  border-radius: 14px;
+  background: var(--dg-bg);
+  color: var(--dg-ink);
+  font-family: var(--sl-font, ui-sans-serif, system-ui, sans-serif);
+  font-size: 14px;
+  line-height: 1.4;
+}
+.dg * { box-sizing: border-box; }
+.dg figcaption { margin-top: 14px; color: var(--dg-ink-3); font-size: 13px; text-align: center; }
+.dg code { font-size: 12px; }
+.dg .tone-ok { --tone: var(--dg-ok); }
+.dg .tone-warn { --tone: var(--dg-warn); }
+.dg .tone-bad { --tone: var(--dg-bad); }
+.dg .tone-info { --tone: var(--dg-info); }
+.dg .tone-accent { --tone: var(--dg-accent); }

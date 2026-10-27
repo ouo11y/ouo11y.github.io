@@ -1,0 +1,16 @@
+{
+  "name": "tiny-shop-funnels-generate-sessions",
+  "private": true,
+  "version": "1.0.0",
+  "description": "ouo quickstart: drives ~50 real browser sessions through the shop so the funnel has shape",
+  "type": "module",
+  "scripts": {
+    "generate": "node generate.mjs"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "devDependencies": {
+    "playwright": "1.64.1"
+  }
+}
