@@ -1,0 +1,15 @@
+# Loki: stores logs. The collector sends it the browser's events and frontend logs over OTLP
+# (/otlp); Grafana and rum-api query it on 3100 (rum-api builds sessions from these records).
+# Port 3100 is published on loopback for curl.
+services:
+  loki:
+    image: grafana/loki:3.7.7
+    command: ["-config.file=/etc/loki/config.yaml"]
+    ports:
+      - "127.0.0.1:${OUO_LOKI_PORT:-3100}:3100"
+    volumes:
+      - ./config.yaml:/etc/loki/config.yaml:ro
+      - loki-data:/loki
+
+volumes:
+  loki-data:

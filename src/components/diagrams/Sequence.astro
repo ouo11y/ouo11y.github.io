@@ -1,0 +1,80 @@
+---
+// A sequence diagram in HTML and CSS: actors as lanes, one row per message.
+// "Play" steps through the messages (a little JS), and every row is readable without it.
+// <Sequence actors={['Browser', 'API', 'Collector']} steps={[{ from: 0, to: 1, label: 'POST /checkout', note: 'traceparent + baggage' }]} />
+import '../../styles/diagram.css';
+
+interface Step { from: number; to: number; label: string; note?: string; tone?: 'accent' | 'ok' | 'warn' | 'bad' | 'info'; }
+interface Props { actors: string[]; steps: Step[]; caption?: string; }
+const { actors, steps, caption } = Astro.props;
+const n = actors.length;
+const pct = (i: number) => ((i + 0.5) / n) * 100;
+---
+<figure class="dg seq not-content" style={`--n:${n}`} data-seq>
+  <div class="head">{actors.map((a) => <div class="actor">{a}</div>)}</div>
+  <ol class="rows">
+    {steps.map((s, i) => {
+      const left = Math.min(pct(s.from), pct(s.to));
+      const width = Math.abs(pct(s.to) - pct(s.from));
+      const self = s.from === s.to;
+      return (
+        <li class:list={['row', s.tone ? `tone-${s.tone}` : 'tone-accent', { self, back: s.to < s.from }]} data-step={i}>
+          {actors.map((_, k) => <span class="life" style={`left:${pct(k)}%`} />)}
+          <span class="msg" style={self ? `left:${pct(s.from)}%` : `left:${left}%;width:${width}%`}>
+            <span class="label"><b>{i + 1}</b> {s.label}{s.note && <small> · {s.note}</small>}</span>
+          </span>
+        </li>
+      );
+    })}
+  </ol>
+  <div class="controls">
+    <button type="button" data-play>▶ Play</button>
+    <button type="button" data-all>Show all</button>
+  </div>
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+  for (const fig of document.querySelectorAll<HTMLElement>('[data-seq]')) {
+    const rows = [...fig.querySelectorAll<HTMLElement>('.row')];
+    let timer: number | undefined;
+    const showAll = () => { clearInterval(timer); rows.forEach((r) => r.classList.remove('hidden', 'current')); };
+    fig.querySelector('[data-all]')?.addEventListener('click', showAll);
+    fig.querySelector('[data-play]')?.addEventListener('click', () => {
+      clearInterval(timer);
+      rows.forEach((r) => r.classList.add('hidden'));
+      let i = 0;
+      const tick = () => {
+        rows.forEach((r) => r.classList.remove('current'));
+        if (i >= rows.length) return clearInterval(timer);
+        rows[i].classList.remove('hidden');
+        rows[i].classList.add('current');
+        i++;
+      };
+      tick();
+      timer = window.setInterval(tick, 900);
+    });
+  }
+</script>
+
+<style>
+  .head { display: grid; grid-template-columns: repeat(var(--n), 1fr); gap: 8px; margin-bottom: 6px; }
+  .actor { text-align: center; padding: 8px 6px; border: 1.5px solid var(--dg-accent); border-radius: 10px; background: var(--dg-accent-soft); font-weight: 700; font-size: 13px; }
+  .rows { list-style: none; margin: 0; padding: 0; }
+  .row { position: relative; height: 46px; transition: opacity .25s; }
+  .row.hidden { opacity: .08; }
+  .row.current .label { outline: 2px solid var(--tone); }
+  .life { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1.5px dashed var(--dg-line); }
+  .msg { position: absolute; top: 28px; height: 2px; background: var(--tone); }
+  .msg::after { content: ""; position: absolute; right: -2px; top: -5px; border: 6px solid transparent; border-left: 9px solid var(--tone); }
+  .row.back .msg::after { right: auto; left: -2px; border-left: 6px solid transparent; border-right: 9px solid var(--tone); }
+  .row.self .msg { width: 28px; height: 14px; top: 18px; background: none; border: 2px solid var(--tone); border-left: none; border-radius: 0 8px 8px 0; }
+  .row.self .msg::after { right: auto; left: -8px; top: 6px; border-left: 6px solid transparent; border-right: 9px solid var(--tone); }
+  .label { position: absolute; bottom: 6px; left: 50%; transform: translateX(-50%); white-space: nowrap; font-size: 12.5px; background: var(--dg-bg); padding: 1px 6px; border-radius: 6px; max-width: 92vw; overflow: hidden; text-overflow: ellipsis; }
+  .row.self .label { left: 36px; transform: none; bottom: 18px; }
+  .label b { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: var(--tone); color: #fff; font-size: 11px; margin-right: 4px; }
+  .label small { color: var(--dg-ink-3); }
+  .controls { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
+  .controls button { font: inherit; font-size: 12px; padding: 4px 10px; border-radius: 8px; border: 1px solid var(--dg-line); background: var(--dg-node); color: var(--dg-ink); cursor: pointer; }
+  @media (max-width: 640px) { .label { font-size: 11px; } .label small { display: none; } .actor { font-size: 11px; } }
+</style>

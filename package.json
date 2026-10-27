@@ -9,7 +9,9 @@
     "dev": "astro dev",
     "build": "astro build",
     "preview": "astro preview",
-    "check": "astro check"
+    "check": "astro check",
+    "prebuild": "node scripts/zip-quickstarts.mjs",
+    "predev": "node scripts/zip-quickstarts.mjs"
   },
   "dependencies": {
     "@astrojs/rss": "^4.0.19",

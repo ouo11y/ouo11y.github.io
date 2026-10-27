@@ -1,0 +1,58 @@
+---
+// One session as a waterfall: a row per event (a marker) or span (a bar), on a shared time axis.
+// Readable at any width; hovering a row highlights it.
+// <Timeline duration={120} events={[{ at: 0, label: 'session.start', tone: 'ok' }]} spans={[{ from: 10, to: 14, label: 'POST /checkout' }]} />
+import '../../styles/diagram.css';
+
+type Tone = 'accent' | 'ok' | 'warn' | 'bad' | 'info';
+interface Event { at: number; label: string; detail?: string; tone?: Tone; }
+interface Span { from: number; to: number; label: string; detail?: string; tone?: Tone; }
+interface Props { duration: number; unit?: string; events: Event[]; spans?: Span[]; caption?: string; }
+const { duration, unit = 's', events, spans = [], caption } = Astro.props;
+const pct = (t: number) => (t / duration) * 100;
+const rows = [
+  ...events.map((e) => ({ kind: 'event' as const, start: e.at, end: e.at, label: e.label, detail: e.detail, tone: e.tone ?? 'accent' })),
+  ...spans.map((s) => ({ kind: 'span' as const, start: s.from, end: s.to, label: s.label, detail: s.detail, tone: s.tone ?? 'info' })),
+].sort((a, b) => a.start - b.start);
+const ticks = Array.from({ length: 5 }, (_, i) => Math.round((duration / 4) * i));
+---
+<figure class="dg tl not-content">
+  <div class="grid">
+    <div class="axis-label" />
+    <div class="axis">{ticks.map((t) => <span style={`left:${pct(t)}%`}>{t}{unit}</span>)}</div>
+    {rows.map((r) => (
+      <div class:list={['row', `tone-${r.tone}`]}>
+        <div class="name">
+          <span class="t">{r.start}{unit}</span>
+          <code>{r.label}</code>
+          {r.detail && <small>{r.detail}</small>}
+        </div>
+        <div class="track">
+          {ticks.slice(1, -1).map((t) => <i class="grid-line" style={`left:${pct(t)}%`} />)}
+          {r.kind === 'event'
+            ? <span class="dot" style={`left:${pct(r.start)}%`} />
+            : <span class="bar" style={`left:${pct(r.start)}%;width:max(6px, ${pct(r.end) - pct(r.start)}%)`} />}
+        </div>
+      </div>
+    ))}
+  </div>
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<style>
+  .grid { display: grid; grid-template-columns: minmax(0, 46%) minmax(0, 1fr); column-gap: 14px; }
+  .axis { position: relative; height: 20px; border-bottom: 1px solid var(--dg-line); margin: 0 9px; }
+  .axis span { position: absolute; transform: translateX(-50%); font-size: 11px; color: var(--dg-ink-3); }
+  .row { display: contents; }
+  .name { display: flex; align-items: baseline; gap: 8px; padding: 7px 0; border-bottom: 1px solid color-mix(in srgb, var(--dg-line) 60%, transparent); min-width: 0; }
+  .name .t { flex: 0 0 38px; font-size: 11px; color: var(--dg-ink-3); font-variant-numeric: tabular-nums; text-align: right; }
+  .name code { color: var(--tone); font-weight: 600; background: none; padding: 0; white-space: nowrap; }
+  .name small { color: var(--dg-ink-3); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .track { position: relative; margin: 0 9px; border-bottom: 1px solid color-mix(in srgb, var(--dg-line) 60%, transparent); }
+  .grid-line { position: absolute; top: 0; bottom: 0; border-left: 1px dashed var(--dg-line); }
+  .dot { position: absolute; top: 50%; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; background: var(--tone); box-shadow: 0 0 0 3px color-mix(in srgb, var(--tone) 25%, transparent); }
+  .bar { position: absolute; top: calc(50% - 6px); height: 12px; border-radius: 4px; background: var(--tone); }
+  .row:hover .name, .row:hover .track { background: color-mix(in srgb, var(--tone) 8%, transparent); }
+  .tl { container-type: inline-size; }
+  @container (max-width: 520px) { .name small { display: none; } .grid { grid-template-columns: minmax(0, 52%) minmax(0, 1fr); } }
+</style>

@@ -1,0 +1,27 @@
+# Grafana datasources: Loki (browser events), Tempo (traces), both inside the network.
+# The uids are fixed because rum-api's config refers to them.
+# Log lines with a trace_id link to the trace in Tempo.
+apiVersion: 1
+
+datasources:
+  - name: Loki
+    uid: loki
+    type: loki
+    url: http://loki:3100
+    jsonData:
+      derivedFields:
+        - name: TraceID
+          datasourceUid: tempo
+          matcherType: label
+          matcherRegex: trace_id
+          url: "$${__value.raw}"
+          urlDisplayLabel: View trace
+
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    url: http://tempo:3200
+    isDefault: true
+    jsonData:
+      lokiSearch:
+        datasourceUid: loki

@@ -1,0 +1,35 @@
+# Grafana datasources: Loki (logs), Tempo (traces), Mimir (metrics), all inside the network.
+# The uids are fixed because rum-api's config refers to them.
+# Log lines with a trace_id link to the trace in Tempo.
+apiVersion: 1
+
+datasources:
+  - name: Loki
+    uid: loki
+    type: loki
+    url: http://loki:3100
+    jsonData:
+      derivedFields:
+        - name: TraceID
+          datasourceUid: tempo
+          matcherType: label
+          matcherRegex: trace_id
+          url: "$${__value.raw}"
+          urlDisplayLabel: View trace
+
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    url: http://tempo:3200
+    jsonData:
+      lokiSearch:
+        datasourceUid: loki
+
+  - name: Mimir
+    uid: mimir
+    type: prometheus
+    url: http://mimir:9009/prometheus
+    isDefault: true
+    jsonData:
+      prometheusType: Mimir
+      timeInterval: 15s

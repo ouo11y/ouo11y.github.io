@@ -1,0 +1,12 @@
+# Enables the ouo11y RUM app (More apps -> ouo11y RUM) and points it at rum-api.
+# Grafana adds the read token to every call it forwards; ${OUO_READ_TOKEN} comes from the
+# container environment and must equal rum-api's.
+apiVersion: 1
+
+apps:
+  - type: ouo11y-rum-app
+    org_id: 1
+    jsonData:
+      rumApiUrl: http://rum-api:8080
+    secureJsonData:
+      readToken: ${OUO_READ_TOKEN}

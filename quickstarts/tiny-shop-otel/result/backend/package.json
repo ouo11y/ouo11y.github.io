@@ -1,0 +1,26 @@
+{
+  "name": "tiny-shop-otel-backend",
+  "private": true,
+  "version": "1.0.0",
+  "description": "ouo quickstart: Express API traced with the OpenTelemetry Node SDK (auto + manual spans)",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node --require ./instrumentation.js server.js"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@opentelemetry/api": "^1.10.0",
+    "@opentelemetry/baggage-span-processor": "^0.6.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.300.0",
+    "@opentelemetry/instrumentation-express": "^0.72.0",
+    "@opentelemetry/instrumentation-http": "^0.300.0",
+    "@opentelemetry/resources": "^3.0.0",
+    "@opentelemetry/sdk-node": "^0.300.0",
+    "@opentelemetry/sdk-trace": "^3.0.0",
+    "@opentelemetry/semantic-conventions": "^1.43.0",
+    "cors": "^2.8.6",
+    "express": "^5.3.0"
+  }
+}

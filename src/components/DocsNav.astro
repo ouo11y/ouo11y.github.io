@@ -1,0 +1,22 @@
+---
+// Starlight's SocialIcons slot, replaced to carry the same top navigation as the rest of the site.
+import Default from '@astrojs/starlight/components/SocialIcons.astro';
+const links = [
+  { href: '/docs/', label: 'Docs' },
+  { href: '/docs/quickstarts/', label: 'Quickstarts' },
+  { href: '/blog/', label: 'Blog' },
+  { href: '/newsletter/', label: 'Newsletter' },
+  { href: '/announcements/', label: 'Announcements' },
+];
+---
+<nav class="site-links" aria-label="Site">
+  {links.map((l) => <a href={l.href}>{l.label}</a>)}
+</nav>
+<Default />
+
+<style>
+  .site-links { display: none; gap: 1.1rem; margin-right: .75rem; font-size: .875rem; }
+  .site-links a { color: var(--sl-color-gray-2); text-decoration: none; }
+  .site-links a:hover { color: var(--sl-color-white); }
+  @media (min-width: 72rem) { .site-links { display: flex; } }
+</style>

@@ -1,0 +1,24 @@
+---
+// Embeds a file from quickstarts/<qs>/ so readers copy it from the site, not from GitHub.
+// <QuickstartFile qs="tiny-shop-otel" path="result/backend/server.js" />
+import { Code } from '@astrojs/starlight/components';
+
+interface Props { qs: string; path: string; title?: string; lang?: string; open?: boolean; }
+const { qs, path, title, lang, open = true } = Astro.props;
+const files = import.meta.glob('/quickstarts/**/*', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
+const code = files[`/quickstarts/${qs}/${path}`];
+if (code === undefined) throw new Error(`QuickstartFile: /quickstarts/${qs}/${path} not found`);
+const ext = path.split('.').pop() ?? '';
+const langs: Record<string, string> = { js: 'js', mjs: 'js', jsx: 'jsx', ts: 'ts', yaml: 'yaml', yml: 'yaml', json: 'json', html: 'html', md: 'md', htpasswd: 'txt', Dockerfile: 'dockerfile' };
+const name = path.split('/').pop() ?? path;
+const display = title ?? path.replace(/^result\//, '');
+---
+<details class="qs-file" open={open}>
+  <summary><code>{display}</code></summary>
+  <Code code={code.replace(/\n$/, '')} lang={lang ?? langs[ext] ?? langs[name] ?? 'txt'} title={display} />
+</details>
+
+<style>
+  .qs-file { margin: 1rem 0; }
+  .qs-file > summary { cursor: pointer; font-size: .9rem; color: var(--sl-color-gray-2); margin-bottom: .5rem; }
+</style>

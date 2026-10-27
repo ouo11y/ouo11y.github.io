@@ -1,0 +1,88 @@
+---
+title: Architecture
+description: Apps send OpenTelemetry to a collector; Loki, Tempo and Mimir store it; rum-api builds sessions; Grafana shows the whole story.
+sidebar: { order: 3 }
+---
+
+import Flow from '../../../../components/diagrams/Flow.astro';
+import Sequence from '../../../../components/diagrams/Sequence.astro';
+import Timeline from '../../../../components/diagrams/Timeline.astro';
+
+ouo11y is a small set of standard parts. Nothing in the path is proprietary: every arrow below is OTLP or plain HTTP, and every box can be replaced.
+
+<Flow
+  caption="Everything enters through the collector. Storage is the LGTM stack you may already run."
+  columns={[
+    { label: 'Your apps', arrow: 'OTLP', nodes: [
+      { title: 'Web app', sub: '@ouo11y/browser or plain OTel' },
+      { title: 'Mobile app', sub: 'React Native · iOS' },
+      { title: 'Your backend', sub: 'any OpenTelemetry SDK' },
+    ] },
+    { label: 'Edge', nodes: [
+      { title: 'OpenTelemetry Collector', sub: ':4318 OTLP · :4319 replay<br>project credential · rate limit', tone: 'accent' },
+    ] },
+    { label: 'Storage', nodes: [
+      { title: 'Loki', sub: 'events · logs' },
+      { title: 'Tempo', sub: 'traces' },
+      { title: 'Mimir', sub: 'metrics' },
+    ] },
+    { label: 'Sessions', nodes: [
+      { title: 'rum-api', sub: 'session records · replay store' },
+    ] },
+    { label: 'View', nodes: [
+      { title: 'Grafana + ouo11y app', sub: 'health · sessions · timeline · replay', tone: 'accent' },
+    ] },
+  ]}
+/>
+
+## The parts
+
+- **The collector is the edge.** Everything enters through an OpenTelemetry Collector: OTLP on `:4318`, replay chunks on `:4319`, each request with a project credential. The ouo11y distribution adds a replay receiver, a rate limiter and a Sentry SDK bridge. You can build your own with the OpenTelemetry Collector Builder.
+- **Storage is the LGTM stack.** Loki holds RUM events and logs, Tempo traces, Mimir metrics, all in open formats.
+- **rum-api** folds every signal with the same `session.id` into one session record (status, counts, traces, replay) and stores replay chunks on disk or in S3. It is internal: nothing outside the cluster reaches it.
+- **Grafana** with the ouo11y app shows session health, the sessions list and a session's timeline, traces and replay, next to every other dashboard you have.
+
+## One checkout, end to end
+
+What happens when a user clicks **Checkout** and the API fails. Press **Play** to step through it.
+
+<Sequence
+  caption="The browser's fetch span is the root of the backend trace; session.id rides along in baggage."
+  actors={['Browser', 'API', 'Collector', 'Loki · Tempo', 'rum-api']}
+  steps={[
+    { from: 0, to: 0, label: 'click Checkout', note: 'click span starts' },
+    { from: 0, to: 1, label: 'POST /api/checkout', note: 'traceparent + baggage(session.id)' },
+    { from: 1, to: 1, label: 'charge card fails', note: 'server span, status error', tone: 'bad' },
+    { from: 1, to: 0, label: '500', tone: 'bad' },
+    { from: 0, to: 2, label: 'spans + http.request.failed', note: 'OTLP /v1/traces, /v1/logs' },
+    { from: 1, to: 2, label: 'server spans', note: 'OTLP /v1/traces' },
+    { from: 0, to: 2, label: 'replay chunk', note: ':4319' },
+    { from: 2, to: 3, label: 'store traces and events' },
+    { from: 2, to: 4, label: 'replay chunk' },
+    { from: 4, to: 3, label: 'fold the session', note: 'status: errored', tone: 'warn' },
+  ]}
+/>
+
+## What a session looks like
+
+Every signal of the visit carries the same `session.id`, so rum-api can put them on one line. One row per signal.
+
+<Timeline
+  duration={180}
+  caption="One session: started, browsed, failed a checkout, crashed. Its status is crashed."
+  spans={[
+    { from: 3, to: 5, label: 'GET /products', tone: 'info' },
+    { from: 61, to: 64, label: 'POST /checkout', tone: 'bad' },
+    { from: 120, to: 123, label: 'POST /checkout', tone: 'info' },
+  ]}
+  events={[
+    { at: 0, label: 'session.start', tone: 'ok' },
+    { at: 2, label: 'navigation', detail: '/products' },
+    { at: 9, label: 'web_vital', detail: 'LCP 1.8 s, good' },
+    { at: 40, label: 'cart.added', detail: 'custom event', tone: 'info' },
+    { at: 64, label: 'http.request.failed', detail: '500 POST /checkout', tone: 'warn' },
+    { at: 150, label: 'exception', detail: 'fatal TypeError', tone: 'bad' },
+  ]}
+/>
+
+Its status is the worst thing that happened: a fatal exception makes it **crashed**, a failed request or a handled exception **errored**, nothing at all **healthy**. See [Sessions and health](/docs/concepts/sessions/).

@@ -1,0 +1,27 @@
+# rum-api: the ouo platform service behind the Grafana plugin. It builds the session list
+# (healthy / errored / crashed) from Loki and Tempo and stores replay chunks the collector
+# forwards. Internal: only the collector and Grafana talk to it, on 8080 inside the network.
+services:
+  rum-api:
+    # `latest` follows each release. Tested with 0.5.0: pin `rum-api:0.5.0` or
+    # `rum-api@sha256:1ee9e606220df2c42f4ade4131fdd3f82085d6e814676a771754a85a6ae78336` to stay on it.
+    image: ghcr.io/ouo11y/rum-api:latest
+    command: ["-config.file=/etc/rum-api/config.yaml", "-config.expand-env=true"]
+    environment:
+      GRAFANA_URL: http://localhost:${OUO_GRAFANA_PORT:-3000}   # for deep links
+      OUO_INGEST_TOKEN: it_dev_0000000000000000   # the collector's; development value
+      OUO_READ_TOKEN: rt_dev_0000000000000000     # Grafana's; development value
+      DATA_DIR: /home/nonroot                     # the image runs as nonroot
+      # rum-api's own traces and logs (0.5.0 and later), through the collector like the shop's.
+      # Without these it retries localhost:4318 inside its container and logs every failure.
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_HEADERS: Authorization=Basic%20ZGVtbzpwdF9kZXZfZGVtb18wMDAwMDAwMDAwMDAwMDAw
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_SERVICE_NAME: rum-api
+    volumes:
+      - ./config.yaml:/etc/rum-api/config.yaml:ro
+      - rum-api-data:/home/nonroot
+    depends_on: [loki, tempo, otel-collector]
+
+volumes:
+  rum-api-data:

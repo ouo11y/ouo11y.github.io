@@ -1,0 +1,29 @@
+# rum-api: the ouo platform service behind the Grafana plugin. It builds the session list
+# (healthy / errored / crashed) and the funnel reports from Loki and Tempo, and stores replay
+# chunks the collector forwards. Internal: only the collector and Grafana talk to it, on 8080
+# inside the network.
+#
+# Built from source: funnels (POST /v1/funnels/query) are newer than the released
+# ghcr.io/ouo11y/rum-api:0.4.0. Once a rum-api release with funnels is tagged, replace `build:`
+# with `image: ghcr.io/ouo11y/rum-api:<that version>` (see the README, "Released images").
+services:
+  rum-api:
+    build:
+      # services/rum-api of an ouo11y checkout. OUO11Y_REPO: the checkout's root (default: this
+      # folder's place inside the repository).
+      context: ${OUO11Y_REPO:-../../../../../..}/services/rum-api
+      args: { VERSION: funnels-from-source }
+    image: tiny-shop-funnels/rum-api:from-source
+    command: ["-config.file=/etc/rum-api/config.yaml", "-config.expand-env=true"]
+    environment:
+      GRAFANA_URL: http://localhost:${OUO_GRAFANA_PORT:-3000}   # for deep links
+      OUO_INGEST_TOKEN: it_dev_0000000000000000   # the collector's; development value
+      OUO_READ_TOKEN: rt_dev_0000000000000000     # Grafana's; development value
+      DATA_DIR: /home/nonroot                     # the image runs as nonroot
+    volumes:
+      - ./config.yaml:/etc/rum-api/config.yaml:ro
+      - rum-api-data:/home/nonroot
+    depends_on: [loki, tempo]
+
+volumes:
+  rum-api-data:

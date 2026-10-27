@@ -8,6 +8,7 @@ const fullTitle = title ? `${title} · ouo11y` : `ouo11y · ${site.tagline}`;
 const path = Astro.url.pathname;
 const nav = [
   { href: '/docs/', label: 'Docs' },
+  { href: '/docs/quickstarts/', label: 'Quickstarts' },
   { href: '/blog/', label: 'Blog' },
   { href: '/newsletter/', label: 'Newsletter' },
   { href: '/announcements/', label: 'Announcements' },
@@ -59,6 +60,7 @@ const current = (href: string) => (href.startsWith('/') && path.startsWith(href)
         <ul>
           <li><a href="/docs/">Docs</a></li>
           <li><a href="/docs/start/principles/">Principles</a></li>
+          <li><a href="/docs/quickstarts/">Quickstarts</a></li>
           <li><a href="/blog/">Blog</a></li>
         </ul>
       </div>

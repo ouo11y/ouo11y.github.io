@@ -8,7 +8,7 @@ export default defineConfig({
   trailingSlash: 'always',
   integrations: [
     starlight({
-      title: 'ouo11y docs',
+      title: 'ouo11y',
       description: 'Docs for ouo11y, Open Unified Observability: OpenTelemetry-native RUM, with or without our SDK.',
       logo: { src: './public/logo.svg', replacesTitle: false },
       favicon: '/logo.svg',
@@ -19,15 +19,14 @@ export default defineConfig({
       ],
       editLink: { baseUrl: 'https://github.com/ouo11y/ouo11y.github.io/edit/main/' },
       lastUpdated: true,
+      components: { SocialIcons: './src/components/DocsNav.astro' },
       sidebar: [
         { label: 'Overview', link: '/docs/' },
         { label: 'Start here', items: [{ autogenerate: { directory: 'docs/start' } }] },
+        { label: 'Quickstarts', items: [{ autogenerate: { directory: 'docs/quickstarts' } }] },
         { label: 'Instrument', items: [{ autogenerate: { directory: 'docs/instrument' } }] },
         { label: 'Concepts', items: [{ autogenerate: { directory: 'docs/concepts' } }] },
-        { label: 'Customize', link: '/docs/customize/' },
-        { label: 'Blog', link: '/blog/' },
-        { label: 'Newsletter', link: '/newsletter/' },
-        { label: 'Announcements', link: '/announcements/' },
+        { label: 'Operate', items: [{ autogenerate: { directory: 'docs/operate' } }] },
       ],
     }),
     sitemap(),

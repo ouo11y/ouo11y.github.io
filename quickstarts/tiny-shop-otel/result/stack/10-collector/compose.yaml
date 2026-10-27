@@ -1,0 +1,19 @@
+# ouo-collector: the only ingest. The browser and the Node API send OTLP here; it checks the
+# project credential and forwards traces to Tempo, logs to Loki, metrics to Mimir and replay
+# chunks to rum-api. Ports: 4318 OTLP/HTTP, 4319 replay (both public), 13133 health (loopback).
+services:
+  otel-collector:
+    # `latest` follows each release. Tested with 0.4.0: pin `collector:0.4.0` or
+    # `collector@sha256:ca0d001dc58153671fc501cbe280a69f86dc3e681a1b4621e827dedadb7727f2` to stay on it.
+    image: ghcr.io/ouo11y/collector:latest
+    command: ["--config=/etc/otelcol/config.yaml"]
+    ports:
+      - "${OUO_OTLP_HTTP_PORT:-4318}:4318"
+      - "${OUO_REPLAY_PORT:-4319}:4319"
+      - "127.0.0.1:${OUO_COLLECTOR_HEALTH_PORT:-13133}:13133"
+    environment:
+      OUO_INGEST_TOKEN: it_dev_0000000000000000   # what it sends to rum-api; must equal rum-api's
+    volumes:
+      - ./config.yaml:/etc/otelcol/config.yaml:ro
+      - ./projects.htpasswd:/etc/otelcol/projects.htpasswd:ro
+    depends_on: [tempo, loki, mimir]
