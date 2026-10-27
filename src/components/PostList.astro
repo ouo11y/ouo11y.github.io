@@ -1,0 +1,22 @@
+---
+import type { CollectionEntry } from 'astro:content';
+import { fmtDate, type Section } from '../lib/site';
+
+interface Props { section: Section; entries: CollectionEntry<Section>[]; }
+const { section, entries } = Astro.props;
+---
+{entries.length === 0 ? (
+  <p class="meta">Nothing here yet. Subscribe to the RSS feed to hear about the first one.</p>
+) : (
+  <ul class="posts">
+    {entries.map((e) => (
+      <li>
+        <a class="post-card" href={`/${section}/${e.id}/`}>
+          <span class="meta">{fmtDate(e.data.date)}{e.data.draft && ' · draft'}</span>
+          <h3>{e.data.title}</h3>
+          <p>{e.data.description}</p>
+        </a>
+      </li>
+    ))}
+  </ul>
+)}

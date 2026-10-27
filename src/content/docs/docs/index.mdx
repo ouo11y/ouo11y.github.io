@@ -1,0 +1,19 @@
+---
+title: ouo11y docs
+description: Open Unified Observability. Real user sessions, errors, traces and replay on OpenTelemetry, with or without our SDK.
+---
+
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+ouo11y is open-source, OpenTelemetry-native observability for what your users actually experience: sessions, errors, crashes, Web Vitals, traces and session replay from web and mobile apps, joined to your backend traces and shown in Grafana.
+
+Everything is OTLP with OpenTelemetry semantic conventions, stored in Loki, Tempo and Mimir, and runs on infrastructure you control.
+
+<CardGrid>
+  <LinkCard title="Principles" description="What we promise, and what you can hold us to." href="/docs/start/principles/" />
+  <LinkCard title="Two ways in" description="Our SDK, or plain OpenTelemetry. Pick per app." href="/docs/start/two-paths/" />
+  <LinkCard title="Run it locally" description="The whole stack with one compose file." href="/docs/start/quickstart/" />
+  <LinkCard title="Bring your own OTel" description="The exact contract: what ouo11y reads from a browser." href="/docs/instrument/bring-your-own-otel/" />
+  <LinkCard title="Semantic conventions" description="Every ouo.* attribute and when it becomes OTel." href="/docs/concepts/semantic-conventions/" />
+  <LinkCard title="Customize" description="Every layer is yours to change." href="/docs/customize/" />
+</CardGrid>

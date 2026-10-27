@@ -1,0 +1,85 @@
+---
+import '../styles/global.css';
+import { site } from '../lib/site';
+
+interface Props { title?: string; description?: string; }
+const { title, description = 'ouo11y is open-source, OpenTelemetry-native observability for web and mobile: sessions, errors, traces and replay, joined to your backend, on infrastructure you control.' } = Astro.props;
+const fullTitle = title ? `${title} · ouo11y` : `ouo11y · ${site.tagline}`;
+const path = Astro.url.pathname;
+const nav = [
+  { href: '/docs/', label: 'Docs' },
+  { href: '/blog/', label: 'Blog' },
+  { href: '/newsletter/', label: 'Newsletter' },
+  { href: '/announcements/', label: 'Announcements' },
+  { href: site.github, label: 'GitHub' },
+];
+const current = (href: string) => (href.startsWith('/') && path.startsWith(href) ? 'page' : undefined);
+---
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{fullTitle}</title>
+  <meta name="description" content={description}>
+  <link rel="canonical" href={new URL(path, Astro.site)}>
+  <meta property="og:title" content={fullTitle}>
+  <meta property="og:description" content={description}>
+  <meta property="og:type" content="website">
+  <meta property="og:url" content={new URL(path, Astro.site)}>
+  <meta name="theme-color" content="#0b1120">
+  <link rel="icon" href="/logo.svg" type="image/svg+xml">
+  <link rel="alternate" type="application/rss+xml" title="ouo11y blog" href="/blog/rss.xml">
+  <link rel="alternate" type="application/rss+xml" title="ouo11y newsletter" href="/newsletter/rss.xml">
+  <link rel="alternate" type="application/rss+xml" title="ouo11y announcements" href="/announcements/rss.xml">
+</head>
+<body>
+  <nav class="top" aria-label="Main">
+    <div class="wrap">
+      <a class="brand" href="/"><img src="/logo.svg" alt="">ouo11y</a>
+      <ul class="desktop">
+        {nav.map((n) => <li><a href={n.href} aria-current={current(n.href)}>{n.label}</a></li>)}
+      </ul>
+      <details>
+        <summary>Menu</summary>
+        <ul>{nav.map((n) => <li><a href={n.href}>{n.label}</a></li>)}</ul>
+      </details>
+    </div>
+  </nav>
+  <main><slot /></main>
+  <footer class="site">
+    <div class="wrap cols">
+      <div>
+        <h4>ouo11y</h4>
+        <p style="margin:0 0 8px">{site.tagline}. Say "oh-you-oh-eleven-why", or just "ouo".</p>
+        <p style="margin:0">Built on OpenTelemetry, Grafana, Loki, Tempo, Mimir and rrweb.</p>
+      </div>
+      <div>
+        <h4>Learn</h4>
+        <ul>
+          <li><a href="/docs/">Docs</a></li>
+          <li><a href="/docs/start/principles/">Principles</a></li>
+          <li><a href="/blog/">Blog</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Follow</h4>
+        <ul>
+          <li><a href="/newsletter/">Newsletter</a></li>
+          <li><a href="/announcements/">Announcements</a></li>
+          <li><a href={site.github}>GitHub</a></li>
+          <li><a href="/blog/rss.xml">RSS</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>Contact</h4>
+        <ul>
+          <li><a href={`mailto:${site.email.hello}`}>{site.email.hello}</a></li>
+          <li><a href={`mailto:${site.email.security}`}>{site.email.security}</a></li>
+          <li><a href={`mailto:${site.email.news}`}>{site.email.news}</a></li>
+        </ul>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>
