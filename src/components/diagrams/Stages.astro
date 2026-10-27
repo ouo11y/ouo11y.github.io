@@ -1,0 +1,54 @@
+---
+// A numbered pipeline: one card per stage (who, what it does), joined by what travels between
+// them. Left to right on wide screens, top to bottom on narrow ones. Pure HTML and CSS.
+// <Stages stages={[{ who: 'Browser', title: 'record', body: 'rrweb events', carries: 'gzip JSON chunk' }]} />
+import '../../styles/diagram.css';
+
+type Tone = 'accent' | 'ok' | 'warn' | 'bad' | 'info';
+interface Stage { who: string; title: string; body?: string; carries?: string; tone?: Tone; }
+interface Props { stages: Stage[]; caption?: string; }
+const { stages, caption } = Astro.props;
+---
+<figure class="dg stages not-content" role="group" aria-label={caption}>
+  <ol class="list">
+    {stages.map((s, i) => (
+      <li class:list={['stage', `tone-${s.tone ?? 'accent'}`]}>
+        <div class="card">
+          <div class="who"><b>{i + 1}</b>{s.who}</div>
+          <div class="title">{s.title}</div>
+          {s.body && <div class="body" set:html={s.body} />}
+        </div>
+        {i < stages.length - 1 && (
+          <div class="link" aria-hidden={s.carries ? undefined : 'true'}>
+            {s.carries && <span set:html={s.carries} />}
+          </div>
+        )}
+      </li>
+    ))}
+  </ol>
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<style>
+  .list { list-style: none; margin: 0; padding: 0; display: flex; align-items: stretch; }
+  .stage { display: flex; flex: 1 1 0; min-width: 0; align-items: stretch; }
+  .stage:last-child { flex: 1 1 0; }
+  .card { flex: 1 1 0; min-width: 0; border: 1.5px solid var(--tone); border-radius: 10px; background: color-mix(in srgb, var(--tone) 7%, var(--dg-node)); padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
+  .who { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--dg-ink-3); display: flex; align-items: center; gap: 6px; }
+  .who b { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: var(--tone); color: #fff; font-size: 11px; letter-spacing: 0; }
+  .title { font-weight: 700; font-size: 14px; }
+  .body { font-size: 12.5px; color: var(--dg-ink-2); overflow-wrap: anywhere; }
+  .link { flex: 0 0 76px; position: relative; display: flex; align-items: center; justify-content: center; padding: 0 6px; }
+  .link::before { content: ""; position: absolute; left: 4px; right: 10px; top: 50%; height: 2px; background: var(--dg-accent); }
+  .link::after { content: ""; position: absolute; right: 2px; top: calc(50% - 5px); border: 5px solid transparent; border-left: 8px solid var(--dg-accent); }
+  .link span { position: relative; font-size: 11px; line-height: 1.25; text-align: center; color: var(--dg-ink-2); background: var(--dg-bg); padding: 2px 3px; overflow-wrap: anywhere; }
+  .stages { container-type: inline-size; }
+  @container (max-width: 760px) {
+    .list { flex-direction: column; }
+    .stage { flex-direction: column; }
+    .link { flex: 0 0 auto; min-height: 40px; padding: 6px 0 6px 40px; justify-content: flex-start; }
+    .link::before { left: 20px; right: auto; top: 0; bottom: 8px; width: 2px; height: auto; }
+    .link::after { left: 15px; right: auto; top: auto; bottom: 0; border: 5px solid transparent; border-top: 8px solid var(--dg-accent); }
+    .link span { text-align: left; }
+  }
+</style>

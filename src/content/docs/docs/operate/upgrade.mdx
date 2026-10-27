@@ -1,0 +1,128 @@
+---
+title: Upgrading
+description: How ouo11y is versioned, which versions work together, the upgrade order, the steps for Docker Compose, the VM and Helm, the replay schema guard, and rollback.
+sidebar: { order: 8 }
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+import Stages from '../../../../components/diagrams/Stages.astro';
+
+## How versions work
+
+Every component has its own semantic version and its own release: `collector`, `rum-api`, `grafana` (the image, with the ouo11y RUM app inside), the Grafana app itself (`plugin`), `@ouo11y/browser`, `@ouo11y/react-native`, and the Helm chart. Everything is `0.y.z` for now: a minor bump (`0.4.0` → `0.5.0`) can carry a breaking change, listed under **Breaking** in that component's changelog; a patch never does.
+
+Release tags and published versions are permanent. A broken release is fixed by the next patch, never by moving a tag.
+
+## Which versions work together
+
+| Component | Line | Needs | Notes |
+|---|---|---|---|
+| `@ouo11y/browser` | 0.3 | collector ≥ 0.2.0, rum-api ≥ 0.2.0 | with rum-api ≥ 0.5, stacks are symbolicated from uploaded source maps and sessions carry `device_id` |
+| `@ouo11y/react-native` | 0.2 | collector ≥ 0.2.0, rum-api ≥ 0.2.0 | iOS replay as `frames`, schema 1 |
+| collector | 0.4 | rum-api ≥ 0.2.0 | accepts replay schema ≤ 1 |
+| rum-api | 0.5 | | reads replay schema ≤ 1; storage compatible with 0.4 |
+| Grafana app (plugin) | 0.9 | rum-api ≥ 0.4.0, Grafana ≥ 13.0.0 | the Funnels page and source-mapped stacks need rum-api ≥ 0.5.0 |
+| grafana image | 0.5 | rum-api ≥ 0.4.0 | Grafana 13.2.1 with the app 0.9.0 |
+| Helm chart | 0.1 | collector ≥ 0.3.0, rum-api ≥ 0.3.0 | Kubernetes ≥ 1.25; not published yet |
+
+The newest releases are collector 0.4.0, rum-api 0.5.0, grafana 0.5.0, `@ouo11y/browser` 0.3.0 and `@ouo11y/react-native` 0.2.1. The [one-file stack](/docs/start/quickstart/) was generated for those three images.
+
+## The order
+
+<Stages
+  caption="Server side first. An SDK one minor behind the collector is supported; an SDK ahead of it is not."
+  stages={[
+    { who: 'Back up', title: 'What cannot be rebuilt', body: 'Replays, Grafana\'s database, your secrets and projects.' },
+    { who: 'First', title: 'rum-api', body: 'Reads every older replay schema. Upgrading never rewrites stored chunks.', tone: 'accent' },
+    { who: 'Then', title: 'collector', tone: 'accent' },
+    { who: 'Then', title: 'grafana image', body: 'Carries the app; the new app needs the new rum-api.', tone: 'accent' },
+    { who: 'Last', title: 'SDKs', body: 'Ship them in your apps once the server side is up.', tone: 'ok' },
+  ]}
+/>
+
+Read the changelog of every version you skip, the **Breaking** and **Compatibility** headings first. A renamed environment variable is listed there and must change before you start the new version.
+
+## Docker Compose and the VM
+
+The one-file stack pins nothing by default: the ouo11y images are `:latest`. Pin them in `.env` so an upgrade is a choice:
+
+```ini
+OUO_COLLECTOR_VERSION=0.4.0
+OUO_RUM_API_VERSION=0.5.0
+OUO_GRAFANA_VERSION=0.5.0
+```
+
+<Steps>
+
+1. Note what runs now, to roll back to:
+
+   ```bash
+   docker compose images
+   ```
+
+2. Back up the replays and Grafana: stop the stack (`docker compose down`, or `sudo systemctl stop ouo11y` on the VM) and copy the volumes `<folder>_rum-api-data` and `<folder>_grafana-data`, or your bucket.
+
+3. If the release notes say the configs changed, download the new `compose.yaml` over the old one. Your `.env`, `projects.htpasswd` and override files stay as they are.
+
+   ```bash
+   curl -fsSLo compose.yaml https://ouo11y.com/downloads/quickstart.yaml
+   ```
+
+4. Raise the versions in `.env`, rum-api first if you go one at a time. Then pull and start:
+
+   ```bash
+   docker compose pull
+   ```
+
+   ```bash
+   docker compose up -d
+   ```
+
+   On the VM, `sudo systemctl restart ouo11y` does the same. Compose recreates only the containers whose image or configuration changed.
+
+5. Check: `curl -s localhost:8080/readyz` is `ready`, `docker compose logs grafana-plugin` names the new app version, and an **older** session with a replay still plays in Grafana.
+
+</Steps>
+
+The `grafana-plugin` service copies the app out of the new Grafana image onto Grafana's volume before Grafana starts, on every start. Without it, the volume would keep the app of the first install forever.
+
+## Helm
+
+```bash
+helm history ouo -n ouo
+```
+
+Raise the image tags in your values file, then:
+
+```bash
+helm upgrade ouo ./ouo -n ouo -f my-values.yaml --rollback-on-failure --timeout 10m
+```
+
+- `--rollback-on-failure` (Helm 4; `--atomic` in Helm 3) rolls back if a pod does not become ready.
+- Upgrade with your values file, not `--reuse-values`, which keeps the previous release's values and with them the previous image tags.
+- rum-api on the filesystem store and Grafana use the `Recreate` strategy (their volumes are ReadWriteOnce): a few seconds of downtime with one replica. rum-api on S3 rolls without downtime. The collector rolls, and retries replay chunks while rum-api restarts.
+- A bundled Loki, Tempo or Mimir pod that is crash-looping does not roll to the new revision by itself: delete the pod after the upgrade.
+- Grafana upgrades its database in place and cannot downgrade it across a Grafana major version: back up its volume before a major bump.
+
+## The replay schema guard
+
+Replay chunks carry a `schema_version` (today `1`). Each rum-api knows the newest schema it can read, and records it in the store's `replays/schema.json`. At start, a rum-api that finds a store opened by a rum-api that reads a **newer** schema refuses to run:
+
+```text
+rum-api exited error="replay store written by a newer replay schema: the store was last opened by
+rum-api 0.9.0, which reads replay schema_version up to 2; this rum-api 0.4.0 reads up to 1. …"
+```
+
+This makes rollbacks safe: an old binary never half-reads new data. A rollback on the **same** schema is allowed. A store without the marker (rum-api 0.3.0 and older) is adopted. Upgrading never rewrites stored chunks, and a newer rum-api reads older schemas.
+
+On Helm with `--rollback-on-failure`, a refused start rolls the release back by itself.
+
+## Roll back
+
+- **Compose:** set the previous versions in `.env` and `docker compose up -d`. Data is untouched by an upgrade, so this works unless the new release raised the replay schema (the guard above stops it).
+- **Helm:** `helm rollback ouo <revision> -n ouo`. Volumes stay across rollbacks.
+- **SDKs:** pin the previous version in your app and release it. Sessions recorded by the newer SDK stay readable.
+
+<Aside type="caution">
+Never roll back by deleting data. A rum-api that refuses to start on newer data is doing its job: move forward to the version that wrote it.
+</Aside>

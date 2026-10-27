@@ -1,0 +1,148 @@
+---
+title: Sessions and health
+description: What a session is, how it starts, rotates and ends on web and mobile, how the server ends it when the client cannot, and how it is classified healthy, errored or crashed.
+sidebar: { order: 1 }
+---
+
+import StateMachine from '../../../../components/diagrams/StateMachine.astro';
+import Timeline from '../../../../components/diagrams/Timeline.astro';
+
+A **session** is a bounded period of one user using one app instance on one device. It is identified by `session.id`, a UUID v4 the SDK makes on the device. Every span and log record of the session carries it, so the server can put them on one line. A session has exactly one [replay](/docs/concepts/replay/), keyed by the same id.
+
+## What every signal carries
+
+| Attribute | Where | Meaning |
+|---|---|---|
+| `session.id` | every span and log record | the session |
+| `session.previous_id` | the first signals of a session that replaced an expired one | links consecutive sessions |
+| `user.id` | every span and log record | set by your app, or an anonymous id kept on the device |
+| `ouo.user.anonymous` | every span and log record | `true` while `user.id` is the anonymous id |
+| `device.id` | resource, and on `session.start` / `session.end` | one browser profile (per origin) or one app install; survives rotation, login and logout |
+| `service.name`, `service.version` | resource | the app, and its version: the "app version" for health percentages |
+| `ouo.platform` | resource and every record | `web` or `mobile` |
+
+The session attributes are on each span and record, not on the resource, because a session can rotate while the page or process lives. `device.id` is random. It is never derived from the IP address or a fingerprint.
+
+## The lifecycle
+
+<StateMachine
+  caption="One session on the device. Click a state to see only its transitions. The server never waits for session.end."
+  states={[
+    { id: 'none', label: 'no session', tone: 'info' },
+    { id: 'active', label: 'active', sub: 'signals carry session.id', tone: 'ok' },
+    { id: 'idle', label: 'idle', sub: 'no activity yet', tone: 'warn' },
+    { id: 'bg', label: 'background', sub: 'mobile only', tone: 'warn' },
+    { id: 'ended', label: 'ended', sub: 'session.end + reason', tone: 'bad' },
+  ]}
+  transitions={[
+    { from: 'none', to: 'active', label: 'SDK starts, or the app comes back after a rotation', note: 'emits session.start' },
+    { from: 'active', to: 'idle', label: 'no click, key, touch, scroll, navigation or request' },
+    { from: 'idle', to: 'active', label: 'any activity within 30 min', note: 'same session, no event' },
+    { from: 'idle', to: 'ended', label: '30 min without activity', note: 'reason inactivity' },
+    { from: 'active', to: 'ended', label: 'older than 4 h', note: 'reason max_duration' },
+    { from: 'active', to: 'ended', label: 'another identified user, or logout', note: 'reason user_change' },
+    { from: 'active', to: 'ended', label: 'the app calls endSession()', note: 'reason manual' },
+    { from: 'active', to: 'bg', label: 'mobile app goes to the background' },
+    { from: 'bg', to: 'active', label: 'back within 30 s', note: 'same session' },
+    { from: 'bg', to: 'ended', label: 'back after more than 30 s', note: 'reason background' },
+    { from: 'active', to: 'ended', label: 'mobile fatal error', note: 'reason crash, on the next launch' },
+    { from: 'active', to: 'ended', label: 'mobile process killed without a crash', note: 'reason terminated, on the next launch' },
+    { from: 'ended', to: 'active', label: 'next activity, new session.id', note: 'session.previous_id = the old id' },
+  ]}
+/>
+
+**Activity** is a click, key press, touch, scroll, a navigation or route change, an outgoing HTTP request, or the app coming to the foreground. Each one moves the session's last-activity time, saved to storage at most once per second.
+
+### Start
+
+- **Web.** On init, the SDK reads the saved session from `localStorage` (key `ouo.session`). If it was active in the last 30 minutes and is younger than 4 hours, it is resumed, with no new event: a page reload stays in the same session. Otherwise the SDK emits `session.end` for the old one, then `session.start` for a new one with `session.previous_id` set. Tabs of one origin share the session through `localStorage`.
+- **Mobile.** Every cold start begins a new session with `session.start`. If the previous run left a session behind, the SDK first ends it with `crash` when it left a crash marker, and `terminated` otherwise.
+
+### End
+
+| `ouo.session.end_reason` | When | Platforms |
+|---|---|---|
+| `inactivity` | no activity for 30 minutes | web, mobile |
+| `max_duration` | the session is older than 4 hours | web, mobile |
+| `user_change` | another identified user logged in, or the user logged out | web |
+| `manual` | the app called `endSession()` | web |
+| `background` | the mobile app was in the background for more than 30 seconds | mobile |
+| `crash` | a fatal error; emitted on the next launch from the crash marker | mobile |
+| `terminated` | the process ended without a crash; emitted on the next launch | mobile |
+
+Going from anonymous to identified (a login during the visit) keeps the session and only sets `user.id`: the anonymous id was never a person.
+
+On the web, an uncaught error does **not** end the session. The user keeps using the page, and the session is counted as crashed (below).
+
+### The server does not need `session.end`
+
+Pages close and phones lose their network, so `session.end` is a courtesy. rum-api treats a session as **ended** once its last signal is older than the inactivity timeout, and as **active** otherwise. An inferred end has `ended_at` at the last signal and the reason `inactivity`. A session without any `session.end` is the normal case, not an error.
+
+All three timeouts are options: `INACTIVITY_TIMEOUT` (30 minutes), `MAX_DURATION` (4 hours) and the mobile `BACKGROUND_TIMEOUT` (30 seconds) are set in the SDK init options, and rum-api's `session.inactivity` and `session.max_duration` must match them. See [rum-api configuration](/docs/operate/rum-api/).
+
+## Health
+
+Each session has exactly one status. The worst thing that happened wins: crashed, then errored, then healthy.
+
+| Status | Rule |
+|---|---|
+| **crashed** | at least one `exception` event with `ouo.exception.fatal = true` |
+| **errored** | not crashed, and at least one `exception` with `ouo.exception.fatal = false`, or at least one `http.request.failed` |
+| **healthy** | neither |
+
+What counts as fatal:
+
+- **Web:** an uncaught exception (`window.onerror`) or an unhandled promise rejection. The page keeps running, but the session is crashed. This matches how Sentry counts browser sessions. `console.error` and errors you report yourself are not fatal.
+- **Mobile:** an error that reaches the global handler with `isFatal = true`, or a crash marker found on the next launch.
+
+`http.request.failed` is emitted for network failures and for responses with a status from 500 to 599. A `4xx` is not an error for session health.
+
+The Grafana app's Overview shows the share of each status for web and for mobile, split by `service.version`, over sessions that **started** in the selected time range. A bad release shows up as soon as its first sessions come in.
+
+## One session, end to end
+
+A web session in which a checkout fails with a `500`, and later an uncaught error crashes the session. Each row is one signal with the same `session.id`.
+
+<Timeline
+  duration={480}
+  caption="Status crashed: one fatal exception. Without it, the failed request alone would make it errored. The page closed after the exception, so no session.end arrived."
+  spans={[
+    { from: 4, to: 6, label: 'GET /api/products', tone: 'info' },
+    { from: 61, to: 64, label: 'POST /api/checkout', detail: '500', tone: 'bad' },
+    { from: 300, to: 303, label: 'POST /api/checkout', detail: 'retry, 200', tone: 'info' },
+  ]}
+  events={[
+    { at: 0, label: 'session.start', tone: 'ok' },
+    { at: 2, label: 'navigation', detail: '/products' },
+    { at: 9, label: 'web_vital', detail: 'LCP 1.8 s, good' },
+    { at: 64, label: 'http.request.failed', detail: '500 POST /api/checkout', tone: 'warn' },
+    { at: 420, label: 'exception', detail: 'fatal: uncaught TypeError', tone: 'bad' },
+  ]}
+/>
+
+rum-api folds these into one record, the same shape the Grafana app reads. Thirty minutes after the last signal, with no `session.end`, it marks the session ended at that last signal, with reason `inactivity`:
+
+```json
+{
+  "session_id": "6f1c…",
+  "user_id": "u-1",
+  "device_id": "d-9a…",
+  "platform": "web",
+  "service_name": "web-store",
+  "service_version": "1.4.2",
+  "started_at": "2026-10-27T10:00:00Z",
+  "last_signal_at": "2026-10-27T10:07:00Z",
+  "ended_at": "2026-10-27T10:07:00Z",
+  "end_reason": "inactivity",
+  "state": "ended",
+  "status": "crashed",
+  "error_count": 0,
+  "crash_count": 1,
+  "failed_request_count": 1,
+  "trace_count": 3,
+  "event_count": 5,
+  "has_replay": true
+}
+```
+
+[Run the stack](/docs/start/quickstart/#send-a-first-session) sends a session with `curl` and shows it come out **errored**.

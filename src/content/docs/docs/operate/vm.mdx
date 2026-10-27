@@ -1,0 +1,263 @@
+---
+title: Deploy on a single VM
+description: ouo11y on one Linux server with automatic TLS from Caddy, two hostnames, only ports 22, 80 and 443 open, and a systemd unit that brings it back after a reboot.
+sidebar: { order: 2 }
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+import Zones from '../../../../components/diagrams/Zones.astro';
+
+One Docker host, Caddy in front for TLS, the one-file stack behind it. Suitable for a pilot or a small production app. This page builds on [Deploy with Docker Compose](/docs/operate/compose/): do that page's steps on the server first, then add the three files here.
+
+<Zones
+  caption="Only Caddy listens on the network. The collector checks credentials itself; Caddy only terminates TLS and routes by path."
+  rows={[
+    { link: 'HTTPS :443', zones: [
+      { label: 'Internet', nodes: [
+        { title: 'Apps', sub: 'https://otel.ouo.example.com' },
+        { title: 'Your team', sub: 'https://ouo.example.com' },
+      ] },
+    ] },
+    { link: 'container network', zones: [
+      { label: 'VM, public', tone: 'accent', nodes: [
+        { title: 'caddy :80 :443', sub: 'Let\'s Encrypt, or its own CA', tone: 'accent' },
+      ] },
+    ] },
+    { zones: [
+      { label: 'VM, 127.0.0.1 only', zones: [
+        { label: 'otel.ouo.example.com', nodes: [
+          { title: 'collector :4319', sub: '/v1/replay/*' },
+          { title: 'collector :4320', sub: '/api/* (Sentry bridge)' },
+          { title: 'collector :4318', sub: 'everything else (OTLP)' },
+        ] },
+        { label: 'ouo.example.com', nodes: [ { title: 'grafana :3000' } ] },
+        { label: 'Internal', nodes: [ { title: 'rum-api · Loki · Tempo · Mimir' } ] },
+      ] },
+    ] },
+  ]}
+/>
+
+## What you need
+
+- A Linux VM with Docker Engine and the Compose plugin 2.24 or later. Tested on Ubuntu 24.04 (`apt install docker.io docker-compose-v2`).
+- 4 GB of RAM and 20 GB of disk to start; disk grows with your traffic up to the retention you set.
+- Two DNS names pointing at the VM: one for Grafana (`ouo.example.com`), one for the collector (`otel.ouo.example.com`).
+- Ports 22, 80 and 443 open. 80 is needed for Let's Encrypt.
+- Pull access to the ouo11y images ([early access](/docs/start/quickstart/#before-you-start)). Log in **with `sudo`**: systemd pulls as root and does not see a login made as your own user.
+
+## Install
+
+<Steps>
+
+1. Create the folder and follow [Run the stack](/docs/start/quickstart/#start-it) steps 2 and 3 in it (download `compose.yaml`, log in to the registry), then [Your own projects and secrets](/docs/operate/compose/#your-own-projects-and-secrets) steps 1 to 4. Do not start the stack yet.
+
+   ```bash
+   sudo mkdir -p /opt/ouo11y && sudo chown "$USER" /opt/ouo11y && cd /opt/ouo11y
+   ```
+
+2. Add the hostnames and the certificate source to `.env`. `OUO_TLS` is the email for your Let's Encrypt account, or `internal` for Caddy's own CA on a network without public DNS.
+
+   ```ini
+   OUO_DOMAIN=ouo.example.com
+   OUO_OTEL_DOMAIN=otel.ouo.example.com
+   OUO_TLS=you@example.com
+   OUO_ALLOWED_ORIGINS=https://shop.example.com
+   COMPOSE_FILE=compose.yaml:compose.override.yaml:compose.vm.yaml
+   ```
+
+   `COMPOSE_FILE` makes every `docker compose` command in this folder use all three files. Add `:compose.s3.yaml` if you keep replays in MinIO.
+
+3. Save this as `Caddyfile`:
+
+   ```text
+   {
+   	admin off
+   }
+
+   # Grafana: people log in here.
+   {$OUO_DOMAIN} {
+   	tls {$OUO_TLS:internal}
+   	encode zstd gzip
+   	reverse_proxy grafana:3000
+   }
+
+   # The collector: apps send here. Caddy only terminates TLS; the collector checks
+   # the project credential, answers CORS and rate-limits.
+   {$OUO_OTEL_DOMAIN} {
+   	tls {$OUO_TLS:internal}
+   	@replay path /v1/replay/*
+   	handle @replay {
+   		reverse_proxy otel-collector:4319
+   	}
+   	@sentry path /api/*
+   	handle @sentry {
+   		reverse_proxy otel-collector:4320
+   	}
+   	handle {
+   		reverse_proxy otel-collector:4318
+   	}
+   }
+   ```
+
+4. Save this as `compose.vm.yaml`:
+
+   ```yaml
+   # Server overrides: Caddy terminates TLS on 80/443 and is the only public port;
+   # every other port is bound to 127.0.0.1; containers come back after a reboot.
+   services:
+     caddy:
+       image: caddy:2.11.7
+       restart: unless-stopped
+       ports:
+         - "80:80"
+         - "443:443"
+         - "443:443/udp"
+       environment:
+         OUO_DOMAIN: ${OUO_DOMAIN:?set OUO_DOMAIN in .env}
+         OUO_OTEL_DOMAIN: ${OUO_OTEL_DOMAIN:?set OUO_OTEL_DOMAIN in .env}
+         OUO_TLS: ${OUO_TLS:-internal}
+       volumes:
+         - ./Caddyfile:/etc/caddy/Caddyfile:ro
+         - caddy-data:/data
+         - caddy-config:/config
+       depends_on: [grafana, otel-collector]
+
+     grafana:
+       restart: unless-stopped
+       ports: !override
+         - "127.0.0.1:${OUO_GRAFANA_PORT:-3000}:3000"
+       environment:
+         GF_SERVER_ROOT_URL: https://${OUO_DOMAIN}
+         GF_SECURITY_COOKIE_SECURE: "true"
+
+     otel-collector:
+       restart: unless-stopped
+       ports: !override
+         - "127.0.0.1:${OUO_OTLP_GRPC_PORT:-4317}:4317"
+         - "127.0.0.1:${OUO_OTLP_HTTP_PORT:-4318}:4318"
+         - "127.0.0.1:${OUO_REPLAY_PORT:-4319}:4319"
+         - "127.0.0.1:${OUO_SENTRY_PORT:-4320}:4320"
+         - "127.0.0.1:${OUO_COLLECTOR_HEALTH_PORT:-13133}:13133"
+       environment:
+         # Every request arrives from Caddy: rate-limit clients by the X-Forwarded-For hop it sets.
+         OUO_RATELIMIT_CLIENT_KEY: x_forwarded_for
+
+     rum-api:
+       restart: unless-stopped
+       environment:
+         GRAFANA_URL: https://${OUO_DOMAIN}
+     loki:
+       restart: unless-stopped
+     tempo:
+       restart: unless-stopped
+     mimir:
+       restart: unless-stopped
+
+   volumes:
+     caddy-data:
+     caddy-config:
+   ```
+
+   Caddy replaces any `X-Forwarded-For` a client sends, so the collector's per-client rate limit cannot be dodged by sending a fake one.
+
+5. Install the systemd unit, so the stack starts at boot and stops cleanly:
+
+   ```bash
+   printf '[Unit]\nDescription=ouo11y stack (docker compose)\nRequires=docker.service\nAfter=docker.service network-online.target\nWants=network-online.target\n\n[Service]\nType=oneshot\nRemainAfterExit=yes\nWorkingDirectory=/opt/ouo11y\nExecStart=/usr/bin/docker compose up -d --remove-orphans\nExecStop=/usr/bin/docker compose down\nTimeoutStartSec=0\n\n[Install]\nWantedBy=multi-user.target\n' | sudo tee /etc/systemd/system/ouo11y.service
+   ```
+
+6. Start it:
+
+   ```bash
+   sudo systemctl daemon-reload && sudo systemctl enable --now ouo11y
+   ```
+
+   `sudo systemctl status ouo11y` shows `active (exited)`: `docker compose up -d` succeeded. The first start pulls the images and takes a few minutes.
+
+</Steps>
+
+## Check it from outside
+
+From your laptop, the collector answers `401` without a credential, through Caddy and with a valid certificate:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -X POST https://otel.ouo.example.com/v1/traces
+```
+
+With the project credential, `200`:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -X POST https://otel.ouo.example.com/v1/traces -u "web-store:<token>" -H 'Content-Type: application/json' -d '{"resourceSpans":[]}'
+```
+
+Grafana is at `https://ouo.example.com`, as `admin` with the password in `.env`. Every other port is closed from outside:
+
+```bash
+nmap -p 3000,3100,3200,4318,4319,4320,8080,9009 ouo.example.com
+```
+
+They show `closed` or `filtered`.
+
+<Aside type="caution" title="Docker and the host firewall">
+Docker publishes ports with its own iptables rules, ahead of `ufw`. A port bound to `0.0.0.0` is reachable from the internet whatever `ufw` says. That is why `compose.vm.yaml` binds everything except Caddy to `127.0.0.1`. Keep it that way when you add services.
+</Aside>
+
+Then open 22, 80 and 443 in `ufw` as well, so the host's own services stay closed:
+
+```bash
+sudo ufw allow 22/tcp && sudo ufw allow 80/tcp && sudo ufw allow 443/tcp && sudo ufw allow 443/udp && sudo ufw enable
+```
+
+## Point an app at it
+
+```ts
+initRUM({
+  endpoint: "https://otel.ouo.example.com",   // replay goes to the same host, /v1/replay/chunks
+  projectId: "web-store",
+  projectToken: "pt_…",                       // the content of web-store.token
+  service: { name: "web-store", version: "1.4.2", environment: "production" },
+});
+```
+
+A backend with any OpenTelemetry SDK:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=https://otel.ouo.example.com
+```
+
+```bash
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic%20$(printf 'web-store:%s' "$(cat web-store.token)" | base64)"
+```
+
+## Without public DNS
+
+With `OUO_TLS=internal`, Caddy signs certificates with its own CA. Browsers warn until you trust its root, and SDKs refuse it the same way. Copy the root out of the container and install it where needed:
+
+```bash
+docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt ./ouo11y-root.crt
+```
+
+`curl --cacert ouo11y-root.crt …` then verifies. For a name that resolves to a private address without editing hosts files, use a wildcard DNS service such as `nip.io`: `OUO_DOMAIN=ouo.192-168-1-20.nip.io`.
+
+## Operate
+
+| Task | Command, in `/opt/ouo11y` |
+|---|---|
+| status | `docker compose ps` |
+| logs | `docker compose logs -f caddy otel-collector rum-api` |
+| apply a change to `.env` | `sudo systemctl restart ouo11y` |
+| add or rotate a project | edit `projects.htpasswd`, then `docker compose restart otel-collector` ([Project tokens](/docs/operate/tokens/)) |
+| upgrade | [Upgrading](/docs/operate/upgrade/#docker-compose-and-the-vm) |
+| stop, keep the data | `sudo systemctl stop ouo11y` |
+
+## Where the data lives
+
+| Data | Location |
+|---|---|
+| traces, events, metrics | volumes `ouo11y_tempo-data`, `ouo11y_loki-data`, `ouo11y_mimir-data` |
+| replays | volume `ouo11y_rum-api-data`, or your bucket |
+| Grafana users and dashboards | volume `ouo11y_grafana-data` |
+| certificates, the ACME account, the internal CA | volume `ouo11y_caddy-data`; losing it only means new certificates |
+| configuration and secrets | `/opt/ouo11y`: `.env`, `projects.htpasswd`, the compose files |
+
+Back up `/opt/ouo11y`, the replays and Grafana's volume. Disk grows with traffic up to your retention: watch `df -h /var/lib/docker`.

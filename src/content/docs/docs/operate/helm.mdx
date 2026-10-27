@@ -1,0 +1,299 @@
+---
+title: Deploy with Helm on Kubernetes
+description: The ouo Helm chart, what it installs, how traffic reaches it, the values a platform team sets, secrets without values files, external LGTM, S3 replays, and high availability.
+sidebar: { order: 3 }
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+import Zones from '../../../../components/diagrams/Zones.astro';
+
+<Aside type="caution" title="The chart is not published yet">
+The Helm chart `ouo` will be published at `oci://ghcr.io/ouo11y/charts/ouo`, private like the images until ouo11y reaches a stable version. During early access we send it with pull access: email [hello@ouo11y.com](mailto:hello@ouo11y.com). The commands below install it from the unpacked chart folder, `./ouo`. Everything on this page was checked by rendering and linting that chart with the values shown.
+</Aside>
+
+## What it installs
+
+The ouo11y collector (the only ingest), rum-api (ClusterIP only), Grafana with the ouo11y RUM app inside the image, and either a **bundled** single-binary Loki, Tempo and Mimir or **your own** LGTM stack.
+
+<Zones
+  caption="Release ouo in namespace ouo, bundled mode. Only the two Ingresses are reachable from outside the cluster."
+  rows={[
+    { link: 'HTTPS, Ingress controller', zones: [
+      { label: 'Outside', nodes: [
+        { title: 'Apps', sub: 'https://otel.example.com' },
+        { title: 'Your team', sub: 'https://grafana.example.com' },
+      ] },
+    ] },
+    { link: 'ClusterIP Services', zones: [
+      { label: 'Ingresses', tone: 'accent', nodes: [
+        { title: 'ouo-collector', sub: '/v1/replay → :4319, / → :4318', tone: 'accent' },
+        { title: 'ouo-grafana', sub: '→ :3000', tone: 'accent' },
+      ] },
+    ] },
+    { zones: [
+      { label: 'Namespace ouo', zones: [
+        { label: 'Deployments', nodes: [
+          { title: 'ouo-collector', sub: 'Secret: projects htpasswd' },
+          { title: 'ouo-rum-api', sub: 'PVC ouo-rum-api-replays, or S3' },
+          { title: 'ouo-grafana', sub: 'PVC ouo-grafana' },
+        ] },
+        { label: 'StatefulSets (bundled)', nodes: [
+          { title: 'ouo-loki' }, { title: 'ouo-tempo' }, { title: 'ouo-mimir' },
+        ] },
+        { label: 'Internal only', nodes: [
+          { title: 'ouo-collector-internal', sub: ':4317 gRPC · :13133 health · :8888 metrics' },
+        ] },
+      ] },
+    ] },
+  ]}
+/>
+
+| Requirement | |
+|---|---|
+| Kubernetes | 1.25 or later |
+| Helm | 3 or 4 |
+| An Ingress controller and certificates | for example ingress-nginx and cert-manager; or a `LoadBalancer` Service |
+| A default StorageClass | for the replay, Grafana and bundled LGTM volumes |
+| Pull access to `ghcr.io/ouo11y/*` | during early access |
+
+## Install
+
+<Steps>
+
+1. Create the namespace and the pull secret. The token is a classic GitHub token with only `read:packages`, from your shell.
+
+   ```bash
+   kubectl create namespace ouo
+   ```
+
+   ```bash
+   kubectl create secret docker-registry ghcr -n ouo --docker-server=ghcr.io --docker-username=<github-user> --docker-password="$GHCR_TOKEN"
+   ```
+
+2. Create the secrets, so no credential ever sits in a values file. First a project token; keep it, your apps need it:
+
+   ```bash
+   PT="pt_$(openssl rand -hex 16)" && echo "$PT" > web-store.token
+   ```
+
+   The project registry, one `{SHA}` line per project:
+
+   ```bash
+   kubectl -n ouo create secret generic ouo-projects --from-literal=projects.htpasswd="web-store:{SHA}$(printf '%s' "$PT" | openssl dgst -binary -sha1 | openssl base64)"
+   ```
+
+   rum-api's tokens, and the credential for rum-api's own telemetry (`otlp-headers`; without it, rum-api's telemetry is refused with `401`):
+
+   ```bash
+   kubectl -n ouo create secret generic ouo-rum-api-tokens --from-literal=ingest-token="it_$(openssl rand -hex 16)" --from-literal=read-token="rt_$(openssl rand -hex 16)" --from-literal=admin-token="at_$(openssl rand -hex 16)" --from-literal=otlp-headers="Authorization=Basic%20$(printf 'web-store:%s' "$PT" | base64)"
+   ```
+
+   Grafana's admin login:
+
+   ```bash
+   kubectl -n ouo create secret generic ouo-grafana-admin --from-literal=admin-user=admin --from-literal=admin-password="$(openssl rand -base64 18)"
+   ```
+
+3. Save your values as `my-values.yaml`. Pin the image versions here, so an upgrade never moves them by surprise:
+
+   ```yaml
+   # ouo11y on Kubernetes: bundled single-binary Loki, Tempo and Mimir.
+   imagePullSecrets:
+     - name: ghcr                      # while the ouo11y images are private
+   collector:
+     image: { tag: "0.4.0" }
+     existingProjectsSecret: ouo-projects
+     allowedOrigins:
+       - https://shop.example.com
+     ingress:
+       enabled: true
+       className: nginx
+       host: otel.example.com
+       annotations:
+         cert-manager.io/cluster-issuer: letsencrypt
+         nginx.ingress.kubernetes.io/proxy-body-size: 16m   # replay chunks are up to 8 MiB
+       tls: { enabled: true, secretName: ouo-collector-tls }
+   rumApi:
+     image: { tag: "0.5.0" }
+     existingSecret: ouo-rum-api-tokens
+   grafana:
+     image: { tag: "0.5.0" }
+     existingSecret: ouo-grafana-admin
+     ingress:
+       enabled: true
+       className: nginx
+       host: grafana.example.com
+       annotations:
+         cert-manager.io/cluster-issuer: letsencrypt
+       tls: { enabled: true, secretName: ouo-grafana-tls }
+   retention:
+     logs: 720h
+     traces: 336h
+     metrics: 2160h
+     replays: 720h
+   ```
+
+4. Install:
+
+   ```bash
+   helm install ouo ./ouo -n ouo -f my-values.yaml
+   ```
+
+   `helm install` prints the port-forward commands, the projects, the SDK snippet and the plugin URL.
+
+5. Watch the pods come up:
+
+   ```bash
+   kubectl -n ouo get pods
+   ```
+
+   Three Deployments and three StatefulSets, each `1/1 Running`. A pod in `ImagePullBackOff` with `403 Forbidden` in `kubectl describe pod` means the pull secret is missing or has no access.
+
+6. Check the edge from outside: `401` without a credential, `200` with one.
+
+   ```bash
+   curl -s -o /dev/null -w '%{http_code}\n' -X POST https://otel.example.com/v1/traces -H 'Content-Type: application/json' -d '{"resourceSpans":[]}'
+   ```
+
+   ```bash
+   curl -s -o /dev/null -w '%{http_code}\n' -X POST https://otel.example.com/v1/traces -u "web-store:$(cat web-store.token)" -H 'Content-Type: application/json' -d '{"resourceSpans":[]}'
+   ```
+
+   Then open `https://grafana.example.com/a/ouo11y-rum-app/overview`.
+
+</Steps>
+
+The chart refuses to render without a project source (`projects` or `collector.existingProjectsSecret`) and without a Grafana admin password: there is no auth-off mode.
+
+## Exposing the collector
+
+<Tabs>
+<TabItem label="Ingress">
+
+One host. `/v1/replay` goes to port 4319, everything else to 4318. The SDK's `endpoint` is `https://otel.example.com` and `replayEndpoint` stays unset. Raise the controller's body limit to at least 16 MiB for replay chunks, as in the values above.
+
+With the Ingress on, the per-client rate limit keys on the first `X-Forwarded-For` hop, because every request now comes from the controller. ingress-nginx overwrites that header by default (`use-forwarded-headers: false`); keep it that way, or clients can pick their own rate-limit key.
+
+</TabItem>
+<TabItem label="LoadBalancer">
+
+`collector.service.type: LoadBalancer` exposes 4318 and 4319 on the address your cloud hands out. The SDK guesses the replay port when the OTLP port is 4318. There is no TLS unless the load balancer terminates it.
+
+</TabItem>
+<TabItem label="Port-forward">
+
+For a laptop or CI:
+
+```bash
+kubectl -n ouo port-forward svc/ouo-collector 4318:4318 4319:4319
+```
+
+```bash
+kubectl -n ouo port-forward svc/ouo-grafana 3000:3000
+```
+
+</TabItem>
+</Tabs>
+
+The gRPC receiver (4317, with the same Basic credential), the health port and the self-metrics port are only on the ClusterIP Service `ouo-collector-internal`, never behind the Ingress. rum-api has no Ingress and no Service type option: it is always ClusterIP.
+
+## Your own LGTM stack
+
+Set `lgtm.mode: external` and nothing LGTM is deployed. The collector, rum-api and Grafana's data sources point at your Services:
+
+```yaml
+lgtm:
+  mode: external
+  external:
+    lokiUrl: http://loki-gateway.observability.svc:80
+    tempoUrl: http://tempo-query-frontend.observability.svc:3200
+    tempoOtlpGrpcEndpoint: tempo-distributor.observability.svc:4317
+    mimirUrl: http://mimir-nginx.observability.svc:80
+    # lokiOtlpUrl, mimirOtlpUrl, mimirPrometheusUrl: when write and read paths differ
+    # tenantId: ouo   # multi-tenant stacks: X-Scope-OrgID on exports and data sources
+```
+
+Your stack needs:
+
+- **Loki** with `allow_structured_metadata: true` and these resource attributes promoted to labels (`limits_config.otlp_config.resource_attributes`, `ignore_defaults: true`): `service.name`, `service.namespace`, `deployment.environment.name`, `ouo.platform`, `ouo.project.id`. Without `ignore_defaults`, Loki's default list promotes high-cardinality attributes from browsers.
+- **Tempo** with `stream_over_http_enabled: true` and an OTLP gRPC receiver.
+- **Mimir** with OTLP ingestion.
+- Retention set in your own charts: `retention` in this chart then only drives rum-api's replays.
+
+Already run Grafana? Set `grafana.enabled: false`, install the ouo11y RUM app in your Grafana 13 (it is unsigned: allow it with `GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=ouo11y-rum-app`), and provision it with `jsonData.rumApiUrl: http://ouo-rum-api.ouo.svc:8080` and `secureJsonData.readToken`.
+
+## Replays on S3
+
+```yaml
+rumApi:
+  replicas: 2                        # more than one needs S3 (or a ReadWriteMany volume)
+  storage:
+    backend: s3
+    s3:
+      bucket: ouo-replays            # must exist; rum-api never creates it
+      region: eu-west-1
+      prefix: prod                   # optional
+      # endpoint: minio.storage.svc:9000, forcePathStyle: true, insecure: true  for MinIO
+      existingSecret: ouo-rum-api-s3 # keys access-key-id, secret-access-key; omit for pod identity
+      lifecycleRules: true           # rum-api writes the bucket's expiration rules from retention.replays
+  serviceAccountName: ouo-rum-api    # IRSA or workload identity, instead of keys
+```
+
+On AWS leave `endpoint` empty. With the S3 store rum-api has no volume and rolls with a `RollingUpdate`; on the filesystem store it uses `Recreate`, a few seconds of downtime per upgrade.
+
+## Values a platform team sets
+
+| Key | Default | What it does |
+|---|---|---|
+| `projects` | `[]` | `{id, token}` list rendered into the htpasswd Secret; or `collector.existingProjectsSecret` |
+| `ingestToken`, `readToken`, `adminToken` | `""` | rum-api's secrets; or `rumApi.existingSecret` |
+| `collector.allowedOrigins` | `[]` (localhost only) | browser origins, for all projects; wildcards like `https://*.preview.example.com` work |
+| `collector.replicas` | `1` | rate-limit buckets are per pod: N replicas allow N times the limits |
+| `collector.rateLimit.project.{requestsPerSecond,burst}` | `1000`, `5000` | per project |
+| `collector.rateLimit.client.{requestsPerSecond,burst,keyFrom}` | `100`, `300`, auto | per client; `x_forwarded_for` automatically with the Ingress |
+| `collector.limits.{otlpMaxBodyBytes,replayMaxBodyBytes}` | 4 MiB, 8 MiB | body size per receiver |
+| `collector.memoryLimiter.{limitMib,spikeLimitMib}` | `512`, `128` | backpressure |
+| `collector.configOverride` | `""` | a whole collector config, replacing the generated one ([Customize](/docs/operate/customize/)) |
+| `rumApi.config.{sessionInactivity,sessionMaxDuration}` | `30m`, `4h` | must match the SDKs' session options |
+| `rumApi.structuredConfig` | `{}` | merged over rum-api's config file: any [rum-api key](/docs/operate/rum-api/) |
+| `rumApi.sampling` | `{}` | server-side replay sampling per project |
+| `rumApi.persistence.size` | `20Gi` | the replay volume |
+| `retention.{logs,traces,metrics,replays}` | `720h`, `336h`, `2160h`, `720h` | one entry for Loki, Tempo, Mimir (bundled) and rum-api |
+| `retention.projects.<id>.{logs,replays}` | | per project: a Loki `retention_stream` and rum-api's per-project retention |
+| `grafana.env`, `grafana.extraEnv` | | any `GF_*` setting: SSO, an external database, SMTP |
+| `lgtm.bundled.<loki,tempo,mimir>.persistence.size` | `20Gi` | |
+| `lgtm.bundled.<x>.configOverride` | `""` | a whole Loki, Tempo or Mimir config |
+| `imagePullSecrets` | `[]` | `[{name: ghcr}]` during early access |
+
+Every component also takes `resources`, `nodeSelector`, `tolerations`, `affinity`, security contexts and pod annotations.
+
+## Projects and tokens
+
+Every Deployment carries a checksum of its ConfigMaps and Secrets, so a change to a project, a token or the config rolls its pods. The collector reads the htpasswd once at start; the roll is what applies a change. See [Project tokens](/docs/operate/tokens/) for adding and rotating.
+
+## Uninstall
+
+```bash
+helm uninstall ouo -n ouo
+```
+
+Data stays on purpose: the replay and Grafana claims carry `helm.sh/resource-policy: keep`, and Helm never deletes StatefulSet claims. Reinstalling with the same release name reattaches them. To wipe them, list them first, then delete:
+
+```bash
+kubectl -n ouo get pvc -l app.kubernetes.io/instance=ouo
+```
+
+```bash
+kubectl -n ouo delete pvc -l app.kubernetes.io/instance=ouo
+```
+
+## High availability
+
+The bundled Loki, Tempo and Mimir are single replicas on local volumes: fine for small installs, not redundant. For redundancy:
+
+- run Loki, Tempo and Mimir from the upstream `grafana/loki`, `grafana/tempo-distributed` and `grafana/mimir-distributed` charts, replicated, on object storage, and this chart with `lgtm.mode: external`;
+- two or more collectors (`collector.replicas`) behind the Ingress, with pod anti-affinity, sized for one pod's share of the rate limits;
+- two or more rum-api replicas on an S3 bucket;
+- Grafana on an external database (`grafana.env`).
+
+The [Sentry bridge](/docs/operate/sentry-bridge/) is the exception: it must run as exactly one replica, in its own Deployment.

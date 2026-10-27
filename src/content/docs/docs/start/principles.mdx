@@ -1,0 +1,84 @@
+---
+title: Principles
+description: Six promises ouo11y is built by, and for each one what in the product keeps it. If we break one, it is a bug.
+sidebar: { order: 1 }
+---
+
+These six promises decide what we build and what we refuse to build. Each one comes with what in the product keeps it, so you can check us. If ouo11y breaks one, email [hello@ouo11y.com](mailto:hello@ouo11y.com) and we treat it as a bug.
+
+## 1. Open source
+
+**The promise.** You can read every line that touches your data, run it yourself, and change it.
+
+**How the product keeps it.**
+
+| Part | Licence |
+|---|---|
+| `@ouo11y/browser`, `@ouo11y/react-native`, the iOS SDK | Apache-2.0 |
+| The Grafana app (ouo11y RUM) | Apache-2.0 |
+| The deploy files: the compose stack, the VM files, the Helm chart | Apache-2.0 |
+| rum-api, the session and replay service | AGPL-3.0 |
+| The collector | upstream OpenTelemetry Collector components (Apache-2.0), plus five ouo11y components |
+
+What you embed in your apps and your cluster is Apache-2.0, so it needs no legal review. The server is AGPL-3.0, so nobody can resell it as a hosted service without sharing their changes.
+
+**Where it stands today.** The SDK packages on npm carry their source. The product repository is private during early access, and so are the container images. Everything on this site is written so that you never need the repository: every file you have to copy is on the page.
+
+## 2. OpenTelemetry compliant
+
+**The promise.** No proprietary wire format, no private agent. If you stop using ouo11y, your instrumentation keeps working against any OTLP backend.
+
+**How the product keeps it.**
+
+- Spans are OTLP spans, events are OTLP log records with an `event.name`, metrics are OTLP metrics. The SDKs are built on the OpenTelemetry JS SDK and send standard OTLP/HTTP (`/v1/traces`, `/v1/logs`).
+- The collector is an OpenTelemetry Collector, built with the OpenTelemetry Collector Builder from upstream components pinned to 0.160.0, plus a few of ours. Its configuration is ordinary collector YAML.
+- Storage is Loki, Tempo and Mimir, in their own formats. Query them with LogQL, TraceQL and PromQL in Grafana Explore, without ouo11y.
+- Attribute names follow the OpenTelemetry semantic conventions wherever one exists. See principle 6.
+
+The one thing that is not OTLP is session replay, because OpenTelemetry has no signal for it. Replay chunks are plain JSON over HTTP, through the same collector, keyed by the same `session.id`. See [Replay model](/docs/concepts/replay/).
+
+## 3. One unified, end-to-end view
+
+**The promise.** The user's tap, the request it sent, the backend spans it caused, the log lines along the way and the replay of what the user saw are on one timeline. One place to answer "what happened to this person?".
+
+**How the product keeps it.**
+
+- Every span and log record from the SDK carries `session.id` and `user.id`.
+- Outgoing `fetch` and XHR requests carry W3C `traceparent` and `baggage` with `session.id`, to the origins you list in `tracing.propagateTo`. Your backend's OpenTelemetry SDK continues the same trace, so the browser span is the root of the backend trace.
+- rum-api folds every signal with one `session.id` into one session record: status, errors, traces with links to Tempo, and the replay. The Grafana app shows them on one page.
+
+See [Architecture](/docs/concepts/architecture/) for one failed checkout, step by step.
+
+## 4. No vendor should tell you how to observe your system
+
+**The promise.** Your system, your rules. Every layer has defaults that work, and no knob is hidden.
+
+**How the product keeps it.**
+
+- The collector configuration is yours. Add a redaction processor, a sampler, a second exporter, or replace the file. In Helm, `collector.configOverride` takes a whole config.
+- rum-api reads a YAML file in the style of Loki and Tempo. Every key has an environment variable, and `-config.verify` prints the effective configuration.
+- Session timeouts, replay sampling and masking are SDK options. Retention is one setting per signal.
+- Bring your own Loki, Tempo, Mimir or Grafana: the Helm chart has an external mode, and the Grafana app runs in your own Grafana 13.0 or later.
+
+See [Customize](/docs/operate/customize/) for working snippets.
+
+## 5. We do not push you to use our SDK
+
+**The promise.** `@ouo11y/browser` and `@ouo11y/react-native` are shortcuts, not requirements.
+
+**How the product keeps it.**
+
+- ouo11y reads OpenTelemetry. An app instrumented with the plain OpenTelemetry JS SDK, `rrweb` and `web-vitals` gets the same sessions, traces and replays. The contract is published: [Bring your own OpenTelemetry](/docs/instrument/bring-your-own-otel/).
+- There is no ouo11y backend SDK, on purpose. Any OpenTelemetry SDK in any language joins the browser's traces.
+- Apps that already use the Sentry mobile SDKs can keep them: the collector's Sentry bridge forwards every envelope to Sentry unchanged and translates a copy into OpenTelemetry. See [Sentry bridge](/docs/operate/sentry-bridge/).
+- The quickstart series builds the same shop twice, with our SDK and without it: [Tiny Shop](/docs/quickstarts/1-tiny-shop/) and [Tiny Shop with plain OpenTelemetry](/docs/quickstarts/2-tiny-shop-otel/).
+
+## 6. `ouo.*` names give way to OpenTelemetry
+
+**The promise.** Where OpenTelemetry has no convention yet, we use a name prefixed `ouo.`. Each one is a placeholder. When OpenTelemetry defines it, we move to the OpenTelemetry name.
+
+**How the product keeps it.**
+
+- Before a new `ouo.` name, we look for an OpenTelemetry convention, stable or in development, and use it if it fits.
+- When OpenTelemetry defines one, we emit both names for a migration window, the Grafana app reads both, and the change is in the changelog and in [Announcements](/announcements/).
+- The full list of every `ouo.` name in use, with its OpenTelemetry status, is public: [Semantic conventions and `ouo.*`](/docs/concepts/semantic-conventions/).
