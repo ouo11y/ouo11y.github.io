@@ -1,0 +1,212 @@
+---
+title: Your backend
+description: Any service with an OpenTelemetry SDK joins the browser's traces. Node, Go and any other language, baggage to span attributes, and CORS.
+sidebar: { order: 5 }
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import Sequence from '../../../../components/diagrams/Sequence.astro';
+import QuickstartFile from '../../../../components/QuickstartFile.astro';
+
+There is no ouo11y backend SDK, and there will not be one. Instrument your services with the OpenTelemetry SDK for their language and export OTLP to the same collector as the browser. Three things join the backend to the user's session:
+
+1. **W3C Trace Context.** The browser's fetch span sends `traceparent` to the URLs you allow (`tracing.propagateTo` in [our SDK](/docs/instrument/ouo-sdk/), `propagateTraceHeaderCorsUrls` in [plain OpenTelemetry](/docs/instrument/bring-your-own-otel/)). Your server span becomes its child, so one trace runs from the click to the database.
+2. **Baggage.** The browser sends `session.id`, `user.id` and `ouo.platform` in the `baggage` header. A span processor copies them onto your spans, so you can search backend traces by session.
+3. **CORS**, for an API on another origin: the preflight must allow `traceparent` and `baggage`, or the browser drops them.
+
+<Sequence
+  caption="The server extracts traceparent and baggage before it starts its span; the baggage processor copies session.id onto it and onto every child."
+  actors={['Browser', 'Your API', 'Collector', 'Tempo']}
+  steps={[
+    { from: 0, to: 1, label: 'GET /api/products', note: 'traceparent + baggage' },
+    { from: 1, to: 1, label: 'extract context', note: 'TraceContext + Baggage propagators' },
+    { from: 1, to: 1, label: 'server span', note: 'parent = browser fetch span; session.id from baggage' },
+    { from: 1, to: 2, label: 'spans', note: 'OTLP + project credential' },
+    { from: 2, to: 3, label: 'one trace', note: 'searchable by span.session.id', tone: 'ok' },
+  ]}
+/>
+
+What arrives at your server looks like this:
+
+```
+traceparent: 00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01
+baggage: session.id=a4d47dfa-…,user.id=3c63803d-…,ouo.platform=web
+```
+
+## The credential
+
+Backend exporters authenticate like the browser, with the project credential as HTTP Basic. Build the header value once:
+
+```bash
+printf '%s' 'demo:pt_dev_demo_0000000000000000' | base64
+```
+
+That prints `ZGVtbzpwdF9kZXZfZGVtb18wMDAwMDAwMDAwMDAwMDAw` for the local stack's `demo` project. Without the header the collector answers `401` and your exporter logs an export error. Server-side requests carry no `Origin`, so CORS does not apply to them; the project's rate and size limits do.
+
+## Node
+
+From [Quickstart 2](/docs/quickstarts/2-tiny-shop-otel/), OpenTelemetry JS 3.0 with Express. Install:
+
+```bash
+npm install @opentelemetry/api @opentelemetry/sdk-node @opentelemetry/sdk-trace @opentelemetry/resources @opentelemetry/semantic-conventions @opentelemetry/exporter-trace-otlp-http @opentelemetry/instrumentation-http @opentelemetry/instrumentation-express @opentelemetry/baggage-span-processor
+```
+
+Then this file, loaded before your app so the instrumentations can patch `http` and `express` first:
+
+<QuickstartFile qs="tiny-shop-otel" path="result/backend/instrumentation.js" title="instrumentation.js" />
+
+```bash
+node --require ./instrumentation.js server.js
+```
+
+The terminal prints `[otel] tracing to http://localhost:4318/v1/traces`. `BaggageSpanProcessor(ALLOW_ALL_BAGGAGE_KEYS)` copies every baggage member onto every span; pass a predicate such as `(key) => ["session.id", "user.id", "ouo.platform"].includes(key)` to copy only ours.
+
+## Go
+
+With the OpenTelemetry Go SDK and `otelhttp`. Install:
+
+```bash
+go get go.opentelemetry.io/otel go.opentelemetry.io/otel/sdk go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp
+```
+
+The exporter reads its endpoint and headers from the environment:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+```
+
+```bash
+export OTEL_EXPORTER_OTLP_HEADERS=Authorization=Basic%20ZGVtbzpwdF9kZXZfZGVtb18wMDAwMDAwMDAwMDAwMDAw
+```
+
+```bash
+export OTEL_SERVICE_NAME=orders-api
+```
+
+The OTLP spec says header values are URL-encoded, hence `%20` for the space.
+
+The span processor that copies baggage onto spans is short enough to own. (The contrib module `go.opentelemetry.io/contrib/processors/baggagecopy` does the same, if you prefer a dependency.)
+
+```go
+// internal/telemetry/baggage.go
+package telemetry
+
+import (
+	"context"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/baggage"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+)
+
+// BaggageKeys are the members the ouo11y browser and mobile SDKs propagate.
+var BaggageKeys = []string{"session.id", "user.id", "ouo.platform"}
+
+// BaggageSpanProcessor copies those baggage members onto every span as attributes.
+type BaggageSpanProcessor struct{}
+
+var _ sdktrace.SpanProcessor = BaggageSpanProcessor{}
+
+func (BaggageSpanProcessor) OnStart(ctx context.Context, span sdktrace.ReadWriteSpan) {
+	bag := baggage.FromContext(ctx)
+	for _, k := range BaggageKeys {
+		if v := bag.Member(k).Value(); v != "" {
+			span.SetAttributes(attribute.String(k, v))
+		}
+	}
+}
+
+func (BaggageSpanProcessor) OnEnd(sdktrace.ReadOnlySpan)       {}
+func (BaggageSpanProcessor) Shutdown(context.Context) error   { return nil }
+func (BaggageSpanProcessor) ForceFlush(context.Context) error { return nil }
+```
+
+And the setup, called first in `main`:
+
+```go
+// internal/telemetry/telemetry.go
+package telemetry
+
+import (
+	"context"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+)
+
+func Setup(ctx context.Context) (shutdown func(context.Context) error, err error) {
+	// TraceContext joins the browser's trace; Baggage carries session.id.
+	// Set it before building the handler: otelhttp reads the global propagator when it is created.
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+		propagation.TraceContext{},
+		propagation.Baggage{},
+	))
+
+	exp, err := otlptracehttp.New(ctx) // OTEL_EXPORTER_OTLP_ENDPOINT and _HEADERS
+	if err != nil {
+		return nil, err
+	}
+	res, _ := resource.New(ctx, resource.WithFromEnv()) // OTEL_SERVICE_NAME, OTEL_RESOURCE_ATTRIBUTES
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithResource(res),
+		sdktrace.WithSpanProcessor(BaggageSpanProcessor{}),
+		sdktrace.WithBatcher(exp),
+	)
+	otel.SetTracerProvider(tp)
+	return tp.Shutdown, nil
+}
+```
+
+Wrap your handler, with CORS outside so the preflight is answered before a span opens:
+
+```go
+handler := CORS(otelhttp.NewHandler(mux, "orders-api"))
+```
+
+Call `shutdown` with a timeout on exit, or the spans of the last requests are lost. Do not call `otel.SetTextMapPropagator` again elsewhere with only `TraceContext{}`: that drops baggage, and your spans lose `session.id`.
+
+<Aside type="caution" title="A malformed baggage header is dropped silently">
+The Go propagator drops the whole `baggage` header when it cannot parse it: no error, no attributes. If `session.id` is missing in Tempo, look at the raw header first.
+</Aside>
+
+## Any other language
+
+Every OpenTelemetry SDK reads the same environment variables:
+
+| Variable | Value |
+|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | the collector's OTLP/HTTP base, `http://localhost:4318` locally |
+| `OTEL_EXPORTER_OTLP_HEADERS` | `Authorization=Basic%20<base64 of "<project id>:<project token>">` |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `http/protobuf` |
+| `OTEL_SERVICE_NAME` | your service name, for example `orders-api` |
+| `OTEL_RESOURCE_ATTRIBUTES` | `deployment.environment.name=production,service.version=1.4.2` |
+| `OTEL_PROPAGATORS` | `tracecontext,baggage` (the default in most SDKs) |
+
+Then add a baggage span processor. Java, .NET and Python have one in their contrib packages; in any other language it is the short `OnStart` hook shown for Go: read the baggage from the span's parent context, set `session.id`, `user.id` and `ouo.platform` as attributes.
+
+Use span attributes, not resource attributes: a resource describes the process, and one process serves many sessions.
+
+## CORS
+
+Browsers strip any non-safelisted request header the preflight did not allow. If your `Access-Control-Allow-Headers` lists only `content-type`, the `traceparent` and `baggage` headers never reach you and the traces are not joined, while the request itself still succeeds. Allow them:
+
+```
+Access-Control-Allow-Headers: content-type, traceparent, tracestate, baggage
+```
+
+- **Express**: `app.use(cors())` from the `cors` package answers every preflight with the headers the browser asked for, which includes these. With an explicit list, add them: `cors({ origin: "https://shop.example.com", allowedHeaders: ["content-type", "traceparent", "tracestate", "baggage"] })`.
+- **Go**: in your CORS middleware, `w.Header().Set("Access-Control-Allow-Headers", "content-type, traceparent, tracestate, baggage")`, and answer `OPTIONS` with `204` before the request reaches `otelhttp`.
+- **Anything else**: the same header list, in your framework's CORS settings or your gateway's.
+
+Same-origin APIs need nothing: no preflight happens.
+
+## Check it
+
+1. Click through your app so it calls the API.
+2. In Grafana, **Explore**, pick Tempo and run `{ resource.service.name = "orders-api" }` (your service name). The root of each trace is the browser's span; your server span is its child.
+3. Run `{ span.session.id = "<a session id>" }` with an id from the ouo11y app: the browser's spans and yours come back together.
+
+If the server span is a root of its own, `traceparent` did not arrive: check `propagateTo` and CORS. If it is a child but has no `session.id`, `baggage` did not arrive or no baggage processor is registered.

@@ -1,0 +1,99 @@
+---
+// 100 sessions as a grid of dots, coloured by what the three sampling rates do to them.
+// Sliders change the rates (a little JS); without JS the grid shows the rates given as props.
+// <SamplingGrid session={1} replay={0.2} onError={0.5} />
+import '../../styles/diagram.css';
+
+interface Props { session?: number; replay?: number; onError?: number; caption?: string; }
+const { session = 1, replay = 0.2, onError = 0.5, caption } = Astro.props;
+
+// Two independent pseudo-random numbers per dot, fixed so the picture is stable between renders.
+// They stand in for the SDK's hash of the session id under different salts.
+const rand = (i: number, salt: number) => {
+  let h = (i + 1) * 2654435761 + salt * 40503;
+  h = Math.imul(h ^ (h >>> 16), 0x85ebca6b);
+  h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+};
+const dots = Array.from({ length: 100 }, (_, i) => [rand(i, 1), rand(i, 2), rand(i, 3)]);
+const kind = ([a, b, c]: number[], s: number, r: number, e: number) =>
+  a >= s ? 'off' : b < r ? 'full' : c < e ? 'onerror' : 'none';
+const legend = [
+  { k: 'full', label: 'full replay', note: 'recorded from the start' },
+  { k: 'onerror', label: 'replay on error', note: 'buffered in memory, uploaded from the first error' },
+  { k: 'none', label: 'no replay', note: 'spans and events only' },
+  { k: 'off', label: 'not sent', note: 'nothing leaves the browser' },
+];
+const count = (k: string) => dots.filter((d) => kind(d, session, replay, onError) === k).length;
+---
+<figure class="dg sgrid not-content" data-sgrid role="group" aria-label={caption}>
+  <div class="body">
+    <div class="dots" aria-hidden="true">
+      {dots.map((d) => (
+        <i class={`dot k-${kind(d, session, replay, onError)}`} data-r={d.join(',')} />
+      ))}
+    </div>
+    <div class="side">
+      <label><code>session.sampleRate</code> <output data-out="s">{session}</output>
+        <input type="range" min="0" max="1" step="0.05" value={session} data-in="s" /></label>
+      <label><code>replay.sampleRate</code> <output data-out="r">{replay}</output>
+        <input type="range" min="0" max="1" step="0.05" value={replay} data-in="r" /></label>
+      <label><code>replay.onErrorSampleRate</code> <output data-out="e">{onError}</output>
+        <input type="range" min="0" max="1" step="0.05" value={onError} data-in="e" /></label>
+      <ul class="legend">
+        {legend.map((l) => (
+          <li><i class={`dot k-${l.k}`} /><b data-count={l.k}>{count(l.k)}</b> {l.label} <small>{l.note}</small></li>
+        ))}
+      </ul>
+    </div>
+  </div>
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+  for (const fig of document.querySelectorAll<HTMLElement>('[data-sgrid]')) {
+    const inputs = Object.fromEntries([...fig.querySelectorAll<HTMLInputElement>('[data-in]')].map((el) => [el.dataset.in, el]));
+    const dots = [...fig.querySelectorAll<HTMLElement>('.dots .dot')];
+    const update = () => {
+      const s = +inputs.s.value, r = +inputs.r.value, e = +inputs.e.value;
+      const counts: Record<string, number> = { full: 0, onerror: 0, none: 0, off: 0 };
+      for (const d of dots) {
+        const [a, b, c] = (d.dataset.r ?? '').split(',').map(Number);
+        const k = a >= s ? 'off' : b < r ? 'full' : c < e ? 'onerror' : 'none';
+        counts[k]++;
+        d.className = `dot k-${k}`;
+      }
+      for (const [k, n] of Object.entries(counts)) {
+        const el = fig.querySelector(`[data-count="${k}"]`);
+        if (el) el.textContent = String(n);
+      }
+      for (const key of ['s', 'r', 'e']) {
+        const out = fig.querySelector(`[data-out="${key}"]`);
+        if (out) out.textContent = inputs[key].value;
+      }
+    };
+    for (const el of Object.values(inputs)) el.addEventListener('input', update);
+  }
+</script>
+
+<style>
+  .body { display: grid; grid-template-columns: minmax(0, 240px) minmax(0, 1fr); gap: 24px; align-items: center; }
+  .dots { display: grid; grid-template-columns: repeat(10, 1fr); gap: 6px; max-width: 240px; }
+  .dot { display: inline-block; width: 100%; aspect-ratio: 1; border-radius: 50%; border: 1.5px solid var(--c); background: var(--f); transition: background .2s, border-color .2s; }
+  .legend .dot { width: 14px; flex: 0 0 14px; }
+  .k-full { --c: var(--dg-accent); --f: var(--dg-accent); }
+  .k-onerror { --c: var(--dg-warn); --f: color-mix(in srgb, var(--dg-warn) 35%, transparent); }
+  .k-none { --c: var(--dg-ink-3); --f: transparent; }
+  .k-off { --c: color-mix(in srgb, var(--dg-line) 80%, transparent); --f: var(--dg-line); }
+  .side { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+  .side label { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; font-size: 13px; }
+  .side label code { overflow-wrap: anywhere; }
+  .side input { grid-column: 1 / -1; width: 100%; accent-color: var(--dg-accent); }
+  .side output { font-variant-numeric: tabular-nums; font-weight: 700; }
+  .legend { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+  .legend li { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+  .legend li b { font-variant-numeric: tabular-nums; min-width: 2ch; text-align: right; }
+  .legend small { color: var(--dg-ink-3); flex-basis: 100%; padding-left: 40px; }
+  .sgrid { container-type: inline-size; }
+  @container (max-width: 520px) { .body { grid-template-columns: minmax(0, 1fr); } .dots { margin: 0 auto; width: 100%; } }
+</style>

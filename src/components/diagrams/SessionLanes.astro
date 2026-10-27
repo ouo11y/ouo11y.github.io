@@ -1,0 +1,66 @@
+---
+// Sessions as bars on lanes: how one visit becomes one or more sessions, and why each one ended.
+// One lane per scenario (or per tab); each segment is a session, its `end` the end reason.
+// <SessionLanes duration={60} lanes={[{ label: 'Inactivity', segments: [{ from: 0, to: 20, label: 'session A', end: 'inactivity' }] }]} />
+import '../../styles/diagram.css';
+
+type Tone = 'accent' | 'ok' | 'warn' | 'bad' | 'info';
+interface Segment { from: number; to: number; label: string; sub?: string; end?: string; tone?: Tone; idle?: boolean; }
+interface Mark { at: number; label: string; tone?: Tone; }
+interface Lane { label: string; note?: string; segments: Segment[]; marks?: Mark[]; }
+interface Props { duration: number; lanes: Lane[]; caption?: string; }
+const { duration, lanes, caption } = Astro.props;
+const pct = (t: number) => (t / duration) * 100;
+---
+<figure class="dg lanes not-content" role="group" aria-label={caption}>
+  {lanes.map((lane) => (
+    <div class="lane">
+      <div class="lane-head">
+        <b>{lane.label}</b>
+        {lane.note && <small>{lane.note}</small>}
+      </div>
+      <div class="track">
+        {lane.segments.map((s) => (
+          <div
+            class:list={['seg', `tone-${s.tone ?? 'accent'}`, { idle: s.idle, 'end-in': pct(s.to) > 80 }]}
+            style={`left:${pct(s.from)}%;width:${pct(s.to) - pct(s.from)}%`}
+            title={s.end ? `${s.label}: ends with ${s.end}` : s.label}
+          >
+            <span class="seg-label">{s.label}{s.sub && <small> {s.sub}</small>}</span>
+            {s.end && <span class="end">{s.end}</span>}
+          </div>
+        ))}
+        {lane.marks?.map((m) => (
+          <span class:list={['mark', `tone-${m.tone ?? 'warn'}`]} style={`left:${pct(m.at)}%`}>
+            <span>{m.label}</span>
+          </span>
+        ))}
+      </div>
+    </div>
+  ))}
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<style>
+  .lane { display: grid; grid-template-columns: minmax(0, 150px) minmax(0, 1fr); gap: 14px; align-items: center; padding: 10px 0; border-bottom: 1px solid color-mix(in srgb, var(--dg-line) 60%, transparent); }
+  .lane:last-of-type { border-bottom: none; }
+  .lane-head { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .lane-head b { font-size: 13px; }
+  .lane-head small { font-size: 12px; color: var(--dg-ink-3); }
+  .track { position: relative; height: 58px; }
+  .seg { position: absolute; top: 6px; height: 26px; border-radius: 6px; border: 1.5px solid var(--tone); background: color-mix(in srgb, var(--tone) 16%, var(--dg-node)); display: flex; align-items: center; padding: 0 6px; min-width: 0; }
+  .seg.idle { border-style: dashed; background: repeating-linear-gradient(135deg, transparent 0 6px, color-mix(in srgb, var(--tone) 10%, transparent) 6px 12px); }
+  .seg-label { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .seg-label small { font-weight: 400; color: var(--dg-ink-3); }
+  .end { position: absolute; right: -1px; top: 30px; transform: translateX(50%); font-family: var(--sl-font-mono, ui-monospace, monospace); font-size: 11px; color: var(--tone); white-space: nowrap; }
+  .end::before { content: ""; position: absolute; left: 50%; top: -6px; height: 6px; border-left: 1.5px solid var(--tone); }
+  .seg.end-in .end { transform: none; right: 0; }
+  .seg.end-in .end::before { left: auto; right: 0; }
+  .mark { position: absolute; top: 0; bottom: 18px; border-left: 2px dotted var(--tone); }
+  .mark span { position: absolute; bottom: -18px; left: 0; transform: translateX(-50%); font-size: 11px; color: var(--tone); white-space: nowrap; }
+  .lanes { container-type: inline-size; }
+  @container (max-width: 560px) {
+    .lane { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+    .lane-head { flex-direction: row; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+  }
+</style>
