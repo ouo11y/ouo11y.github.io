@@ -1,0 +1,355 @@
+---
+title: The plain shop
+description: An Express API and a five-page React shop, both working with no telemetry at all.
+sidebar: { order: 1, label: 1. The plain shop }
+---
+
+import { Aside, FileTree } from '@astrojs/starlight/components';
+import QuickstartFile from '../../../../../components/QuickstartFile.astro';
+
+A funnel needs pages and actions to count. This page builds both with no telemetry: a plain API with three products and a checkout, and a shop with five pages. You add ouo11y on the [Instrument](/docs/quickstarts/3-funnels/instrument/) page.
+
+Every command has its own block: run them one by one, in order. When a step says "replace the file", select everything in it and paste the new content over it.
+
+## Check your tools
+
+Node 24 or newer:
+
+```bash
+node -v
+```
+
+Docker Desktop running. This prints the server details, not "Cannot connect":
+
+```bash
+docker info
+```
+
+A clone of the ouo11y repository. The [stack](/docs/quickstarts/3-funnels/stack/) page builds rum-api and Grafana from it, because funnels are newer than the `0.4.0` images this guide was verified with. The SDK and the collector are the released ones.
+
+```bash
+git clone https://github.com/ouo11y/ouo11y.git ~/ouo11y
+```
+
+<Aside type="caution">
+The ouo11y repository is private for now, so this clone fails without read access. You can still build the shop on this page; email [hello@ouo11y.com](mailto:hello@ouo11y.com) for access before the stack page.
+</Aside>
+
+## Create the folders
+
+```bash
+mkdir -p ~/Desktop/tiny-shop-funnels/backend ~/Desktop/tiny-shop-funnels/frontend/src ~/Desktop/tiny-shop-funnels/stack ~/Desktop/tiny-shop-funnels/generate-sessions
+```
+
+```bash
+cd ~/Desktop/tiny-shop-funnels
+```
+
+You will use four terminal tabs: the API, the shop, the stack, the generator. At the end of the quickstart the folder looks like this:
+
+<FileTree>
+- tiny-shop-funnels/
+  - backend/ the API, terminal 1
+    - instrumentation.js
+    - package.json
+    - server.js
+  - frontend/ the shop, terminal 2
+    - index.html
+    - package.json
+    - vite.config.js
+    - src/
+      - App.jsx
+      - main.jsx
+      - rum.js
+  - stack/ the ouo11y stack, terminal 3
+    - compose.yaml
+    - 10-collector/
+    - 20-tempo/
+    - 30-loki/
+    - 50-rum-api/
+    - 60-grafana/
+  - generate-sessions/ the 50 shoppers, terminal 4
+    - generate.mjs
+    - package.json
+</FileTree>
+
+## A plain API
+
+In the first terminal:
+
+```bash
+cd ~/Desktop/tiny-shop-funnels/backend
+```
+
+Create `backend/package.json`:
+
+```json title="backend/package.json"
+{
+  "name": "tiny-shop-funnels-backend",
+  "private": true,
+  "version": "1.0.0",
+  "description": "ouo quickstart: Express API with OpenTelemetry traces",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "cors": "^2.8.6",
+    "express": "^5.3.0"
+  }
+}
+```
+
+Three products, and a checkout that declines card `...0002` and returns the order total. `0002` is a common test card, so you will know which checkouts fail. Create `backend/server.js`:
+
+```js title="backend/server.js"
+const express = require("express");
+const cors = require("cors");
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const products = [
+  { id: 1, name: "Coffee", price: 4, blurb: "Single origin, roasted on Tuesdays." },
+  { id: 2, name: "Tea", price: 3, blurb: "Loose leaf green tea." },
+  { id: 3, name: "Cake", price: 6, blurb: "Lemon drizzle, one slice." },
+];
+
+app.get("/api/products", async (req, res) => {
+  await sleep(50 + Math.random() * 100);
+  res.json(products);
+});
+
+app.post("/api/checkout", async (req, res) => {
+  const items = req.body.items || [];
+  await sleep(120);
+  if (String(req.body.cardLast4 || "") === "0002") return res.status(500).json({ error: "card declined" });
+  const total = items.reduce((sum, id) => sum + (products.find((p) => p.id === id)?.price || 0), 0);
+  res.json({ ok: true, orderId: Math.floor(Math.random() * 100000), total });
+});
+
+const port = Number(process.env.PORT || 5001);
+app.listen(port, () => console.log(`tiny-shop-funnels API on http://localhost:${port}`));
+```
+
+```bash
+npm install
+```
+
+```bash
+npm start
+```
+
+**Check**, in another terminal:
+
+```bash
+curl localhost:5001/api/products
+```
+
+It prints the three products: Coffee, Tea and Cake. Leave the API running.
+
+## A five-page shop
+
+The shop has five pages, switched with `history.pushState` and no router library: `/`, `/products/<id>`, `/cart`, `/checkout`, `/orders/<id>`. Each one becomes a possible funnel step later.
+
+In the second terminal:
+
+```bash
+cd ~/Desktop/tiny-shop-funnels/frontend
+```
+
+Create `frontend/package.json`:
+
+```json title="frontend/package.json"
+{
+  "name": "tiny-shop-funnels-frontend",
+  "private": true,
+  "version": "1.0.0",
+  "description": "ouo quickstart: React shop whose pages and custom events make a funnel",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.1.2",
+    "vite": "^8.3.4"
+  }
+}
+```
+
+Create `frontend/vite.config.js` and `frontend/index.html`:
+
+<QuickstartFile qs="tiny-shop-funnels" path="result/frontend/vite.config.js" title="frontend/vite.config.js" />
+
+<QuickstartFile qs="tiny-shop-funnels" path="result/frontend/index.html" title="frontend/index.html" />
+
+Create `frontend/src/main.jsx`:
+
+```jsx title="frontend/src/main.jsx"
+import { StrictMode } from "react";
+import { createRoot } from "react-dom/client";
+import App from "./App.jsx";
+
+createRoot(document.getElementById("root")).render(
+  <StrictMode>
+    <App />
+  </StrictMode>,
+);
+```
+
+Create `frontend/src/App.jsx`. `usePath` keeps the current path in state and `go` pushes a new one; each page renders when its path matches.
+
+<details>
+<summary><code>frontend/src/App.jsx</code>, plain (click to open)</summary>
+
+```jsx title="frontend/src/App.jsx"
+import { useEffect, useState } from "react";
+
+const API = "http://localhost:5001";
+
+function usePath() {
+  const [path, setPath] = useState(location.pathname);
+  useEffect(() => {
+    const onPop = () => setPath(location.pathname);
+    addEventListener("popstate", onPop);
+    return () => removeEventListener("popstate", onPop);
+  }, []);
+  const go = (to) => {
+    history.pushState(null, "", to);
+    setPath(to);
+  };
+  return [path, go];
+}
+
+function Link({ to, go, children, ...rest }) {
+  return (
+    <a
+      href={to}
+      onClick={(e) => {
+        e.preventDefault();
+        go(to);
+      }}
+      {...rest}
+    >
+      {children}
+    </a>
+  );
+}
+
+export default function App() {
+  const [path, go] = usePath();
+  const [products, setProducts] = useState([]);
+  const [cart, setCart] = useState([]);
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    fetch(`${API}/api/products`).then((r) => r.json()).then(setProducts);
+  }, []);
+
+  function addToCart(p) {
+    setCart([...cart, p]);
+  }
+
+  async function pay(e) {
+    e.preventDefault();
+    const card = new FormData(e.target).get("card") || "";
+    const res = await fetch(`${API}/api/checkout`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ items: cart.map((p) => p.id), cardLast4: card.slice(-4) }),
+    });
+    if (!res.ok) {
+      setMessage("Payment failed, try another card");
+      return;
+    }
+    const data = await res.json();
+    setCart([]);
+    go(`/orders/${data.orderId}`);
+  }
+
+  const product = path.startsWith("/products/") && products.find((p) => `/products/${p.id}` === path);
+
+  return (
+    <main style={{ fontFamily: "sans-serif", maxWidth: 520, margin: "40px auto" }}>
+      <nav style={{ display: "flex", gap: 12 }}>
+        <Link to="/" go={go}>Tiny Shop</Link>
+        <Link to="/cart" go={go} data-testid="cart-link">Cart ({cart.length})</Link>
+      </nav>
+
+      {path === "/" && (
+        <ul>
+          {products.map((p) => (
+            <li key={p.id}>
+              <Link to={`/products/${p.id}`} go={go}>{p.name}</Link> (${p.price})
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {product && (
+        <section>
+          <h2>{product.name}</h2>
+          <p>{product.blurb}</p>
+          <button onClick={() => addToCart(product)}>Add to cart (${product.price})</button>
+        </section>
+      )}
+
+      {path === "/cart" && (
+        <section>
+          <h2>Cart</h2>
+          <ul>
+            {cart.map((p, i) => (
+              <li key={i}>{p.name}</li>
+            ))}
+          </ul>
+          <button disabled={!cart.length} onClick={() => go("/checkout")}>Go to checkout</button>
+        </section>
+      )}
+
+      {path === "/checkout" && (
+        <form onSubmit={pay} style={{ display: "grid", gap: 6 }}>
+          <h2>Checkout</h2>
+          <input name="card" placeholder="card number" autoComplete="cc-number" />
+          <button disabled={!cart.length}>Pay</button>
+        </form>
+      )}
+
+      {path.startsWith("/orders/") && <h2>Thanks! Order {path.split("/").pop()} is paid.</h2>}
+
+      <p>{message}</p>
+    </main>
+  );
+}
+```
+
+</details>
+
+```bash
+npm install
+```
+
+```bash
+npm run dev
+```
+
+## What you should see
+
+Open http://localhost:5173 and buy a coffee: click **Coffee**, **Add to cart ($4)**, **Cart (1)**, **Go to checkout**, type `4242424242424242`, **Pay**. The page says "Thanks! Order ... is paid", and the address bar changed at every click: `/`, `/products/1`, `/cart`, `/checkout`, `/orders/...`.
+
+Try card `4000000000000002`: the page says "Payment failed, try another card". Leave the API and the shop running.
+
+Next: [the stack](/docs/quickstarts/3-funnels/stack/).

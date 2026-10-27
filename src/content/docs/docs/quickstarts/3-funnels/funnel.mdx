@@ -1,0 +1,103 @@
+---
+title: Build and read the funnel
+description: The five steps in Grafana's Funnels page, what each number under a bar means, and the counting rules the personas show.
+sidebar: { order: 5, label: 5. Build and read it }
+---
+
+import Funnel from '../../../../../components/diagrams/Funnel.astro';
+import Sequence from '../../../../../components/diagrams/Sequence.astro';
+
+## Build it
+
+Open http://localhost:3000 → **More apps → ouo11y RUM → Funnels**, and set the time range (top right) to **Last 1 hour**.
+
+1. Step 1 is already **Page**, **is**, `/`. Click its value box: it lists the paths seen in the range, most frequent first.
+2. Step 2: set **starts with**, type `/products/` and pick "Use this value". Any product page counts.
+3. **Add step**: **Event**, `add_to_cart`. Custom event names are suggested too.
+4. **Add step**: switch it to **Page**, **is**, `/checkout`.
+5. **Add step**: **Event**, `order_paid`.
+6. **Service**: `tiny-shop-funnels-frontend`, then Enter. Other apps sending to the same stack stay out.
+
+The address bar now holds the funnel (`...&step=page:/&step=page:/products/*&step=event:add_to_cart&...`). Copy it to share the funnel; there are no saved funnels yet.
+
+## What you should see
+
+Five bars reading **46, 38, 29, 21, 11**: the generator's numbers plus your own purchase. If you ran the generator twice, every number is doubled (plus one).
+
+## Read it
+
+This is the generator's part of the funnel, without your purchase. Click the hatched drop-offs.
+
+<Funnel
+  caption="Each bar is the sessions that reached the step. Hatching is what the previous step lost."
+  steps={[
+    { kind: 'page', value: '/', count: 45 },
+    { kind: 'page', match: 'starts with', value: '/products/', count: 37, time: 'median · p75: a few seconds', dropped: '8 sessions opened <code>/</code> and no product page after it.' },
+    { kind: 'event', value: 'add_to_cart', count: 28, time: 'median · p75: a few seconds', dropped: '9 sessions saw a product and did not add it.' },
+    { kind: 'page', value: '/checkout', count: 20, time: 'median · p75: a few seconds', dropped: '8 sessions added to cart and never opened checkout.' },
+    { kind: 'event', value: 'order_paid', count: 10, time: 'median · p75: a few seconds', dropped: '10 sessions reached checkout and did not pay. In Grafana, this click opens the list of those sessions: the next page.' },
+  ]}
+/>
+
+What Grafana shows under each bar:
+
+| Under each bar | Meaning | Here |
+|---|---|---|
+| big % | sessions that reached this step, of those that entered step 1 | 22.2% paid |
+| `n sessions · m users` | sessions that reached it, and their distinct users | 45 sessions entered |
+| `% of previous step` | the step's own conversion: the lowest is the leak to fix first | 50% of checkouts are paid |
+| `median · p75` | time from the previous step, over the sessions that made it | a few seconds each here |
+| hatched `−n` | sessions that reached the previous step and stopped | 10 stopped at checkout |
+
+A funnel counts sessions. Users are the distinct `user.id` of those sessions: one user with three sessions counts three times in sessions and once in users. Each generated session is a fresh browser, so here the two numbers are equal.
+
+A long p75 next to an ordinary median means a slow minority. Their replays show why.
+
+## What the personas teach
+
+- **Deep links do not enter.** 5 sessions land on `/products/2`, buy, and never see `/`. They are not in this funnel: step 1 is the door. Make a funnel that starts at **Page starts with** `/products/` and they appear.
+- **Order matters.** 3 sessions add to cart first and visit `/` afterwards. They count for step 1 only: steps must happen in order within one session. Other events in between do not matter.
+- **Repeats do not inflate.** Some sessions go home and pick a second product, some add twice. Each step counts once per session, and a session that tries several times is credited with its best attempt.
+- **Checkout is the leak.** Half the sessions that reach `/checkout` do not pay: 6 leave the form, 4 have card `...0002` declined.
+
+**Completed within** sets the maximum time from step 1 to the last step. Set it to **5 minutes**: nothing changes, these sessions are short. A step reached after the window does not count.
+
+## How rum-api counts
+
+The Funnels page asks rum-api through Grafana; the plugin proxy adds the read token. rum-api runs one Loki query per kind of step, joins the results per `session.id` in memory, and walks each session's events in order.
+
+<Sequence
+  caption="Two Loki queries, whatever the number of steps: one for page views, one for custom events."
+  actors={['Grafana', 'rum-api', 'Loki']}
+  steps={[
+    { from: 0, to: 1, label: 'POST /v1/funnels/query', note: 'steps, time range, service' },
+    { from: 1, to: 2, label: 'page views in range', note: 'event_name navigation, url.path' },
+    { from: 1, to: 2, label: 'custom events in range', note: 'add_to_cart, order_paid' },
+    { from: 1, to: 1, label: 'group by session.id', note: 'strict step order' },
+    { from: 1, to: 0, label: 'count, users, median, p75 per step', tone: 'ok' },
+    { from: 0, to: 1, label: 'GET /v1/funnels/dropped', note: 'after a click on −n' },
+  ]}
+/>
+
+The same query from the shell, inside the stack's network. From `~/Desktop/tiny-shop-funnels/stack`:
+
+```bash
+docker compose exec grafana curl -s -X POST http://rum-api:8080/v1/funnels/query \
+  -H 'Authorization: Bearer rt_dev_0000000000000000' -H 'Content-Type: application/json' \
+  -d '{"from":"now-1h","filters":{"service":"tiny-shop-funnels-frontend"},"steps":[
+       {"kind":"page","value":"/"},{"kind":"page","match":"prefix","value":"/products/"},
+       {"kind":"event","value":"add_to_cart"},{"kind":"page","value":"/checkout"},
+       {"kind":"event","value":"order_paid"}]}'
+```
+
+It returns the same counts as the bars, as JSON.
+
+## Things that bite
+
+- **Only events inside the time range count.** A session whose `/` visit is before the start of the range does not enter, even if it pays inside the range. Widen the range rather than shifting it.
+- **A step is a path, not a URL.** `url.path` has no query string or host: `/products/2?ref=ad` is `/products/2`.
+- **Prefix means prefix.** `/products` (no trailing slash) also matches `/products-sale`. Use `/products/`.
+- **Sampling scales a funnel down.** With `session.sampleRate: 0.1` every step shows a tenth. Conversion percentages stay right, counts do not.
+- **Events on the way out.** The last events of a page are sent when it is hidden (`pagehide`). A tab killed by the OS can lose them; the generator leaves each page through `about:blank`.
+
+Next: [from a drop-off to the replay](/docs/quickstarts/3-funnels/replay/).
