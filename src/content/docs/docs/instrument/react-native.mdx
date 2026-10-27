@@ -1,0 +1,331 @@
+---
+title: React Native SDK
+description: "@ouo11y/react-native 0.2: sessions, JS and native crashes, fetch tracing, spans and logs, mobile vitals and native session replay on iOS."
+sidebar: { order: 3 }
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+import Flow from '../../../../components/diagrams/Flow.astro';
+import SessionLanes from '../../../../components/diagrams/SessionLanes.astro';
+
+`@ouo11y/react-native` is a Real User Monitoring SDK for React Native and Expo, built on OpenTelemetry JS. It records sessions, JS errors, native crashes on iOS, `fetch` and XHR traces with W3C Trace Context and Baggage, a timeline of taps, app state changes and requests, mobile vitals, and a native session replay on iOS. Everything goes to the ouo11y collector as plain OTLP. It is Apache-2.0 and on npm. This page describes version **0.2.1**.
+
+| Part | Needs |
+|---|---|
+| Telemetry: sessions, errors, traces, timeline, JS vitals | nothing native. Runs in Expo Go. |
+| Native crashes, app start and frame vitals, session replay | the Expo native module: a development build, iOS. On Android these parts are not there yet. |
+
+## Install
+
+```bash
+npm install @ouo11y/react-native @react-native-async-storage/async-storage
+```
+
+Peer dependencies: `react` 18 or later, `react-native` 0.74 or later, `@react-native-async-storage/async-storage`, and optionally `expo-modules-core` (it comes with Expo) for the native parts. The OpenTelemetry packages are bundled into the SDK, so Metro needs no extra configuration.
+
+## Initialise
+
+<Steps>
+
+1. Create a file that starts the SDK:
+
+   ```ts
+   // src/rum.ts
+   import { initRUM } from "@ouo11y/react-native";
+   import Constants from "expo-constants";
+
+   export const rum = initRUM({
+     endpoint: "http://localhost:4318",              // the collector's OTLP/HTTP base URL
+     projectId: "demo",                              // Basic auth user name
+     projectToken: "pt_dev_demo_0000000000000000",   // Basic auth password, public by design
+     service: { name: "mobile-store", version: Constants.expoConfig?.version ?? "0.0.0", environment: "local" },
+     tracing: { propagateTo: [/^http:\/\/localhost:8081\//] }, // your API
+     debug: __DEV__,
+   });
+   ```
+
+2. Import it in the entry file **before** the root component is registered, so the global error handler and the `fetch` wrapper exist before the first render:
+
+   ```ts
+   // index.ts
+   import "./src/rum";
+   import { registerRootComponent } from "expo";
+   import App from "./App";
+   registerRootComponent(App);
+   ```
+
+3. Wrap the app root in `RUMProvider`, so touches count as activity and become `ui.tap` events, and feed React Navigation's state to the SDK for `navigation` events:
+
+   ```tsx
+   import { RUMProvider, navigationStateListener } from "@ouo11y/react-native";
+   import { rum } from "./src/rum";
+
+   export default function App() {
+     return (
+       <RUMProvider rum={rum}>
+         <NavigationContainer onReady={() => rum.trackNavigation("/Products")} onStateChange={navigationStateListener(rum)}>
+           {/* your screens */}
+         </NavigationContainer>
+       </RUMProvider>
+     );
+   }
+   ```
+
+4. Start the app. With `debug` on, Metro's log shows the SDK's `[ouo]` lines. In Grafana, the session appears in the ouo11y app with `ouo.platform = mobile`, its screens and its requests.
+
+</Steps>
+
+`initRUM` returns the same instance on repeated calls, and `getRUM()` returns it from anywhere. A missing or empty `projectId` or `projectToken` throws a `TypeError`.
+
+**Endpoints.** Traces go to `${endpoint}/v1/traces`, events and logs to `${endpoint}/v1/logs`, replay chunks to `${replayEndpoint}/v1/replay/chunks`, each with `Authorization: Basic base64("<projectId>:<projectToken>")`. `replayEndpoint` defaults to `endpoint` with port 4318 replaced by 4319, or to `endpoint` itself on any other port (a proxy that routes `/v1/replay/*`). The SDK's own uploads are never traced.
+
+<Aside title="localhost from a device">
+`localhost` works in the iOS Simulator, which shares the Mac's network. On a real phone, use the Mac's LAN address or a public collector URL.
+</Aside>
+
+## Options
+
+| Option | Default | Meaning |
+|---|---|---|
+| `endpoint`, `projectId`, `projectToken` | required | The collector and the project credential. |
+| `replayEndpoint` | derived | See above. |
+| `service.name`, `.version`, `.environment` | required | `service.name`, `service.version` (the app version, the dimension of health percentages), `deployment.environment.name`. |
+| `tracing.propagateTo` | `[]` | URLs that receive `traceparent` and `baggage`. RegExp, or a string that must equal the whole URL. |
+| `tracing.ignoreUrls` | `[]` | URLs never traced. |
+| `session.inactivityTimeoutMs` | 30 min | The session ends after this long without activity. |
+| `session.maxDurationMs` | 4 h | The session ends at this age. |
+| `session.backgroundTimeoutMs` | 30 s | Coming back after longer in the background starts a new session. |
+| `session.sampleRate` | `1` | Fraction of sessions that send anything. |
+| `user.id` | anonymous | The initial user id; otherwise an anonymous id is persisted. |
+| `replay.enabled` | `false` | Native replay (iOS, development build). |
+| `replay.frameInterval` | `1` | Seconds between timer frames. Touches also trigger frames. |
+| `replay.maskText` | `true` | Black out labels and `<Text>`. Inputs are not affected. |
+| `replay.maskInputs` | `true` | Black out text inputs. |
+| `replay.maskImages` | `true` | Black out images. |
+| `replay.maskWebViews` | `true` | Black out web views. |
+| `replay.sampleRate` | `1` | Fraction of sent sessions recorded from their start. |
+| `replay.onErrorSampleRate` | `0` | Fraction of the others that start recording at their first error. |
+| `device.modelIdentifier`, `.modelName`, `.manufacturer`, `.osName`, `.osVersion` | read | Device attributes. Without them the SDK reads `expo-device` when the app has it, and `Platform`. |
+| `resource` | none | Extra resource attributes. The SDK's own win. |
+| `errors.consoleErrors` | `true` | Report `console.error` as handled, non-fatal exceptions. |
+| `errors.fatalFlushTimeoutMs` | `2000` | How long a fatal error waits for its report to be written and flushed before the app's previous handler runs. |
+| `errors.nativeCrashes` | `true` | Capture native iOS crashes (needs the native module). |
+| `errors.onUnhandledRejection` | none | Called with every unhandled rejection after ouo11y recorded it. See [Next to Sentry](#next-to-sentry). |
+| `errors.forwardSentryErrors` | none | Pass `Sentry.getClient()` to also record Sentry's error events. |
+| `timeline.taps`, `.appLifecycle`, `.requests` | `true` | The `ui.tap`, `app.lifecycle` and `http.request` timeline events. |
+| `vitals.enabled`, `vitals.stalls` | `true` | Mobile vitals, and the JS stall timer. |
+| `storage` | AsyncStorage | Any object with `getItem`, `setItem`, `removeItem` returning promises. |
+| `debug` | `false` | Log the SDK's decisions. |
+
+## API
+
+| Call | What it does |
+|---|---|
+| `rum.setUser({ id })` | Set the user id. |
+| `rum.captureError(err, attrs?)` | A handled, non-fatal `exception`. |
+| `rum.addEvent(name, attrs?)` | A custom timeline event (`ouo.event.custom = true`). |
+| `rum.trackNavigation(path, attrs?)` | A `navigation` event; counts as activity. `navigationStateListener(rum)` calls it for React Navigation. |
+| `rum.trackTap(target, path?)` | A `ui.tap` event, for gestures `RUMProvider` cannot see. |
+| `rum.recordActivity()` | Activity without a timeline event. |
+| `rum.withSpan(name, fn, options?)` | Run `fn` in a span, ended when `fn` returns or its promise settles. A throw sets the status to error and rethrows. |
+| `rum.startSpan(name, options?)` | A span you end with `span.end()`. Options: `attributes`, `kind`, `startTime`, `parent` (a span, a span context, or `null` for a new trace). |
+| `rum.log.info(message, attrs?)` | An OpenTelemetry log record named `log`, linked to the session and the active span. Also `trace`, `debug`, `warn`, `error`, `fatal`. |
+| `rum.replay.pause()`, `.resume()`, `.isRecording()` | Replay controls. |
+| `rum.session.id()`, `.userId()`, `.previousId()` | The current ids. |
+| `await rum.ready` | The stored state was read and `session.start` was emitted. |
+| `await rum.flush()` | Send pending spans, log records and replay chunks now. |
+
+React Native has no async context: a span is active only while `fn` runs synchronously. Requests started there are its children, and the backend joins its trace. After an `await`, pass it on: `rum.startSpan("step", { parent: span })`, or `rum.log.info("…", attrs, { span })`.
+
+```ts
+await rum.withSpan("checkout", async (span) => {
+  const res = await fetch(`${API}/checkout`, { method: "POST" }); // child of "checkout"
+  rum.log.info("checkout answered", { status: res.status }, { span });
+});
+```
+
+## Sessions on mobile
+
+The rules are the web's, plus three for apps. A cold start always begins a new session, and the session before it is ended with what happened to it:
+
+<SessionLanes
+  duration={100}
+  caption="Each new session carries session.previous_id. The end reason of a killed app is only known at the next launch."
+  lanes={[
+    { label: 'background', note: 'more than 30 s away', segments: [
+      { from: 0, to: 35, label: 'A', end: 'background' },
+      { from: 35, to: 60, label: 'in background', idle: true, tone: 'info' },
+      { from: 60, to: 100, label: 'B', sub: 'on foreground', tone: 'ok' },
+    ] },
+    { label: 'crash', note: 'JS fatal or native crash', segments: [
+      { from: 0, to: 45, label: 'A', end: 'crash' },
+      { from: 45, to: 58, label: '', idle: true, tone: 'info' },
+      { from: 58, to: 100, label: 'B', sub: 'next launch', tone: 'ok' },
+    ] },
+    { label: 'terminated', note: 'killed, no crash marker', segments: [
+      { from: 0, to: 40, label: 'A', end: 'terminated' },
+      { from: 40, to: 70, label: '', idle: true, tone: 'info' },
+      { from: 70, to: 100, label: 'B', sub: 'next launch', tone: 'ok' },
+    ] },
+  ]}
+/>
+
+- **Cold start.** The previous run's stored session is ended with `crash` if a crash marker exists; else `inactivity` or `max_duration` when its deadlines passed; else `background` when it was killed while in the background for longer than the timeout; else `terminated`.
+- **Background.** Coming back to the foreground after more than `session.backgroundTimeoutMs` (30 s) ends the session with `background` and starts a new one.
+- **Activity**: touches inside `RUMProvider`, `trackNavigation`, outbound requests, foreground.
+- Inactivity (30 min) and maximum duration (4 h) work as on the web.
+
+## Errors and crashes
+
+| Source | `ouo.exception.fatal` | `ouo.exception.handled` |
+|---|---|---|
+| global JS handler, fatal | `true` | `false` |
+| global JS handler, not fatal | `false` | `false` |
+| unhandled promise rejection | `false` | `false` |
+| `console.error` | `false` | `true` |
+| `rum.captureError` | `false` | `true` |
+| native crash on iOS, sent at the next launch (`ouo.exception.kind = native`) | `true` | `false` |
+| a Sentry error event, with `errors.forwardSentryErrors` (`ouo.exception.kind = sentry`) | when its level is `fatal` | Sentry's `mechanism.handled` |
+
+A fatal JS error writes a crash marker, waits for it and a flush (at most `fatalFlushTimeoutMs`), then calls the previous handler, so the red box in development and the crash in release still happen. The next launch turns the marker into `session.end` with `crash`.
+
+**Native crashes (iOS).** The SDK installs signal handlers (`SIGSEGV`, `SIGBUS`, `SIGABRT`, `SIGILL`, `SIGFPE`, `SIGTRAP`, `SIGSYS`) and an uncaught `NSException` handler. At crash time they write one report; the next launch sends it as a fatal `exception` of the crashed session, at the crash time. `exception.stacktrace` is in Apple crash report form, and `ouo.crash.frames` and `ouo.crash.images` carry the addresses to symbolicate later with `atos -o App.dSYM -l <image_addr> <instruction_addr>`. Only the crashed thread is recorded. Handlers installed before ouo11y's (Sentry's, for example) are kept and called after it.
+
+**One error, one record.** An error object reported by one hook is not reported again by another. Stack paths are normalised (`app:///main.jsbundle:1:2345`), and frames of your own code end with `[in app]`, so the same error groups across devices.
+
+**Trace id on errors.** An `exception` carries a trace id when it can: from the `withSpan` it escaped, the span active when it was reported, or a request that failed less than 2 s before. `ouo.exception.trace_link` says which.
+
+## Network
+
+`fetch` and `XMLHttpRequest` (so axios and other XHR clients) are wrapped: one `CLIENT` span per request with `http.request.method`, `url.full`, `url.path`, `server.address`, `server.port` and `http.response.status_code`. URLs matching `propagateTo` get `traceparent` and `baggage: session.id=…,user.id=…,ouo.platform=mobile`. A `5xx` or a network failure emits `http.request.failed`; a `4xx` or an abort does not. A `fetch` is one span, not two, although React Native runs it on XHR. Your backend joins the trace the same way as for the web: see [Your backend](/docs/instrument/backend/).
+
+## Timeline and vitals
+
+| `event.name` | When |
+|---|---|
+| `ui.tap` | a touch inside `RUMProvider`. `ouo.ui.target` is the first label up the touched tree (`ouo-label`, `sentry-label`, `accessibilityLabel`, `aria-label`, `testID`), else the component's name. Text content is never read: give buttons a `testID` or `accessibilityLabel`. |
+| `app.lifecycle` | every app state change: `ouo.app.state` is `foreground`, `inactive` or `background` |
+| `http.request` | a request answered `1` to `499`, with its span's trace id |
+| `ouo.stall` | the JS thread was blocked: a 50 ms timer ran 100 ms or more late |
+| `ouo.screen.display` | time to initial display of a screen, from the navigation to the second frame after it |
+| `ouo.app.start` | cold or warm app start, from the process start to the first screen (iOS, native module) |
+| `app.jank` | slow and frozen frames per screen visit, from `CADisplayLink` (iOS, native module) |
+| `log` | `rum.log.*` |
+
+Every span and log record carries `session.id`, `session.previous_id` (when set), `user.id`, `ouo.user.anonymous`, `ouo.platform = "mobile"` and `service.version`. The resource carries `service.name`, `service.version`, `deployment.environment.name`, `os.name`, `os.version`, `device.model.identifier`, `device.model.name` and `device.manufacturer`. On the simulator the SDK sets `ouo.device.simulator = true` instead of a model.
+
+## Native session replay (iOS)
+
+Mobile replay is not a DOM recording: there is no DOM. The SDK's Expo module takes a screenshot of the key window about once a second and on touches, **paints opaque rectangles over sensitive views on the device before the frame is encoded**, drops frames that did not change, and uploads JPEG frames in gzip chunks to the collector's replay receiver.
+
+<Flow
+  caption="Nothing leaves the phone unmasked: the redaction is painted into the pixels before encoding."
+  columns={[
+    { label: 'JS', arrow: 'Expo module', nodes: [
+      { title: '@ouo11y/react-native', sub: 'session id · sampling · rotation' },
+    ] },
+    { label: 'On the device', arrow: 'gzip chunks', nodes: [
+      { title: 'Capture', sub: 'about 1 frame/s + touches' },
+      { title: 'Mask', sub: 'text · inputs · images · web views', tone: 'accent' },
+      { title: 'Encode', sub: 'JPEG, longest side 1000 px, unchanged frames dropped' },
+    ] },
+    { label: 'Collector', nodes: [
+      { title: ':4319 /v1/replay/chunks', sub: 'project credential, x-ouo-session-id, x-ouo-seq' },
+    ] },
+  ]}
+/>
+
+<Steps>
+
+1. Turn replay on:
+
+   ```ts
+   initRUM({
+     // ...
+     replay: { enabled: true, maskText: true, maskInputs: true, maskImages: true, maskWebViews: true },
+   });
+   ```
+
+2. Build a development build: replay needs the native module, which Expo Go does not have. This needs Xcode and CocoaPods.
+
+   ```bash
+   npx expo prebuild --platform ios
+   ```
+
+   ```bash
+   npx expo run:ios
+   ```
+
+   The pods `OuoReplayCore`, `OuoReplay` and `OuoReactNative` (and the crash and vitals pods) are autolinked from the npm package.
+
+3. Use the app for a minute, then open the session in the ouo11y app: the replay plays the frames, and every masked area is black.
+
+</Steps>
+
+Where the native module is missing (Expo Go, web, tests, Android) replay is a silent no-op; with `debug` on, a warning is logged once.
+
+### Masking
+
+Everything that can carry user content is black by default. You opt in to visibility, not out of privacy:
+
+| Option | Default | What it covers |
+|---|---|---|
+| `maskText` | `true` | labels, `<Text>`, navigation bar titles. Inputs are **not** affected. |
+| `maskInputs` | `true` | `TextInput` and native text fields. Only turn it off if you really mean it. |
+| `maskImages` | `true` | images, such as product photos and avatars |
+| `maskWebViews` | `true` | `WKWebView` content |
+
+Per view, whatever the options say:
+
+```tsx
+<View testID="ouo-mask">{/* blacked out, with its whole subtree */}</View>
+<Text testID="ouo-unmask">Order #1042 confirmed</Text>  {/* left visible, with its subtree */}
+```
+
+Hidden views, transparent views and views outside the window are skipped. With `maskText: false` a replay becomes readable while what users type stays masked.
+
+### Sampling
+
+```ts
+initRUM({
+  // ...
+  session: { sampleRate: 0.5 },                                // half the sessions send anything
+  replay: { enabled: true, sampleRate: 0.2, onErrorSampleRate: 1 },
+});
+```
+
+The decisions are the same deterministic hash of the session id as on the [web](/docs/instrument/ouo-sdk/#sampling). One difference: on-error replay starts at the error. The native recorder keeps no buffer of the frames before it.
+
+## Next to Sentry
+
+The SDK runs in an app that keeps `@sentry/react-native`, so a team can move over gradually. Verified with `@sentry/react-native` 8.30.0 on Hermes.
+
+1. **Initialise ouo11y after Sentry**, and hand unhandled rejections back to Sentry. Hermes keeps one rejection tracker, and the SDK initialised last owns it:
+
+   ```js
+   // index.js: imports run in order
+   import "./src/sentry"; // Sentry.init(...)
+   import "./src/rum";    // initRUM(...)
+   ```
+
+   ```js
+   initRUM({
+     // ...
+     errors: {
+       onUnhandledRejection: (e) =>
+         Sentry.captureException(e, { mechanism: { type: "onunhandledrejection", handled: true } }),
+       forwardSentryErrors: Sentry.getClient(), // optional: Sentry's error events in ouo11y too
+     },
+   });
+   ```
+
+2. **Trace headers.** ouo11y's wrappers set `traceparent`; Sentry adds `sentry-trace` and its `baggage` entries but no second `traceparent`. Your backend joins ouo11y's trace.
+3. **Keep ouo11y's uploads out of Sentry's tracing**: `Sentry.reactNativeTracingIntegration({ shouldCreateSpanForRequest: (url) => !url.startsWith(OUO_ENDPOINT) })`.
+4. **Native crashes** are reported by both: ouo11y keeps Sentry's handlers and calls them after writing its own report.
+5. **Do not also point Sentry's DSN at the [Sentry bridge](/docs/instrument/sentry/)** while both SDKs run, or every session arrives twice.
+
+You get two independent sessions and, if both record, two replays. To pick Sentry, both, or ouo11y per device, decide at cold start (never mid-session) and tag the cohort with `resource: { "ouo.rum.mode": "parallel" }`.
+
+## Source maps
+
+JS stacks are sent as Hermes reports them, with normalised paths. Upload and symbolication of React Native source maps are not released yet.

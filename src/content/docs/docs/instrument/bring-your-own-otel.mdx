@@ -1,0 +1,132 @@
+---
+title: Bring your own OpenTelemetry
+description: Use ouo11y with no ouo11y code in your app. The exact contract, every event attribute, and a browser setup in six files.
+sidebar: { order: 2 }
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+import Flow from '../../../../components/diagrams/Flow.astro';
+import QuickstartFile from '../../../../components/QuickstartFile.astro';
+
+ouo11y reads OpenTelemetry. If your browser app sends the signals on this page, you get the same sessions, health percentages, timelines, traces and replays as with [our SDK](/docs/instrument/ouo-sdk/), with nothing but upstream open-source packages in your bundle: the OpenTelemetry JS SDK, [rrweb](https://github.com/rrweb-io/rrweb) and [web-vitals](https://github.com/GoogleChrome/web-vitals).
+
+This is a first-class path, not a fallback. Our SDK produces exactly this contract and nothing more, so you can start on either side and move later without touching the server.
+
+<Flow
+  caption="Two OTLP signals and one replay upload. Everything else is built on the server from session.id."
+  columns={[
+    { label: 'Your page', nodes: [
+      { title: 'OpenTelemetry JS', sub: 'spans · log records' },
+      { title: 'rrweb', sub: 'replay events' },
+    ] },
+    { label: 'Collector', nodes: [
+      { title: ':4318 /v1/traces', sub: 'spans with session.id' },
+      { title: ':4318 /v1/logs', sub: 'events by event.name' },
+      { title: ':4319 /v1/replay/chunks', sub: 'rrweb chunks' },
+    ] },
+    { label: 'ouo11y', nodes: [
+      { title: 'The session', sub: 'status · timeline · traces · replay', tone: 'accent' },
+    ] },
+  ]}
+/>
+
+## The contract
+
+This is the whole contract.
+
+| What | How |
+|---|---|
+| **Where** | OTLP/HTTP to the collector: `:4318/v1/traces` and `:4318/v1/logs`. JSON or protobuf, gzip allowed. |
+| **Credential** | Every request carries `Authorization: Basic base64("<project id>:<project token>")`. The token is public: it ships in your bundle and only allows writing into one project. |
+| **Who** | Resource attributes `service.name`, `service.version`, `deployment.environment.name`, and `ouo.platform = "web"`. Optionally `device.id`. |
+| **Which session** | `session.id` and `user.id` on **every** span and log record, as attributes, not resource attributes (the session can change while the page lives). Also in the `baggage` header to your API. |
+| **What happened** | OTel log records whose `event.name` is `session.start`, `session.end`, `exception`, `http.request.failed`, `navigation` or `web_vital`. Any other name is shown as a custom event on the timeline. |
+| **Replay** | rrweb events in chunks `{ session_id, seq, started_at, ended_at, events }`, `POST` to `:4319/v1/replay/chunks` with the same credential and the headers `x-ouo-session-id` and `x-ouo-seq`. |
+
+From these, ouo11y builds the session, its timeline, its traces and its replay. The session's status is the worst thing that happened in it:
+
+| Status | When |
+|---|---|
+| `crashed` | an `exception` with `ouo.exception.fatal = true` |
+| `errored` | a non-fatal `exception`, or an `http.request.failed` |
+| `healthy` | neither |
+
+A session with no `session.end` is treated as ended 30 minutes after its last signal, so a page closed without warning is not a problem.
+
+## Event attributes
+
+Every event also carries `session.id` and `user.id`.
+
+| `event.name` | Required attributes | Optional |
+|---|---|---|
+| `session.start` | `ouo.session.started_at` (epoch ms) | `session.previous_id` when it replaced an expired session, `device.id` |
+| `session.end` | `ouo.session.end_reason`, `ouo.session.duration_ms` | `ouo.session.started_at`, `ouo.session.ended_at`, `device.id` |
+| `exception` | `exception.type`, `exception.message`, `exception.stacktrace`, `ouo.exception.fatal`, `ouo.exception.handled` | `ouo.exception.kind` |
+| `http.request.failed` | `http.request.method`, `url.full`, `http.response.status_code` | |
+| `navigation` | `url.path`, `ouo.navigation.from` | `url.full`, `ouo.navigation.kind` |
+| `web_vital` | `ouo.web_vital.name`, `ouo.web_vital.value`, `ouo.web_vital.rating` | `ouo.web_vital.id`, `ouo.web_vital.delta`, `url.path` |
+
+`ouo.session.end_reason` is one of `inactivity`, `max_duration`, `user_change` or `manual` on the web. The log record's body is free text: ouo11y reads only the attributes, and the body is what you see as the line in Loki.
+
+Every `ouo.`-prefixed name here is waiting for an OpenTelemetry convention: see [Semantic conventions](/docs/concepts/semantic-conventions/). When OpenTelemetry defines one, we move to it with a migration window, and this table changes with it.
+
+## Set it up
+
+The six files below are the browser side of [Quickstart 2: Tiny Shop with plain OpenTelemetry](/docs/quickstarts/2-tiny-shop-otel/), about 400 lines in all. That quickstart builds the whole app, the API and the stack from an empty folder; this section is the part you would copy into an app you already have. They are written for OpenTelemetry JS 3.0 and a Vite app.
+
+<Steps>
+
+1. **Install the packages.**
+
+   ```bash
+   npm install @opentelemetry/api @opentelemetry/core @opentelemetry/resources @opentelemetry/sdk-trace @opentelemetry/sdk-logs @opentelemetry/exporter-trace-otlp-http @opentelemetry/exporter-logs-otlp-http @opentelemetry/instrumentation @opentelemetry/browser-instrumentation rrweb web-vitals
+   ```
+
+2. **Say where the data goes and who sends it.** The credential here is the local stack's `demo` project.
+
+   <QuickstartFile qs="tiny-shop-otel" path="result/frontend/src/telemetry/config.js" title="src/telemetry/config.js" />
+
+3. **Keep the session.** The session is the only state you keep yourself: a UUID in `localStorage`, renewed after 30 minutes of inactivity or 4 hours in total, shared by every tab of the origin, with `device.id` kept apart from it.
+
+   <QuickstartFile qs="tiny-shop-otel" path="result/frontend/src/telemetry/session.js" title="src/telemetry/session.js" />
+
+4. **Set up OpenTelemetry.** Two pieces are specific to RUM. A `SpanProcessor` whose `onStart` puts `session.id` and `user.id` on every span. And a propagator that adds them to `baggage` at inject time: the browser has no async context, so baggage set with `context.with()` is gone by the time `fetch` sends.
+
+   <QuickstartFile qs="tiny-shop-otel" path="result/frontend/src/telemetry/otel.js" title="src/telemetry/otel.js" />
+
+5. **Emit the events.** One small `emit` function writes log records with `event.name` and the session ids; the rest wires errors, failed requests, navigations and Web Vitals to it.
+
+   <QuickstartFile qs="tiny-shop-otel" path="result/frontend/src/telemetry/events.js" title="src/telemetry/events.js" />
+
+   This file emits `http.request.failed` for every `4xx` and `5xx`. Our SDK only does it for `5xx` and network failures, because a `404` is often expected. Choose what fits your app.
+
+6. **Record the replay.** rrweb with inputs masked and the `ouo-block` and `ouo-mask` classes, uploaded in chunks every 5 seconds or at 256 KB.
+
+   <QuickstartFile qs="tiny-shop-otel" path="result/frontend/src/telemetry/replay.js" title="src/telemetry/replay.js" />
+
+7. **Start it before your app renders.**
+
+   <QuickstartFile qs="tiny-shop-otel" path="result/frontend/src/telemetry/index.js" title="src/telemetry/index.js" />
+
+   ```js
+   // src/main.jsx: the first import
+   import "./telemetry/index.js";
+   ```
+
+</Steps>
+
+Open the app and the console prints `[telemetry] session <uuid>`. In the network panel you see `POST /v1/logs`, `/v1/traces` and `/v1/replay/chunks` answered `200`. In Grafana the session appears in the ouo11y app with its timeline and replay. Then set up [your backend](/docs/instrument/backend/) so its spans join the browser's traces.
+
+<Aside title="What the SDK adds">
+Our SDK does the same and also: a session that rotates on user change, sampling, error-triggered replay, interaction and soft-navigation spans, rage and dead clicks, long tasks, gzip, retries and an offline store, one recording tab at a time. None of it is needed to meet the contract. See [Browser SDK](/docs/instrument/ouo-sdk/) if you want them without writing them.
+</Aside>
+
+## Things that bite
+
+- **OpenTelemetry JS 3.0 in the browser**: `@opentelemetry/sdk-trace-web` is deprecated. The `TracerProvider` and the `StackContextManager` are in `@opentelemetry/sdk-trace`, and there is no `provider.register()`: set the context manager, propagator and providers on the API globals, as `otel.js` does.
+- **`@opentelemetry/instrumentation-fetch` is deprecated** in its README, though npm does not flag it. Use `@opentelemetry/browser-instrumentation/experimental/fetch`.
+- **`propagateTraceHeaderCorsUrls` strings must equal the whole URL.** Use a RegExp.
+- **Event names are the contract.** OpenTelemetry's own browser instrumentations emit `browser.navigation` and `browser.web_vital`, which ouo11y shows as custom events today. See [Semantic conventions](/docs/concepts/semantic-conventions/) for where this is going.
+- **LCP and FCP need a visible page.** web-vitals reports nothing for a page loaded in a background tab.
+- **CORS on your API.** It must allow the `traceparent` and `baggage` request headers, or the browser drops them silently. See [Your backend](/docs/instrument/backend/#cors).
+- **Collector CORS.** Posting from the page to a collector on another origin needs the collector to allow your origin and the `Authorization`, `Content-Type`, `X-Ouo-Session-Id` and `X-Ouo-Seq` headers. A [first-party endpoint](/docs/instrument/ouo-sdk/#first-party-endpoint) avoids CORS altogether; it works the same without our SDK.
