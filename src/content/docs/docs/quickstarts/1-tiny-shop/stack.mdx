@@ -1,0 +1,105 @@
+---
+title: '2. The stack'
+description: Run Grafana, Loki, Tempo, Mimir, rum-api and the ouo11y collector on your laptop from one compose file.
+sidebar: { order: 2, label: '2. The stack' }
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import Flow from '../../../../../components/diagrams/Flow.astro';
+import QuickstartFile from '../../../../../components/QuickstartFile.astro';
+
+The whole stack is one file: Grafana, Loki, Tempo, Mimir, rum-api and the ouo11y collector, with their configuration inline. Nothing is installed on your machine but containers.
+
+<Flow
+  caption="What the compose file starts: one container per box, with the port it publishes on localhost. Your apps only talk to the collector."
+  columns={[
+    { label: 'In', arrow: 'OTLP', nodes: [
+      { title: 'otel-collector', sub: ':4318 OTLP/HTTP · :4319 replay<br>:4320 Sentry bridge', tone: 'accent' },
+    ] },
+    { label: 'Storage', nodes: [
+      { title: 'loki', sub: ':3100 · events, logs' },
+      { title: 'tempo', sub: ':3200 · traces' },
+      { title: 'mimir', sub: ':9009 · metrics' },
+    ] },
+    { label: 'Sessions', nodes: [
+      { title: 'rum-api', sub: ':8080 · sessions, replay' },
+    ] },
+    { label: 'View', nodes: [
+      { title: 'grafana', sub: ':3000 · admin / testing567<br>+ ouo11y RUM app', tone: 'accent' },
+    ] },
+  ]}
+/>
+
+## Step 4. Run the ouo11y stack from one file
+
+### 4a. Create the compose file
+
+Open the block below, copy all of it (the copy button is at its top right), and paste it into a new file `stack/compose.yaml` in VS Code. You can also [download it as `quickstart.yaml`](/downloads/quickstart.yaml) and save it as `stack/compose.yaml`.
+
+<QuickstartFile qs="_shared" path="quickstart.yaml" title="stack/compose.yaml" open={false} />
+
+The comments at its top say which ouo11y release each image and config comes from, and how to pin them.
+
+### 4b. Log in to ghcr.io
+
+<Aside type="caution" title="Early access: the images are private">
+The ouo11y images are private for now. You need read access to the `ouo11y` packages: email [hello@ouo11y.com](mailto:hello@ouo11y.com) with your GitHub user name. Without it, `docker compose up` stops with `denied`.
+</Aside>
+
+With access, create a **classic** GitHub token with only the `read:packages` scope. Put the token in your shell (`export GHCR_TOKEN=...`), never in a file, then:
+
+```bash
+echo $GHCR_TOKEN | docker login ghcr.io -u <your-github-user> --password-stdin
+```
+
+Replace `<your-github-user>` with your GitHub user name. It prints `Login Succeeded`.
+
+### 4c. Check the ports
+
+The stack publishes 3000 (Grafana), 3100, 3200, 9009, 8080, and the collector's 4318 (OTLP), 4319 (replay) and 4320. This prints nothing when they are all free:
+
+```bash
+lsof -nP -iTCP -sTCP:LISTEN | grep -E ':(3000|3100|3200|4318|4319|4320|8080|9009) '
+```
+
+If something is listed (often another collector on 4318-4320), do not stop it: move this stack instead. Create `stack/.env`:
+
+```bash
+code ~/Desktop/tiny-shop/stack/.env
+```
+
+with:
+
+```txt title="stack/.env"
+OUO_OTLP_HTTP_PORT=14318
+OUO_REPLAY_PORT=14319
+OUO_SENTRY_PORT=14320
+OUO_OTLP_GRPC_PORT=14317
+OUO_COLLECTOR_HEALTH_PORT=14133
+```
+
+Compose reads `.env` on its own. Remember the new collector ports: pages 3 and 4 tell you where they go. Another port listed (3000, 8080, ...)? Its variable is `OUO_GRAFANA_PORT`, `OUO_RUM_API_PORT`, ... (all of them: the `${OUO_..._PORT:-...}` lines in `compose.yaml`).
+
+### 4d. Start it
+
+In the third terminal tab:
+
+```bash
+cd ~/Desktop/tiny-shop/stack
+```
+
+```bash
+docker compose up -d
+```
+
+The first start pulls the images, which takes a few minutes. Then:
+
+```bash
+docker compose ps -a
+```
+
+## What you should see
+
+`grafana` and `rum-api` become `healthy`; `loki`, `tempo`, `mimir` and `otel-collector` are `Up`; `grafana-plugin` is `Exited (0)`, which is right: it only copies the ouo11y plugin into Grafana and stops. If `grafana` still says `starting`, run `docker compose ps -a` again after a few seconds.
+
+Open http://localhost:3000 and log in with **admin / testing567**. **More apps → ouo11y RUM** is there and still empty: nothing sends it data yet. The next page changes that, starting with the API.

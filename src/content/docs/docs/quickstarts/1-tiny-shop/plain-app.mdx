@@ -1,0 +1,219 @@
+---
+title: '1. The plain app'
+description: Check your tools, then build Tiny Shop's Express API and React page with no telemetry, and see them work together.
+sidebar: { order: 1, label: '1. The plain app' }
+---
+
+import { FileTree } from '@astrojs/starlight/components';
+import Flow from '../../../../../components/diagrams/Flow.astro';
+
+First the app, with no telemetry at all: an API with three routes and a page that calls them. When it works, the next pages add the stack and the instrumentation one piece at a time, so you always know which change did what.
+
+Every command goes in its own block: run them one by one, in order. When a step says "replace the file", select everything in it and paste the new content over it.
+
+<Flow
+  caption="What you have at the end of this page. Nothing is instrumented yet."
+  columns={[
+    { label: 'Browser', arrow: 'fetch', nodes: [{ title: 'Tiny Shop page', sub: 'Vite + React · localhost:5173' }] },
+    { label: 'API', nodes: [{ title: 'Express', sub: 'localhost:5001<br>GET /api/products · POST /api/checkout · GET /api/fail' }] },
+  ]}
+/>
+
+## Step 0. Check your tools
+
+Node 24 or newer:
+
+```bash
+node -v
+```
+
+Docker Desktop must be running. This prints the server details, not "Cannot connect":
+
+```bash
+docker info
+```
+
+VS Code's `code` command. If it is not found, open VS Code, press <kbd>Cmd+Shift+P</kbd> and run **Shell Command: Install 'code' command in PATH**.
+
+```bash
+code --version
+```
+
+## Step 1. Create the folders and open VS Code
+
+```bash
+mkdir -p ~/Desktop/tiny-shop/backend ~/Desktop/tiny-shop/frontend ~/Desktop/tiny-shop/stack
+```
+
+```bash
+cd ~/Desktop/tiny-shop
+```
+
+```bash
+code .
+```
+
+In VS Code, open a terminal with <kbd>Ctrl+\`</kbd>. You will use three terminal tabs (the `+` button): one for the backend, one for the frontend, one for the stack.
+
+<FileTree>
+- tiny-shop/
+  - backend/ the API (this page, then page 3)
+  - frontend/ the React page (this page, then page 4)
+  - stack/ the ouo11y stack (page 2)
+</FileTree>
+
+## Step 2. A simple API, no telemetry yet
+
+In the first terminal tab:
+
+```bash
+cd ~/Desktop/tiny-shop/backend
+```
+
+```bash
+npm init -y
+```
+
+```bash
+npm install express cors
+```
+
+Create `backend/server.js`:
+
+```js title="backend/server.js"
+const express = require("express");
+const cors = require("cors");
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const products = [
+  { id: 1, name: "Coffee", price: 4 },
+  { id: 2, name: "Tea", price: 3 },
+  { id: 3, name: "Cake", price: 6 },
+];
+
+app.get("/api/products", async (req, res) => {
+  await sleep(80);
+  res.json(products);
+});
+
+app.post("/api/checkout", async (req, res) => {
+  await sleep(150);
+  res.json({ ok: true, orderId: Math.floor(Math.random() * 100000) });
+});
+
+app.get("/api/fail", (req, res) => {
+  res.status(500).json({ error: "inventory service unavailable" });
+});
+
+app.listen(5001, () => console.log("tiny-shop API on http://localhost:5001"));
+```
+
+This is the first version of the file. Page 3 replaces it with the traced one.
+
+Run it:
+
+```bash
+node server.js
+```
+
+In another terminal tab, check that it answers:
+
+```bash
+curl localhost:5001/api/products
+```
+
+You get the three products as JSON. (A `%` at the end is zsh saying the output had no final newline; it is not part of the answer.) Leave the API running.
+
+## Step 3. A dummy React UI
+
+In the second terminal tab:
+
+```bash
+cd ~/Desktop/tiny-shop
+```
+
+```bash
+npm create vite@latest frontend -- --template react --no-interactive
+```
+
+```bash
+cd frontend
+```
+
+```bash
+npm install
+```
+
+Replace `frontend/src/App.jsx` with:
+
+```jsx title="frontend/src/App.jsx"
+import { useEffect, useState } from "react";
+
+const API = "http://localhost:5001";
+
+export default function App() {
+  const [products, setProducts] = useState([]);
+  const [cart, setCart] = useState([]);
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    fetch(`${API}/api/products`).then((r) => r.json()).then(setProducts);
+  }, []);
+
+  async function checkout() {
+    const res = await fetch(`${API}/api/checkout`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ items: cart.map((p) => p.id) }),
+    });
+    const data = await res.json();
+    setMessage(`Order #${data.orderId} placed`);
+    setCart([]);
+  }
+
+  async function callBrokenApi() {
+    const res = await fetch(`${API}/api/fail`);
+    setMessage(`API answered ${res.status}`);
+  }
+
+  function crash() {
+    throw new Error("Button exploded");
+  }
+
+  return (
+    <main style={{ fontFamily: "sans-serif", maxWidth: 480, margin: "40px auto" }}>
+      <h1>Tiny Shop</h1>
+      <ul>
+        {products.map((p) => (
+          <li key={p.id}>
+            {p.name} (${p.price}) <button onClick={() => setCart([...cart, p])}>Add</button>
+          </li>
+        ))}
+      </ul>
+      <p>Cart: {cart.length} item(s)</p>
+      <button onClick={checkout} disabled={!cart.length}>Checkout</button>{" "}
+      <button onClick={callBrokenApi}>Call broken API</button>{" "}
+      <button onClick={crash}>Throw error</button>
+      <p>{message}</p>
+    </main>
+  );
+}
+```
+
+This is the first version too. Page 4 replaces it with one that uses the browser SDK.
+
+Start it:
+
+```bash
+npm run dev
+```
+
+## What you should see
+
+Open http://localhost:5173. You see the three products: Coffee, Tea and Cake (the page reached your API). Click **Add**, then **Checkout**: "Order #… placed". **Call broken API** shows "API answered 500", and **Throw error** only leaves `Uncaught Error: Button exploded` in the DevTools console, where nobody but you will ever see it. That is the error page 5 finds in Grafana.
+
+The app works, and nothing is instrumented yet. Leave both running: the API in the first tab, Vite in the second.

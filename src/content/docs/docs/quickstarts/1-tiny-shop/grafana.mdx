@@ -1,0 +1,85 @@
+---
+title: '5. See it in Grafana'
+description: Use the shop, then find one trace across both apps in Tempo, the browser events in Loki, and the crashed session with its replay in the ouo11y RUM app.
+sidebar: { order: 5, label: '5. See it in Grafana' }
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import SpanTree from '../../../../../components/diagrams/SpanTree.astro';
+import Timeline from '../../../../../components/diagrams/Timeline.astro';
+
+Everything is running: the stack, the traced API, and the instrumented page. Now use the shop like a visitor who has a bad day, and find each part of that visit in Grafana.
+
+## Step 7. See the full picture
+
+On http://localhost:5173, click **Add** twice, **Checkout**, **Call broken API**, then **Throw error**. Wait up to a minute.
+
+<Timeline
+  duration={60}
+  caption="Your visit as the SDK records it: one session.id on every row. Times are an example."
+  spans={[
+    { from: 1, to: 2, label: 'GET /api/products', tone: 'info' },
+    { from: 14, to: 16, label: 'POST /api/checkout', tone: 'info' },
+    { from: 24, to: 25, label: 'GET /api/fail', tone: 'bad' },
+  ]}
+  events={[
+    { at: 0, label: 'session.start', tone: 'ok' },
+    { at: 0, label: 'navigation', detail: 'localhost:5173' },
+    { at: 3, label: 'web_vital', detail: 'Web Vitals of the page' },
+    { at: 6, label: 'cart.added', detail: 'custom event', tone: 'info' },
+    { at: 9, label: 'cart.added', detail: 'custom event', tone: 'info' },
+    { at: 25, label: 'http.request.failed', detail: '500 GET /api/fail', tone: 'warn' },
+    { at: 32, label: 'exception', detail: 'Button exploded, uncaught', tone: 'bad' },
+  ]}
+/>
+
+### One trace across both apps
+
+**Explore → Tempo → TraceQL**:
+
+```txt title="TraceQL"
+{ resource.service.name = "tiny-shop-backend" && name = "charge card" }
+```
+
+Open the newest trace. Its root is now the browser:
+
+<SpanTree
+  duration={200}
+  caption="The checkout trace now starts in the browser. Two services, one trace id. Durations are illustrative."
+  spans={[
+    { name: 'POST', service: 'tiny-shop-frontend', depth: 0, from: 0, to: 192, note: 'fetch span, @ouo11y/browser' },
+    { name: 'POST /api/checkout', service: 'tiny-shop-backend', depth: 1, from: 14, to: 172, note: 'HTTP server span · session.id, user.id from baggage' },
+    { name: 'middleware - corsMiddleware', depth: 2, from: 15, to: 16 },
+    { name: 'middleware - jsonParser', depth: 2, from: 16, to: 18 },
+    { name: 'request handler - /api/checkout', depth: 2, from: 18, to: 19 },
+    { name: 'checkout', depth: 2, from: 19, to: 171 },
+    { name: 'validate cart', depth: 3, from: 19, to: 50 },
+    { name: 'charge card', depth: 3, from: 50, to: 171, events: [{ at: 171, label: 'payment accepted' }] },
+  ]}
+/>
+
+Click any backend span: `session.id` and `user.id` are on it, copied from the browser's `baggage` by the `BaggageSpanProcessor`. That is how you go from a backend span to the session of the person who caused it.
+
+<Aside>The root is still `POST /api/checkout`, without the browser span? `propagateTo` does not match the API URL (use the RegExp), or the page was not reloaded after editing `rum.js`.</Aside>
+
+### Browser events
+
+**Explore → Loki**:
+
+```txt title="LogQL"
+{service_name="tiny-shop-frontend"}
+```
+
+You see `session.start`, `navigation`, `cart.added`, `http.request.failed` (the 500), `exception` (the thrown error) and `web_vital` records, each with `session_id`. Each is an OpenTelemetry log record with an `event.name`; Loki shows the attribute `session.id` as `session_id`.
+
+### The session
+
+**More apps → ouo11y RUM → Sessions**.
+
+## What you should see
+
+Your session is `crashed` (the uncaught error), with its traces and a replay of what you clicked: the same visit you just found piece by piece in Tempo and Loki, in one place.
+
+A session's status is the worst thing that happened in it: an uncaught exception makes it **crashed**, a failed request or a handled exception **errored**, nothing at all **healthy**. See [Sessions and health](/docs/concepts/sessions/).
+
+You are done. The last page stops the stack and lists what to check when something does not work.
