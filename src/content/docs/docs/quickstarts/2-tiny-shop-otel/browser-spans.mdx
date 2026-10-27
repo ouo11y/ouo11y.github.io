@@ -1,0 +1,203 @@
+---
+title: 'The browser: spans and the session'
+description: Set up the OpenTelemetry JS SDK in the browser by hand, keep a RUM session id, and put it on every span and in the baggage header to your API.
+sidebar: { order: 4, label: 'Browser: spans and session' }
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import QuickstartFile from '../../../../../components/QuickstartFile.astro';
+import Sequence from '../../../../../components/diagrams/Sequence.astro';
+import SpanTree from '../../../../../components/diagrams/SpanTree.astro';
+
+From here on you write the browser side yourself. This page covers the first three rows of [the contract](/docs/quickstarts/2-tiny-shop-otel/#what-ouo11y-needs-from-a-browser): **where** the data goes, **who** sent it, and **which session** it belongs to.
+
+## Step 6. Instrument the web app by hand
+
+Stop Vite with Ctrl+C in its terminal tab (still in `frontend/`), then install what the browser needs:
+
+```bash
+npm install @opentelemetry/api @opentelemetry/core @opentelemetry/resources @opentelemetry/sdk-trace @opentelemetry/sdk-logs @opentelemetry/exporter-trace-otlp-http @opentelemetry/exporter-logs-otlp-http @opentelemetry/instrumentation @opentelemetry/browser-instrumentation rrweb web-vitals
+```
+
+| Package | What it does here |
+|---|---|
+| `@opentelemetry/api` | what your code calls: `trace`, `logs`, `propagation`, `context` |
+| `@opentelemetry/sdk-trace` | the tracer provider, span processors, and `StackContextManager` for the browser (OpenTelemetry JS 3.0 merged `sdk-trace-web` into it) |
+| `@opentelemetry/sdk-logs` | the logger provider: RUM events are OTLP log records |
+| `@opentelemetry/exporter-trace-otlp-http`, `exporter-logs-otlp-http` | send spans and logs to the collector over OTLP/HTTP |
+| `@opentelemetry/instrumentation` | `registerInstrumentations()`, which turns instrumentations on; it records nothing itself |
+| `@opentelemetry/browser-instrumentation` | only its `experimental/fetch` part here: a span for every `fetch`, with `traceparent` on calls to your API |
+| `@opentelemetry/core`, `resources` | the W3C trace-context and baggage propagators; the resource (who sent the data) |
+| `rrweb` | records the DOM for session replay |
+| `web-vitals` | LCP, INP, CLS, FCP, TTFB, measured the way Chrome measures them |
+
+<details>
+<summary>Which OpenTelemetry browser package is which?</summary>
+
+The names are close and several are on their way out. As of OpenTelemetry JS 3.0:
+
+| Package | Status | What it is |
+|---|---|---|
+| `@opentelemetry/sdk-trace` | current | The tracer provider. Since 3.0 it also has the browser's `StackContextManager`. |
+| `@opentelemetry/sdk-trace-web` | deprecated ("Use @opentelemetry/sdk-trace") | The old browser tracer provider, with `register()`. Its last version is 2.x. |
+| `@opentelemetry/instrumentation` | current | The base class every instrumentation extends, and `registerInstrumentations()`. Collects nothing on its own. |
+| `@opentelemetry/instrumentation-fetch`, `instrumentation-xml-http-request` | deprecated in their READMEs (npm does not flag them) | The old fetch and XHR span instrumentations from the opentelemetry-js repo. |
+| `@opentelemetry/instrumentation-document-load`, `instrumentation-user-interaction` | contrib, older | Page-load spans and click spans from opentelemetry-js-contrib. |
+| `@opentelemetry/browser-instrumentation` | experimental, from the new [opentelemetry-browser](https://github.com/open-telemetry/opentelemetry-browser) repo | The replacements, one import path each under `experimental/`: `fetch`, `xhr`, `navigation`, `navigation-timing`, `resource-timing`, `user-action`, `web-vitals`, `console`, `errors`. |
+| `@opentelemetry/browser-sdk` | experimental, same repo | A one-call setup of the providers and those instrumentations. |
+| `@opentelemetry/instrumentation-web` | does not exist | Often what people mean by one of the above. |
+
+This quickstart takes only `fetch` from `@opentelemetry/browser-instrumentation`. Spans are matched to the session by their `session.id` attribute, so the span shape does not matter to ouo11y. Its other instrumentations emit events with their own names and attributes: `browser.navigation`, `browser.web_vital` and `browser.user_action.click` would be custom events to ouo11y, not page views or vitals, and their `exception` has no `ouo.exception.fatal`, so a crash would count as errored. [Step 6b](/docs/quickstarts/2-tiny-shop-otel/rum-events/) writes those events itself.
+
+`browser-instrumentation` 0.9 is still built on the 0.223 (2.x) line of `@opentelemetry/instrumentation`; npm installs that copy next to yours, and it works with the 3.0 SDK because both use the one global API.
+
+</details>
+
+All the telemetry code goes in one folder, `frontend/src/telemetry/`. Create it:
+
+```bash
+mkdir src/telemetry
+```
+
+## 6a. Send spans to ouo11y
+
+Three files: where the data goes, the session id, and OpenTelemetry itself.
+
+### Where the data goes
+
+Create `frontend/src/telemetry/config.js`:
+
+<QuickstartFile qs="tiny-shop-otel" path="result/frontend/src/telemetry/config.js" />
+
+The project token ships in your JavaScript bundle, so anyone can read it. That is by design: it only lets a page send data to one project, the way a public analytics key does.
+
+### The session id
+
+Create `frontend/src/telemetry/session.js`. It keeps one session id per visit in `localStorage`, shared by all tabs, and replaces it after 30 minutes without activity or after 4 hours. These are the rules ouo11y uses everywhere ([Sessions and health](/docs/concepts/sessions/)):
+
+<QuickstartFile qs="tiny-shop-otel" path="result/frontend/src/telemetry/session.js" />
+
+- **`getSession()`** is called for every signal. It reads the session from `localStorage` first, since another tab may have touched or replaced it, and starts a new one when the old one has expired. The id it returns is always valid.
+- **`touch()`** records activity: a click, a key, a scroll or a request. It writes to `localStorage` at most once a second.
+- **`onSessionChange()`** lets the next files react when a session starts or ends: [step 6b](/docs/quickstarts/2-tiny-shop-otel/rum-events/) sends `session.start` and `session.end`, [step 6c](/docs/quickstarts/2-tiny-shop-otel/replay/) starts a new replay.
+- **`user.id`** is anonymous here: a random id kept with the browser across sessions. `device.id` is random too, one per browser profile, and never a fingerprint.
+
+### OpenTelemetry
+
+Create `frontend/src/telemetry/otel.js`:
+
+<QuickstartFile qs="tiny-shop-otel" path="result/frontend/src/telemetry/otel.js" />
+
+What each part is for:
+
+- **The resource** says who sent the data. `ouo.platform = "web"` is how ouo11y knows a browser sent it; `service.version` is the app version that session health is broken down by.
+- **`SessionSpanProcessor`** puts `session.id` and `user.id` on every span when it starts. That is how ouo11y lists a session's traces.
+- **`SessionPropagator`** sends `traceparent` (one trace from the click to the API) and `baggage` with the session (the API's `BaggageSpanProcessor` copies it onto its spans). It adds the baggage itself on every request: the browser has no async context, so baggage set with `context.with()` is gone by the time `fetch` sends the request.
+- **`propagateTraceHeaderCorsUrls`** must be a RegExp: OpenTelemetry compares a plain string with the **whole** request URL, so `"http://localhost:5001"` matches no call and the API starts its own trace.
+- **`ignoreUrls`** keeps the exporters' own requests to the collector out of the traces.
+- **`FetchInstrumentation`** comes from `@opentelemetry/browser-instrumentation/experimental/fetch`, the replacement for the deprecated `@opentelemetry/instrumentation-fetch` (same options). Pass `sanitizeUrl` if your URLs carry tokens: it rewrites `url.full` before the span records it.
+- **The logger provider** is set up now and used in [step 6b](/docs/quickstarts/2-tiny-shop-otel/rum-events/).
+
+### How `session.id` travels
+
+The session id is set in three places, by three pieces of code, so that every span of the trace carries it, the API's too. Press **Play** to follow one checkout.
+
+<Sequence
+  caption="session.id goes on the browser span when it starts, into the baggage header when fetch sends the request, and onto every API span from that header."
+  actors={['session.js', 'otel.js', 'API', 'Collector']}
+  steps={[
+    { from: 1, to: 1, label: 'fetch span starts', note: 'FetchInstrumentation' },
+    { from: 1, to: 0, label: 'getSession()', note: 'SessionSpanProcessor.onStart' },
+    { from: 0, to: 1, label: 'session.id, user.id', note: 'set on the span' },
+    { from: 1, to: 1, label: 'inject headers', note: 'SessionPropagator adds baggage' },
+    { from: 1, to: 2, label: 'POST /api/checkout', note: 'traceparent + baggage' },
+    { from: 2, to: 2, label: 'copy baggage', note: 'BaggageSpanProcessor, every span' },
+    { from: 2, to: 1, label: '200 OK' },
+    { from: 1, to: 3, label: 'browser span', note: '/v1/traces' },
+    { from: 2, to: 3, label: 'API spans', note: '/v1/traces' },
+  ]}
+/>
+
+The request (row 5) carries two headers:
+
+```http
+traceparent: 00-<trace id>-<fetch span id>-01
+baggage: session.id=<uuid>,user.id=<uuid>
+```
+
+`traceparent` makes the API's spans children of the browser's `fetch` span: one trace. `baggage` carries the session, which the API's spans do not know otherwise.
+
+<Aside title="Why the baggage is added at inject time">
+On a server, you would put the session in the baggage of the current context and let it flow. The browser has no async context: `StackContextManager` forgets the context at the first `await`, so baggage set with `context.with()` is gone by the time `fetch` sends the request. `SessionPropagator` reads the session itself, on every request, and cannot lose it.
+</Aside>
+
+### Start it
+
+Create `frontend/src/telemetry/index.js`, a first version that only starts the session:
+
+```js title="frontend/src/telemetry/index.js"
+// RUM without the ouo SDK. Import this first, before React.
+import "./otel.js";
+import { getSession } from "./session.js";
+
+console.log("[telemetry] session", getSession().id);
+
+export { API } from "./config.js";
+export function addEvent() {}
+```
+
+It also exports an empty `addEvent`, so `App.jsx` can import it now. [Step 6d](/docs/quickstarts/2-tiny-shop-otel/custom-event/) uses the real one.
+
+Replace `frontend/src/main.jsx` with:
+
+<QuickstartFile qs="tiny-shop-otel" path="result/frontend/src/main.jsx" />
+
+In `frontend/src/App.jsx`, replace the line `const API = "http://localhost:5001";` with:
+
+```jsx
+import { API, addEvent } from "./telemetry";
+```
+
+Collector moved to 14318 in [step 4c](/docs/quickstarts/2-tiny-shop-otel/stack/#4c-check-the-ports)? Create `frontend/.env.local`:
+
+```ini title="frontend/.env.local"
+VITE_OTLP_ENDPOINT=http://localhost:14318
+VITE_REPLAY_ENDPOINT=http://localhost:14319
+```
+
+Start Vite:
+
+```bash
+npm run dev
+```
+
+## What you should see
+
+Reload http://localhost:5173 with DevTools open. The Console prints `[telemetry] session <uuid>`. In the Network tab, the API calls have an `OPTIONS` preflight (the browser asks the API to accept `traceparent` and `baggage`) and a few seconds later a `POST /v1/traces` to the collector answers `200`.
+
+Click **Add**, then **Checkout**, wait up to a minute, then in Grafana: **Explore**, **Tempo**, **TraceQL**:
+
+```text
+{ resource.service.name = "tiny-shop-otel-backend" && name = "charge card" }
+```
+
+Open the newest trace. Its root is now the browser:
+
+<SpanTree
+  duration={200}
+  caption="One trace from the browser's fetch to the API's charge card. Every span has the same session.id."
+  spans={[
+    { service: 'tiny-shop-otel-frontend', name: 'POST', depth: 0, from: 0, to: 190, note: 'fetch span · session.id, user.id', tone: 'accent' },
+    { service: 'tiny-shop-otel-backend', name: 'POST /api/checkout', depth: 1, from: 18, to: 176, note: 'session.id, user.id from baggage' },
+    { name: 'middleware - corsMiddleware', depth: 2, from: 19, to: 20 },
+    { name: 'middleware - jsonParser', depth: 2, from: 20, to: 22 },
+    { name: 'request handler - /api/checkout', depth: 2, from: 22, to: 23 },
+    { name: 'checkout', depth: 2, from: 23, to: 174 },
+    { name: 'validate cart', depth: 3, from: 23, to: 53 },
+    { name: 'charge card', depth: 3, from: 53, to: 174 },
+  ]}
+/>
+
+Click any span, the browser's and the API's: `session.id` and `user.id` are on all of them, and they are the id the Console printed.
+
+Next: [send the RUM events](/docs/quickstarts/2-tiny-shop-otel/rum-events/).

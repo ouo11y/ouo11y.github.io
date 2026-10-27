@@ -1,0 +1,59 @@
+---
+title: See the full picture
+description: One crashed session in ouo11y RUM, with its activity, its traces from the browser to the API, and its replay, all from code you own.
+sidebar: { order: 8, label: 'The full picture' }
+---
+
+import Timeline from '../../../../../components/diagrams/Timeline.astro';
+import SpanTree from '../../../../../components/diagrams/SpanTree.astro';
+
+## Step 7. See the full picture
+
+Reload http://localhost:5173. Click **Add** twice, **Checkout**, **Call broken API**, then **Throw error**. In the Network tab, `POST /v1/replay/chunks` on port 4319 answers `202` every few seconds. Switch to another tab for a moment, then wait up to a minute.
+
+Your visit is now one session in ouo11y. Every signal in it carries the same `session.id`, so rum-api puts them on one line:
+
+<Timeline
+  duration={30}
+  caption="The session you just made, roughly. Your times will differ. The fatal exception makes it crashed."
+  spans={[
+    { from: 1, to: 2, label: 'GET /api/products', tone: 'info' },
+    { from: 9, to: 10, label: 'POST /api/checkout', tone: 'info' },
+    { from: 13, to: 14, label: 'GET /api/fail', tone: 'bad' },
+  ]}
+  events={[
+    { at: 0, label: 'session.start', tone: 'ok' },
+    { at: 0, label: 'navigation', detail: '(entry) -> /' },
+    { at: 2, label: 'web_vital', detail: 'TTFB, FCP' },
+    { at: 5, label: 'cart.added', detail: 'Coffee', tone: 'info' },
+    { at: 7, label: 'cart.added', detail: 'Tea', tone: 'info' },
+    { at: 14, label: 'http.request.failed', detail: 'GET /api/fail 500', tone: 'warn' },
+    { at: 18, label: 'exception', detail: 'Error: Button exploded, fatal', tone: 'bad' },
+    { at: 24, label: 'web_vital', detail: 'LCP, INP, CLS, when hidden' },
+  ]}
+/>
+
+## What you should see
+
+In Grafana, **More apps → ouo11y RUM → Sessions**, open the newest session:
+
+- the header says `crashed`, with 1 crash, 1 failed request and its traces;
+- the activity list next to the replay has the navigation, the Web Vitals, both `cart.added`, the failed request and the exception;
+- the **Replay** panel plays what you clicked;
+- each trace opens in Tempo, from the browser's `fetch` span to the API's `charge card`.
+
+<SpanTree
+  duration={200}
+  caption="The checkout trace, opened from the session. The browser's fetch span is its root."
+  spans={[
+    { service: 'tiny-shop-otel-frontend', name: 'POST', depth: 0, from: 0, to: 190, tone: 'accent' },
+    { service: 'tiny-shop-otel-backend', name: 'POST /api/checkout', depth: 1, from: 18, to: 176 },
+    { name: 'checkout', depth: 2, from: 23, to: 174 },
+    { name: 'validate cart', depth: 3, from: 23, to: 53 },
+    { name: 'charge card', depth: 3, from: 53, to: 174 },
+  ]}
+/>
+
+This is the same session the ouo11y SDK would have produced, from code you own. Nothing in your browser bundle is ouo11y code: open `frontend/package.json` and every dependency is React, OpenTelemetry, rrweb or web-vitals.
+
+Next: [what the SDK adds on top](/docs/quickstarts/2-tiny-shop-otel/what-the-sdk-adds/).

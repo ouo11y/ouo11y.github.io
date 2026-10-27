@@ -1,0 +1,35 @@
+---
+title: What the ouo11y SDK adds on top
+description: What @ouo11y/browser does beyond the contract, and how hard each part is to add to your own telemetry folder.
+sidebar: { order: 9, label: 'What the SDK adds' }
+---
+
+## Step 8. What the ouo11y SDK adds on top
+
+What you built covers the contract. `@ouo11y/browser` also does the following. Add what you need, or switch to the SDK later without changing anything on the server side: the stack, the dashboards and the sessions stay the same.
+
+| The SDK | Here | To add it to `telemetry/` |
+|---|---|---|
+| `setUser()` / `clearUser()` / `endSession()`, with the `user_change` and `manual` end reasons | an anonymous user id per browser | **Easy**, about 30 lines in `session.js`: set `userId`, or end the session and start a new one with that reason |
+| Session sampling and a byte cap on buffered replay | every session is recorded and sent | **Easy**, about 10 lines each: decide once per session at start and keep the decision in the session; drop replay events past the cap |
+| XHR spans | `fetch` spans only | **Easy**, a few lines: `XhrInstrumentation` from `@opentelemetry/browser-instrumentation/experimental/xhr` |
+| Long tasks, resource load errors, `console.error` | uncaught errors only | **Easy**, 15 to 20 lines each: a `PerformanceObserver` for `longtask`, a capture-phase `error` listener, a wrapper around `console.error`, each calling `emit()` |
+| `ouo.sdk.name` / `ouo.sdk.version`, browser and OS resource attributes | not sent | **Easy to start**, about 20 lines from `navigator.userAgentData`; parsing user agents well across browsers is the long tail |
+| gzips replay and OTLP bodies | plain JSON (the collector also accepts `Content-Encoding: gzip`) | **Easy for replay**, about 15 lines with `CompressionStream("gzip")` in `replay.js`. OTLP needs your own exporter around the OTLP serializer |
+| Click and interaction spans | none | **Medium**: a span per click that the `fetch` spans it causes join (the context has to survive the `await`s, which `StackContextManager` does not do). `user-action` from `browser-instrumentation` gives click events, not spans |
+| Records the replay in one tab at a time (a lease in `localStorage`) | every open tab records; two tabs of one session interleave in its replay | **Medium**, about 40 lines: a lease with a heartbeat and an expiry so a closed or crashed tab hands over, and a full snapshot in the tab that takes over |
+| Keeps unsent data in IndexedDB and retries after a network error | a failed request is lost | **Hard**, 150 to 250 lines: your own span, log and replay exporters that store the serialized bodies, retry with backoff, cap the stored bytes, and send them in order without duplicates after a reload |
+| A kill switch | none | **Needs a server**: a config endpoint the page reads at start |
+
+Most rows are a few lines; together they would roughly double the 400 lines in `telemetry/`. The cost is less the code than the edge cases: `@ouo11y/browser` is about 4,700 lines with 4,100 lines of tests, most of them for the storage, retry, tab and page-lifecycle cases of the last rows.
+
+## What you should see
+
+Nothing new runs on this page. What you have is a choice, and both sides of it work with the same stack:
+
+- **Keep your own code** when your team wants only upstream libraries in the bundle, or already runs OpenTelemetry in the browser. Add rows from the table as you need them.
+- **Use the SDK** when you want the last rows (retries, one recording tab, a kill switch) without writing and testing them. See [the ouo11y SDK](/docs/instrument/ouo-sdk/).
+
+[Bring your own OpenTelemetry](/docs/instrument/bring-your-own-otel/) has the contract as a reference page, for when you instrument an app that is not Tiny Shop.
+
+Next: [clean up](/docs/quickstarts/2-tiny-shop-otel/clean-up/).

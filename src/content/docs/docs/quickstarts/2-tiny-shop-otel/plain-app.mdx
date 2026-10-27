@@ -1,0 +1,214 @@
+---
+title: The plain app
+description: An Express API and a React page with three products, a checkout, a broken API call and a button that throws. No telemetry yet.
+sidebar: { order: 1, label: 'The plain app' }
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import Flow from '../../../../../components/diagrams/Flow.astro';
+
+First the shop itself, with no telemetry at all. You will add the instrumentation to these two files later, so you see exactly what it changes.
+
+<Flow
+  caption="Two apps and one call between them. Nothing is instrumented yet."
+  columns={[
+    { label: 'Browser', arrow: 'fetch', nodes: [{ title: 'React page', sub: 'Vite · localhost:5173' }] },
+    { label: 'API', nodes: [{ title: 'Express', sub: 'localhost:5001<br>/api/products · /api/checkout · /api/fail' }] },
+  ]}
+/>
+
+<Aside title="How to follow these pages">
+Every command goes in its own block: run them one by one, in order. Paths are relative to `tiny-shop-otel/`, wherever you create it, and each command says which of its folders it runs in. When a step says "replace the file", select everything in it and paste the new content over it.
+</Aside>
+
+## Step 0. Check your tools
+
+Node 24 or newer:
+
+```bash
+node -v
+```
+
+Docker Desktop must be running. This prints the server details, not "Cannot connect":
+
+```bash
+docker info
+```
+
+VS Code's `code` command. If it is not found, open VS Code, press Cmd+Shift+P and run **Shell Command: Install 'code' command in PATH**.
+
+```bash
+code --version
+```
+
+## Step 1. Create the folders and open VS Code
+
+From the folder where you keep your projects:
+
+```bash
+mkdir -p tiny-shop-otel/backend tiny-shop-otel/stack
+```
+
+```bash
+cd tiny-shop-otel
+```
+
+```bash
+code .
+```
+
+In VS Code, open a terminal with Ctrl+\`. You will use three terminal tabs (the `+` button): one for the backend, one for the frontend, one for the stack. Each new tab opens in `tiny-shop-otel/`.
+
+## Step 2. A simple API, no telemetry yet
+
+In the first terminal tab, from `tiny-shop-otel/`:
+
+```bash
+cd backend
+```
+
+```bash
+npm init -y
+```
+
+```bash
+npm install express cors
+```
+
+Create `backend/server.js`:
+
+```js title="backend/server.js"
+const express = require("express");
+const cors = require("cors");
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const products = [
+  { id: 1, name: "Coffee", price: 4 },
+  { id: 2, name: "Tea", price: 3 },
+  { id: 3, name: "Cake", price: 6 },
+];
+
+app.get("/api/products", async (req, res) => {
+  await sleep(80);
+  res.json(products);
+});
+
+app.post("/api/checkout", async (req, res) => {
+  await sleep(150);
+  res.json({ ok: true, orderId: Math.floor(Math.random() * 100000) });
+});
+
+app.get("/api/fail", (req, res) => {
+  res.status(500).json({ error: "inventory service unavailable" });
+});
+
+app.listen(5001, () => console.log("tiny-shop API on http://localhost:5001"));
+```
+
+Three routes: the product list, a checkout that takes 150 ms, and `/api/fail`, which always answers `500`. You will use that one to make the session `errored`.
+
+Run it:
+
+```bash
+node server.js
+```
+
+In another terminal tab, check that it answers:
+
+```bash
+curl localhost:5001/api/products
+```
+
+You get the three products as JSON. Leave the API running.
+
+## Step 3. A dummy React UI
+
+In the second terminal tab, from `tiny-shop-otel/` (Vite creates `frontend/`):
+
+```bash
+npm create vite@latest frontend -- --template react --no-interactive
+```
+
+```bash
+cd frontend
+```
+
+```bash
+npm install
+```
+
+Replace `frontend/src/App.jsx` with:
+
+```jsx title="frontend/src/App.jsx"
+import { useEffect, useState } from "react";
+
+const API = "http://localhost:5001";
+
+export default function App() {
+  const [products, setProducts] = useState([]);
+  const [cart, setCart] = useState([]);
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    fetch(`${API}/api/products`).then((r) => r.json()).then(setProducts);
+  }, []);
+
+  async function checkout() {
+    const res = await fetch(`${API}/api/checkout`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ items: cart.map((p) => p.id) }),
+    });
+    const data = await res.json();
+    setMessage(`Order #${data.orderId} placed`);
+    setCart([]);
+  }
+
+  async function callBrokenApi() {
+    const res = await fetch(`${API}/api/fail`);
+    setMessage(`API answered ${res.status}`);
+  }
+
+  function crash() {
+    throw new Error("Button exploded");
+  }
+
+  return (
+    <main style={{ fontFamily: "sans-serif", maxWidth: 480, margin: "40px auto" }}>
+      <h1>Tiny Shop</h1>
+      <ul>
+        {products.map((p) => (
+          <li key={p.id}>
+            {p.name} (${p.price}) <button onClick={() => setCart([...cart, p])}>Add</button>
+          </li>
+        ))}
+      </ul>
+      <p>Cart: {cart.length} item(s)</p>
+      <button onClick={checkout} disabled={!cart.length}>Checkout</button>{" "}
+      <button onClick={callBrokenApi}>Call broken API</button>{" "}
+      <button onClick={crash}>Throw error</button>
+      <p>{message}</p>
+    </main>
+  );
+}
+```
+
+Start it:
+
+```bash
+npm run dev
+```
+
+## What you should see
+
+Open http://localhost:5173. You see **Tiny Shop** and three products: Coffee, Tea and Cake. They came from your API, so the page reached it.
+
+Click **Add**, then **Checkout**: the page says "Order #… placed". **Call broken API** says "API answered 500", and **Throw error** does nothing you can see, apart from an error in the DevTools Console.
+
+The app works, and nothing is instrumented yet. Leave both apps running.
+
+Next: [the stack, one service at a time](/docs/quickstarts/2-tiny-shop-otel/stack/).

@@ -1,0 +1,111 @@
+---
+title: 'The browser: RUM events'
+description: Send session.start, exception, http.request.failed, navigation and web_vital as OpenTelemetry log records, the events ouo11y builds a session from.
+sidebar: { order: 5, label: 'Browser: RUM events' }
+---
+
+import QuickstartFile from '../../../../../components/QuickstartFile.astro';
+import Flow from '../../../../../components/diagrams/Flow.astro';
+
+## 6b. Send the RUM events
+
+Spans alone are not a session for ouo11y: it builds sessions from log records. Each RUM event is one OTLP log record whose `event.name` says what happened, with `session.id` and `user.id` on it like on the spans. This is the **what happened** row of [the contract](/docs/quickstarts/2-tiny-shop-otel/#what-ouo11y-needs-from-a-browser).
+
+<Flow
+  caption="The worst event of a session sets its status. Any other event name is a custom event: shown on the timeline, never counted in health."
+  columns={[
+    { label: 'Event', arrow: 'sets', nodes: [
+      { title: 'exception', sub: 'ouo.exception.fatal = true', tone: 'bad' },
+      { title: 'exception', sub: 'ouo.exception.fatal = false' , tone: 'warn' },
+      { title: 'http.request.failed', sub: 'a 4xx or 5xx answer', tone: 'warn' },
+      { title: 'session.start · navigation · web_vital · cart.added', sub: 'nothing went wrong' },
+    ] },
+    { label: 'Session status', nodes: [
+      { title: 'crashed', tone: 'bad' },
+      { title: 'errored', sub: 'unless it also crashed', tone: 'warn' },
+      { title: 'healthy', sub: 'no exception, no failed request', tone: 'ok' },
+    ] },
+  ]}
+/>
+
+### The events and their attributes
+
+Every event also carries `event.name`, `session.id` and `user.id`.
+
+| `event.name` | Attributes | Sent by |
+|---|---|---|
+| `session.start` | `ouo.session.started_at`, `device.id`, and `session.previous_id` when it replaced an expired session | `session.js`, when a session starts |
+| `session.end` | `ouo.session.end_reason` (`inactivity` or `max_duration`), `ouo.session.duration_ms`, `device.id` | `session.js`, when it replaces an expired session |
+| `exception` | `exception.type`, `exception.message`, `exception.stacktrace`, `ouo.exception.fatal`, `ouo.exception.handled` | uncaught errors and unhandled rejections |
+| `http.request.failed` | `http.request.method`, `url.full`, `http.response.status_code` | the fetch instrumentation, for every 4xx and 5xx |
+| `navigation` | `url.path`, `ouo.navigation.from` | the first load and every client-side route change |
+| `web_vital` | `ouo.web_vital.name`, `ouo.web_vital.value`, `ouo.web_vital.rating` | `web-vitals`, usually when the page is hidden |
+| anything else | yours | `addEvent()`, [step 6d](/docs/quickstarts/2-tiny-shop-otel/custom-event/) |
+
+The `exception.*`, `http.*` and `url.*` names are OpenTelemetry semantic conventions. The `ouo.` names wait for one: see [Semantic conventions](/docs/concepts/semantic-conventions/).
+
+### The code
+
+Create `frontend/src/telemetry/events.js`:
+
+<QuickstartFile qs="tiny-shop-otel" path="result/frontend/src/telemetry/events.js" />
+
+- **`emit`** is the one function that makes a RUM event: an OTLP log record with `eventName` and the same name as the `event.name` attribute, plus `session.id` and `user.id`. Its `body` is a one-line summary (`GET http://localhost:5001/api/fail 500`, `LCP 176 ms good`), which is the log line Loki shows; ouo11y reads only the attributes.
+- **`session.start` / `session.end`** come from `session.js` when it starts or replaces a session. `session.end` is a courtesy: ouo11y also ends a session on its own after 30 minutes of silence.
+- **`exception`** with `ouo.exception.fatal = true` marks the session `crashed`. For a caught error you report yourself, send `fatal: false` and `handled: true`: the session is `errored`.
+- **`http.request.failed`** comes from the fetch instrumentation's `applyCustomAttributesOnSpan` hook in `otel.js`, for every 4xx and 5xx answer.
+- **`navigation`** is a page view; `trackNavigation` also wraps `history.pushState`, which is what client-side routers call.
+- **`web_vital`** values come from `web-vitals`. Most of them are only final when the page is hidden, which is why [step 6c](/docs/quickstarts/2-tiny-shop-otel/replay/) flushes when that happens.
+
+### Start the events
+
+Replace `frontend/src/telemetry/index.js` with a second version:
+
+```js title="frontend/src/telemetry/index.js"
+// RUM without the ouo SDK. Import this first, before React.
+import { captureErrors, trackNavigation, trackWebVitals } from "./events.js";
+import { flushTelemetry } from "./otel.js";
+import { getSession, touch } from "./session.js";
+
+getSession(); // resume the session, or start one (session.start)
+captureErrors();
+trackNavigation();
+trackWebVitals();
+
+// User activity keeps the session alive.
+for (const type of ["click", "keydown", "scroll", "touchstart"]) {
+  addEventListener(type, touch, { capture: true, passive: true });
+}
+
+// The tab is hidden: it may be closed next, so send everything now.
+addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") flushTelemetry();
+});
+
+console.log("[telemetry] session", getSession().id);
+
+export { API } from "./config.js";
+export { addEvent } from "./events.js";
+```
+
+Your session started in [step 6a](/docs/quickstarts/2-tiny-shop-otel/browser-spans/), before `session.start` existed. Start a fresh one: in the DevTools Console run
+
+```js
+localStorage.removeItem("tiny-shop.session")
+```
+
+and reload. Click **Add** twice, **Checkout**, **Call broken API** and **Throw error**, then switch to another browser tab for a moment (the page is hidden: the Web Vitals are sent).
+
+## What you should see
+
+In Grafana, **Explore**, **Loki**:
+
+```text
+{service_name="tiny-shop-otel-frontend"}
+```
+
+`session.start`, `navigation`, `web_vital`, `http.request.failed` and `exception`, each with `session_id`. There is no `cart.added` yet: **Add** sends it from [step 6d](/docs/quickstarts/2-tiny-shop-otel/custom-event/) on.
+
+Then **More apps → ouo11y RUM → Sessions**: your session is there, `crashed`, with 1 failed request and its traces. The replay panel is still empty: that is the next step.
+
+Next: [record the replay](/docs/quickstarts/2-tiny-shop-otel/replay/).

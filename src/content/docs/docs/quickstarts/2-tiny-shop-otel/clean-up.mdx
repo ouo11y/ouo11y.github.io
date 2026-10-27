@@ -1,0 +1,42 @@
+---
+title: Clean up and troubleshooting
+description: Stop the apps and the stack, and what to check when a span, an event, a session or a replay does not show up.
+sidebar: { order: 10, label: 'Clean up, troubleshooting' }
+---
+
+## Step 9. Clean up
+
+Stop the API and Vite with Ctrl+C. Stop the stack, keeping its data (in the stack's tab, from `stack/`):
+
+```bash
+docker compose down
+```
+
+or delete its data too:
+
+```bash
+docker compose down -v
+```
+
+## What you should see
+
+`docker compose ps` lists no services, and http://localhost:3000 no longer answers. With `down`, your sessions and traces are still there the next time you run `docker compose up -d`; with `down -v` they are gone.
+
+## When something does not work
+
+| You see | Cause and fix |
+|---|---|
+| `Bind for 0.0.0.0:4318 failed: port is already allocated` | another stack has the port: [step 4c](/docs/quickstarts/2-tiny-shop-otel/stack/#4c-check-the-ports), move this one with `stack/.env` |
+| `rum-api` keeps restarting after a pull | a newer `latest` that wants a different config: `docker compose logs rum-api` names the key; pin the tested version ([step 4a](/docs/quickstarts/2-tiny-shop-otel/stack/#4a-create-the-files), "Image versions") |
+| `denied` when pulling `ghcr.io/ouo11y/...` | not logged in to ghcr.io, or no read access yet: [step 4b](/docs/quickstarts/2-tiny-shop-otel/stack/#4b-log-in-to-ghcrio) |
+| `401` from `/v1/traces`, `/v1/logs` or `/v1/replay/chunks` | the `Authorization` header is missing or wrong (`AUTHORIZATION` in `config.js`) |
+| CORS error on the collector in the console | the page is not on `localhost` / `127.0.0.1` (the collector's allowed origins), or a port in `.env.local` is wrong |
+| The backend trace starts at `POST /api/checkout`, without the browser span | `propagateTraceHeaderCorsUrls` does not match the API URL (use the RegExp), or the page was not reloaded |
+| Backend spans have no `session.id` | the `baggage` header is not sent (`SessionPropagator` not registered) or `BaggageSpanProcessor` is missing in `instrumentation.js` |
+| Traces and logs in Grafana, but no session in ouo11y RUM | the log records lack `session.id`, or the resource lacks `ouo.platform` or `service.name` |
+| A session with no replay | no `202` from `:4319/v1/replay/chunks`: check the port (`VITE_REPLAY_ENDPOINT`) and the headers |
+| Replay shows a blank page | the chunk with the full snapshot was lost; reload the page to record a new one |
+| No `LCP` or `FCP` in Loki | the page loaded in a background tab: web-vitals reports them only for pages that were visible while loading |
+| Nothing in Tempo yet | wait up to a minute: new traces reach search later than trace-by-id |
+
+Back to [the overview](/docs/quickstarts/2-tiny-shop-otel/), or read [Bring your own OpenTelemetry](/docs/instrument/bring-your-own-otel/) to apply the same contract to your own app.

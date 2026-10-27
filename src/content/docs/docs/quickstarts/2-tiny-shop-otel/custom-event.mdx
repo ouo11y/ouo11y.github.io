@@ -1,0 +1,33 @@
+---
+title: 'The browser: a custom event'
+description: Record your own event, cart.added, as an OpenTelemetry log record on the session's timeline.
+sidebar: { order: 7, label: 'Browser: custom event' }
+---
+
+import QuickstartFile from '../../../../../components/QuickstartFile.astro';
+
+## 6d. The custom event
+
+Any `event.name` that is not one of the six in [the contract](/docs/quickstarts/2-tiny-shop-otel/rum-events/#the-events-and-their-attributes) is a custom event. ouo11y shows it on the session's timeline and never counts it in health. `addEvent()` from `events.js` makes one:
+
+```js
+addEvent("cart.added", { "product.id": 1 });
+```
+
+Replace `frontend/src/App.jsx` with the final version. Compared with [step 3](/docs/quickstarts/2-tiny-shop-otel/plain-app/#step-3-a-dummy-react-ui), the API URL comes from `telemetry/config.js` (the same value the fetch instrumentation matches), and **Add** records a custom `cart.added` event:
+
+<QuickstartFile qs="tiny-shop-otel" path="result/frontend/src/App.jsx" />
+
+That is the last file. Your `frontend/src/telemetry/` folder now holds the six files of the finished quickstart, about 400 lines in all.
+
+## What you should see
+
+Vite updates the page on its own. Click **Add** on a product. In Grafana, **Explore**, **Loki**, within a few seconds:
+
+```text
+{service_name="tiny-shop-otel-frontend", event_name="cart.added"}
+```
+
+One line per click, `cart.added {"product.id":1,"product.name":"Coffee"}`, with the session's `session_id`.
+
+Next: [see the full picture](/docs/quickstarts/2-tiny-shop-otel/full-picture/).
