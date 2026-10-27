@@ -1,0 +1,131 @@
+---
+title: The stack
+description: The ouo11y stack for the shop, one service at a time. rum-api and Grafana are built from a clone of the ouo11y repository.
+sidebar: { order: 2, label: 2. The stack }
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import Flow from '../../../../../components/diagrams/Flow.astro';
+import QuickstartFile from '../../../../../components/QuickstartFile.astro';
+
+Five services, each in its own folder with its compose file and its config. Every file starts with what the service is for and its ports.
+
+<Flow
+  caption="The apps only talk to the collector. Grafana reads Loki and Tempo directly, and funnels, sessions and replays through rum-api."
+  columns={[
+    { label: 'In', arrow: 'OTLP', nodes: [
+      { title: 'Shop and API', sub: ':4318 events and traces<br>:4319 replay chunks' },
+    ] },
+    { label: '10-collector', nodes: [
+      { title: 'ouo-collector', sub: 'checks the project credential<br>routes each signal', tone: 'accent' },
+    ] },
+    { label: 'Stores', nodes: [
+      { title: '20-tempo', sub: 'traces' },
+      { title: '30-loki', sub: 'page views · custom events' },
+      { title: '50-rum-api', sub: 'funnels · sessions · replays', tone: 'warn' },
+    ] },
+    { label: 'UI', nodes: [
+      { title: '60-grafana', sub: 'ouo11y RUM app · :3000', tone: 'warn' },
+    ] },
+  ]}
+/>
+
+The two orange boxes are built from your clone of the ouo11y repository; the others are released images.
+
+In the third terminal:
+
+```bash
+cd ~/Desktop/tiny-shop-funnels/stack
+```
+
+`compose.yaml` only lists the service folders:
+
+<QuickstartFile qs="tiny-shop-funnels" path="result/stack/compose.yaml" title="stack/compose.yaml" />
+
+## The collector
+
+The collector is the only thing your apps talk to. It checks the project credential (`projects.htpasswd`) and routes traces to Tempo, logs (the SDK's page views and custom events) to Loki, and replay chunks to rum-api. It also copies the OTLP event name into the `event.name` attribute, which Loki turns into a label.
+
+<QuickstartFile qs="tiny-shop-funnels" path="result/stack/10-collector/compose.yaml" title="stack/10-collector/compose.yaml" />
+
+<QuickstartFile qs="tiny-shop-funnels" path="result/stack/10-collector/config.yaml" title="stack/10-collector/config.yaml" open={false} />
+
+<QuickstartFile qs="tiny-shop-funnels" path="result/stack/10-collector/projects.htpasswd" title="stack/10-collector/projects.htpasswd" />
+
+## Tempo
+
+Tempo stores the traces.
+
+<QuickstartFile qs="tiny-shop-funnels" path="result/stack/20-tempo/compose.yaml" title="stack/20-tempo/compose.yaml" />
+
+<QuickstartFile qs="tiny-shop-funnels" path="result/stack/20-tempo/config.yaml" title="stack/20-tempo/config.yaml" open={false} />
+
+## Loki
+
+Loki stores the browser's events: a `navigation` event with `url.path` for every page, and the custom events. These are the funnel steps. `event_name` becomes a label, so rum-api can fetch one kind of step in one query.
+
+<QuickstartFile qs="tiny-shop-funnels" path="result/stack/30-loki/compose.yaml" title="stack/30-loki/compose.yaml" />
+
+<QuickstartFile qs="tiny-shop-funnels" path="result/stack/30-loki/config.yaml" title="stack/30-loki/config.yaml" open={false} />
+
+## rum-api
+
+rum-api builds sessions and funnels from Loki and stores replays. It is built from the clone (`OUO11Y_REPO`), because the `0.4.0` image this guide was verified with has no funnels.
+
+<QuickstartFile qs="tiny-shop-funnels" path="result/stack/50-rum-api/compose.yaml" title="stack/50-rum-api/compose.yaml" />
+
+<QuickstartFile qs="tiny-shop-funnels" path="result/stack/50-rum-api/config.yaml" title="stack/50-rum-api/config.yaml" open={false} />
+
+## Grafana
+
+Grafana with the ouo11y RUM app, which has the **Funnels** page. Its `Dockerfile` builds the plugin from the clone and copies it into `grafana/grafana`, like the released image does. `provisioning/` adds the Loki and Tempo datasources and points the app at rum-api.
+
+<QuickstartFile qs="tiny-shop-funnels" path="result/stack/60-grafana/compose.yaml" title="stack/60-grafana/compose.yaml" />
+
+<QuickstartFile qs="tiny-shop-funnels" path="result/stack/60-grafana/Dockerfile" title="stack/60-grafana/Dockerfile" open={false} />
+
+<QuickstartFile qs="tiny-shop-funnels" path="result/stack/60-grafana/provisioning/datasources/datasources.yaml" title="stack/60-grafana/provisioning/datasources/datasources.yaml" open={false} />
+
+<QuickstartFile qs="tiny-shop-funnels" path="result/stack/60-grafana/provisioning/plugins/ouo11y-rum-app.yaml" title="stack/60-grafana/provisioning/plugins/ouo11y-rum-app.yaml" open={false} />
+
+## Start it
+
+The collector image is private for now: log in to ghcr.io once with a GitHub token that has `read:packages`. Without pull access the collector does not start; email [hello@ouo11y.com](mailto:hello@ouo11y.com).
+
+```bash
+echo $GHCR_TOKEN | docker login ghcr.io -u <github-user> --password-stdin
+```
+
+Point the builds at your clone and start everything. The first run builds rum-api and Grafana, two to three minutes:
+
+```bash
+export OUO11Y_REPO=~/ouo11y
+```
+
+```bash
+docker compose up -d --build
+```
+
+<Aside>
+`OUO11Y_REPO` lives in this terminal only. If you open a new terminal for the stack later, export it again before any `docker compose up`.
+</Aside>
+
+## What you should see
+
+rum-api has the funnel endpoint. An empty funnel gets a 400, not a 404:
+
+```bash
+docker compose exec grafana curl -s -X POST http://rum-api:8080/v1/funnels/query -H 'Authorization: Bearer rt_dev_0000000000000000' -d '{"steps":[]}'
+```
+
+It prints:
+
+```json
+{"error":"a funnel has 2 to 10 steps"}
+```
+
+Open http://localhost:3000 and sign in as admin / testing567. **More apps → ouo11y RUM** has a **Funnels** page. It is empty for now.
+
+Ports taken by another stack? See [When something does not work](/docs/quickstarts/3-funnels/replay/#when-something-does-not-work).
+
+Next: [instrument the API and the shop](/docs/quickstarts/3-funnels/instrument/).
