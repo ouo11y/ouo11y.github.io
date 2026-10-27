@@ -1,7 +1,61 @@
 ---
 title: Quickstarts
-description: From an empty folder to a crashed session, its trace and its replay in Grafana. Every file is on this site.
+description: Three small apps you build from an empty folder, ending with real sessions, traces and replays in Grafana. Every file is on this site.
 sidebar: { order: 0, label: 'Overview' }
 ---
 
-Placeholder: the quickstart series is being written.
+import { Aside, LinkCard } from '@astrojs/starlight/components';
+import Flow from '../../../../components/diagrams/Flow.astro';
+
+Each quickstart starts from an empty folder and ends with something you can see in Grafana. You write every file yourself, one step at a time, and each step says what you should see before you move on. Every file is on the page, and the finished folder is a download, so you never need our repository.
+
+All three use the same small shop: a React page and an Express API. That way the differences are only in what you are learning.
+
+<Flow
+  caption="The same shop in all three. What changes is how the browser is instrumented and what you look at in Grafana."
+  columns={[
+    { label: 'You build', arrow: 'OTLP', nodes: [
+      { title: 'React shop', sub: 'quickstart 1, 3: @ouo11y/browser<br>quickstart 2: plain OpenTelemetry' },
+      { title: 'Express API', sub: 'OpenTelemetry Node SDK' },
+    ] },
+    { label: 'You run', nodes: [
+      { title: 'The ouo11y stack', sub: 'collector · Tempo · Loki · Mimir · rum-api · Grafana', tone: 'accent' },
+    ] },
+    { label: 'You see', nodes: [
+      { title: 'A crashed session', sub: 'its trace, timeline and replay' },
+      { title: 'A funnel', sub: 'quickstart 3: where shoppers dropped off' },
+    ] },
+  ]}
+/>
+
+## The series
+
+<LinkCard
+  title="1. Tiny Shop"
+  description="Start here. Trace an API with OpenTelemetry, add @ouo11y/browser to the shop, and follow one crashed session from the click to the API's spans and the replay. About 30 minutes."
+  href="/docs/quickstarts/1-tiny-shop/"
+/>
+<LinkCard
+  title="2. Tiny Shop without our SDK"
+  description="The same shop with no ouo11y code in the browser: the OpenTelemetry JS SDK, rrweb and web-vitals, written by hand to the contract ouo11y reads. Same sessions, same traces, same replay. About 45 minutes."
+  href="/docs/quickstarts/2-tiny-shop-otel/"
+/>
+<LinkCard
+  title="3. Funnels"
+  description="Page views and custom events as funnel steps, fifty generated shoppers, a funnel in Grafana, and the replay of a shopper who gave up. About 40 minutes."
+  href="/docs/quickstarts/3-funnels/"
+/>
+
+## Which one first?
+
+- **New to ouo11y:** quickstart 1. It is the shortest path to a session you can open.
+- **You cannot ship vendor code in your bundle, or want to know exactly what goes over the wire:** quickstart 2. It is the proof that you do not need our SDK.
+- **You want product analytics on top of RUM:** quickstart 3, after 1.
+
+## What you need
+
+Node 24 or newer, Docker Desktop, and a terminal. Each quickstart checks your tools in its first step.
+
+<Aside type="caution" title="Early access: the stack images are private">
+The ouo11y container images on `ghcr.io` need pull access while we are in early access. Email [hello@ouo11y.com](mailto:hello@ouo11y.com) and we will send it. You can build and run both apps without it, and check their spans and requests in your browser's DevTools.
+</Aside>

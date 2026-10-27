@@ -23,7 +23,15 @@ export default defineConfig({
       sidebar: [
         { label: 'Overview', link: '/docs/' },
         { label: 'Start here', items: [{ autogenerate: { directory: 'docs/start' } }] },
-        { label: 'Quickstarts', items: [{ autogenerate: { directory: 'docs/quickstarts' } }] },
+        {
+          label: 'Quickstarts',
+          items: [
+            { label: 'Overview', link: '/docs/quickstarts/' },
+            { label: '1. Tiny Shop', collapsed: true, items: [{ autogenerate: { directory: 'docs/quickstarts/1-tiny-shop' } }] },
+            { label: '2. Without our SDK', collapsed: true, items: [{ autogenerate: { directory: 'docs/quickstarts/2-tiny-shop-otel' } }] },
+            { label: '3. Funnels', collapsed: true, items: [{ autogenerate: { directory: 'docs/quickstarts/3-funnels' } }] },
+          ],
+        },
         { label: 'Instrument', items: [{ autogenerate: { directory: 'docs/instrument' } }] },
         { label: 'Concepts', items: [{ autogenerate: { directory: 'docs/concepts' } }] },
         { label: 'Operate', items: [{ autogenerate: { directory: 'docs/operate' } }] },
