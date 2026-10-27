@@ -1,0 +1,86 @@
+---
+// A state machine in HTML and CSS: the states as chips, then one row per transition
+// (from -> to, with the trigger). Clicking a state highlights its transitions (a little JS);
+// every row is readable without it, at any width.
+// <StateMachine states={[{ id: 'active', label: 'active', tone: 'ok' }]} transitions={[{ from: 'none', to: 'active', label: 'first activity', note: 'session.start' }]} />
+import '../../styles/diagram.css';
+
+type Tone = 'accent' | 'ok' | 'warn' | 'bad' | 'info';
+interface State { id: string; label: string; sub?: string; tone?: Tone; }
+interface Transition { from: string; to: string; label: string; note?: string; tone?: Tone; }
+interface Props { states: State[]; transitions: Transition[]; caption?: string; }
+const { states, transitions, caption } = Astro.props;
+const byId = Object.fromEntries(states.map((s) => [s.id, s]));
+for (const t of transitions) {
+  if (!byId[t.from] || !byId[t.to]) throw new Error(`StateMachine: unknown state in ${t.from} -> ${t.to}`);
+}
+---
+<figure class="dg sm not-content" data-sm>
+  <div class="states" role="list">
+    {states.map((s) => (
+      <button type="button" role="listitem" class:list={['state', `tone-${s.tone ?? 'accent'}`]} data-state={s.id} aria-pressed="false">
+        <b>{s.label}</b>
+        {s.sub && <small>{s.sub}</small>}
+      </button>
+    ))}
+  </div>
+  <ol class="trans">
+    {transitions.map((t) => {
+      const from = byId[t.from];
+      const to = byId[t.to];
+      return (
+        <li class:list={['t', `tone-${t.tone ?? to.tone ?? 'accent'}`]} data-from={t.from} data-to={t.to}>
+          <span class:list={['chip', 'from', `tone-${from.tone ?? 'accent'}`]}>{from.label}</span>
+          <span class="sym" aria-hidden="true">→</span>
+          <span class="arrow" aria-label="to">
+            <span class="lbl">{t.label}{t.note && <small>{t.note}</small>}</span>
+          </span>
+          <span class:list={['chip', 'to', `tone-${to.tone ?? 'accent'}`]}>{to.label}</span>
+        </li>
+      );
+    })}
+  </ol>
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+  for (const fig of document.querySelectorAll<HTMLElement>('[data-sm]')) {
+    const buttons = [...fig.querySelectorAll<HTMLButtonElement>('[data-state]')];
+    const rows = [...fig.querySelectorAll<HTMLElement>('.t')];
+    let current: string | null = null;
+    const apply = () => {
+      buttons.forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.state === current)));
+      rows.forEach((r) => r.classList.toggle('dim', current !== null && r.dataset.from !== current && r.dataset.to !== current));
+    };
+    for (const b of buttons) b.addEventListener('click', () => { current = current === b.dataset.state ? null : b.dataset.state ?? null; apply(); });
+  }
+</script>
+
+<style>
+  .states { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-bottom: 14px; }
+  .state { font: inherit; color: var(--dg-ink); cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 8px 14px; border-radius: 999px; border: 1.5px solid var(--tone); background: color-mix(in srgb, var(--tone) 10%, var(--dg-node)); }
+  .state b { font-size: 13px; }
+  .state small { font-size: 11px; color: var(--dg-ink-3); }
+  .state[aria-pressed='true'] { box-shadow: 0 0 0 3px color-mix(in srgb, var(--tone) 35%, transparent); }
+  .trans { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .t { display: grid; grid-template-columns: minmax(0, 9rem) minmax(0, 1fr) minmax(0, 9rem); grid-template-areas: 'from arrow to'; align-items: center; gap: 8px; transition: opacity .2s; }
+  .from { grid-area: from; }
+  .to { grid-area: to; }
+  .arrow { grid-area: arrow; }
+  .sym { display: none; grid-area: sym; color: var(--tone); font-weight: 700; }
+  .t.dim { opacity: .18; }
+  .chip { justify-self: stretch; text-align: center; font-size: 12.5px; font-weight: 600; padding: 4px 8px; border-radius: 8px; border: 1.5px solid var(--tone); background: color-mix(in srgb, var(--tone) 8%, var(--dg-node)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .arrow { position: relative; display: flex; justify-content: center; padding: 0 14px 0 4px; min-width: 0; }
+  .arrow::before { content: ""; position: absolute; left: 0; right: 8px; top: 50%; height: 2px; background: var(--tone); }
+  .arrow::after { content: ""; position: absolute; right: 0; top: calc(50% - 5px); border: 5px solid transparent; border-left: 8px solid var(--tone); }
+  .lbl { position: relative; background: var(--dg-bg); padding: 2px 8px; font-size: 12.5px; text-align: center; display: flex; flex-direction: column; min-width: 0; overflow-wrap: anywhere; }
+  .lbl small { color: var(--dg-ink-3); font-size: 11.5px; }
+  .sm { container-type: inline-size; }
+  @container (max-width: 520px) {
+    .t { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); grid-template-areas: 'from sym to' 'arrow arrow arrow'; row-gap: 4px; padding-bottom: 8px; border-bottom: 1px solid var(--dg-line); }
+    .sym { display: block; }
+    .arrow { padding: 0; }
+    .arrow::before, .arrow::after { display: none; }
+    .lbl { background: none; padding: 0; }
+  }
+</style>

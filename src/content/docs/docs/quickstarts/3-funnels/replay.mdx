@@ -1,0 +1,100 @@
+---
+title: From a drop-off to the replay
+description: Open the sessions that reached checkout and did not pay, watch one, then clean up. Fixes for the usual problems.
+sidebar: { order: 6, label: 6. Drop-off to replay }
+---
+
+import Timeline from '../../../../../components/diagrams/Timeline.astro';
+
+A funnel says where shoppers stop. The replay says why.
+
+## Open the sessions that stopped
+
+1. On the Funnels page, click the hatched **−10** above **order_paid**. A table lists the 10 sessions that reached `/checkout` and did not pay, latest first: when they entered, how long they took to get stuck, and their last page.
+2. Click **Replay** on a row. The session page opens with the replay, the timeline, the errors and the traces.
+
+Two kinds of session are in that list. A declined one looks like this:
+
+<Timeline
+  duration={20}
+  caption="A declined checkout: the card is submitted, the API's charge card span fails, the shop reports the error, and the session ends on /checkout."
+  spans={[
+    { from: 14, to: 15, label: 'POST /api/checkout', detail: '500 · charge card: error', tone: 'bad' },
+  ]}
+  events={[
+    { at: 0, label: 'navigation', detail: '/', tone: 'ok' },
+    { at: 3, label: 'navigation', detail: '/products/…' },
+    { at: 6, label: 'add_to_cart', tone: 'info' },
+    { at: 7, label: 'navigation', detail: '/cart' },
+    { at: 8, label: 'navigation', detail: '/checkout' },
+    { at: 14, label: 'checkout_submitted', tone: 'info' },
+    { at: 15, label: 'exception', detail: 'checkout failed: card declined', tone: 'bad' },
+  ]}
+/>
+
+An abandoned one has the same start and stops on `/checkout`, with no `checkout_submitted` and no error.
+
+## What you should see
+
+On a declined session: the error `Error: checkout failed: card declined` and the failed `POST /api/checkout`, whose trace has the `checkout` and `charge card` spans from the API. On an abandoned session: the replay stops on the checkout form. In both, the replay plays that shopper's path with the card input masked.
+
+## Clean up
+
+Stop the API and Vite with Ctrl+C. Stop the stack, keeping its data:
+
+```bash
+cd ~/Desktop/tiny-shop-funnels/stack
+```
+
+```bash
+docker compose down
+```
+
+or delete its data and replays too:
+
+```bash
+docker compose down -v
+```
+
+## When something does not work
+
+| You see | Cause and fix |
+|---|---|
+| `Bind for 0.0.0.0:4318 failed: port is already allocated` (or 3000, 3100, 3200, 13133) | Another stack has the port. See [ports taken](#ports-taken) below. |
+| `docker compose up` fails with `unable to prepare context` or a missing `ouo11y` context | `OUO11Y_REPO` is not set in this terminal, or does not point at the clone: see [the stack](/docs/quickstarts/3-funnels/stack/#start-it). |
+| `denied` when pulling `ghcr.io/ouo11y/collector` | Not logged in to ghcr.io, or no pull access yet: see [the stack](/docs/quickstarts/3-funnels/stack/#start-it). |
+| No **Funnels** page in the app menu | Grafana is not the image built on the stack page: run `docker compose up -d --build`, then hard-reload the browser. |
+| The step box suggests nothing | No page views in the range yet: buy once (the Instrument page), time range **Last 1 hour**. |
+| Every bar is 0 | Step 1 does not match (`/` vs `/home`) or the Service filter has a typo. Check the paths on a session page. |
+| More sessions than the generator printed | Your own sessions or a second `npm run generate`: every run adds the same 45 / 37 / 28 / 20 / 10. |
+| `generate` times out on `Add to cart` | The shop is not on 5173: `SHOP_URL=http://localhost:<port> npm run generate`. |
+| Bars a little low right after the run | Each page's last events are sent when it is left: wait 10 s and **Refresh**. |
+| CORS error on `/v1/logs` or `/v1/replay/chunks` in the browser console | The shop is not on `localhost` / `127.0.0.1`, or the replay URL is wrong after moving ports. |
+
+### Ports taken
+
+If another stack holds the ports, move this one. In the stack's terminal, before `up`:
+
+```bash
+export OUO_GRAFANA_PORT=13000 OUO_OTLP_HTTP_PORT=14318 OUO_REPLAY_PORT=14319 OUO_LOKI_PORT=13100 OUO_TEMPO_PORT=13200 OUO_COLLECTOR_HEALTH_PORT=13134
+```
+
+Start the API against the new collector port, from `backend/`:
+
+```bash
+OUO_OTLP_ENDPOINT=http://localhost:14318 npm start
+```
+
+Create `frontend/.env.local` and restart Vite:
+
+```text title="frontend/.env.local"
+VITE_OUO_ENDPOINT=http://localhost:14318
+VITE_OUO_REPLAY_ENDPOINT=http://localhost:14319
+```
+
+Grafana is then on http://localhost:13000. The shop must stay on `localhost` or `127.0.0.1`, the only origins the collector allows.
+
+## Where to go next
+
+- [Sessions and health](/docs/concepts/sessions/): how rum-api folds every signal of a visit into one session.
+- [Architecture](/docs/concepts/architecture/): the same parts, for every quickstart.

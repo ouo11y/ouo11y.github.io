@@ -1,0 +1,200 @@
+---
+title: Run the stack
+description: The whole ouo11y stack (collector, Loki, Tempo, Mimir, rum-api, Grafana) from one compose file, with its ports, its credentials, and a first session sent with curl.
+sidebar: { order: 3 }
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+import QuickstartFile from '../../../../components/QuickstartFile.astro';
+import Flow from '../../../../components/diagrams/Flow.astro';
+
+One file holds the whole stack: every service and every config, inline. You download it into an empty folder, start it, and send it a session with `curl`. It takes about two minutes once the images are pulled.
+
+<Flow
+  caption="What the file starts. Only Grafana and the collector are meant for clients; the rest is published for debugging on your laptop."
+  columns={[
+    { label: 'You', arrow: ':4318 · :4319', nodes: [
+      { title: 'curl, an app, a backend', sub: 'Basic demo:pt_dev_demo_…' },
+    ] },
+    { label: 'Edge', arrow: 'OTLP', nodes: [
+      { title: 'otel-collector', sub: 'ghcr.io/ouo11y/collector', tone: 'accent' },
+    ] },
+    { label: 'Storage', nodes: [
+      { title: 'loki · tempo · mimir', sub: 'grafana/loki 3.7.7 · tempo 3.0.3 · mimir 3.2.1' },
+      { title: 'rum-api', sub: 'ghcr.io/ouo11y/rum-api' },
+    ] },
+    { label: 'View', nodes: [
+      { title: 'grafana', sub: 'ghcr.io/ouo11y/grafana · :3000', tone: 'accent' },
+    ] },
+  ]}
+/>
+
+## Before you start
+
+- **Docker with Compose 2.24 or later.** The file uses inline `configs.content`, which older Compose versions reject. Check with `docker compose version`.
+- **Pull access to the ouo11y images.**
+
+<Aside type="caution" title="Early access: the images are private">
+`ghcr.io/ouo11y/collector`, `rum-api` and `grafana` stay private until ouo11y reaches a stable version. Email [hello@ouo11y.com](mailto:hello@ouo11y.com) with your GitHub user name and we grant it read access. Then create a **classic** GitHub personal access token with only the `read:packages` scope. Without access, `docker compose up` stops with `denied` (HTTP 403) on the first ouo11y image.
+</Aside>
+
+## Start it
+
+<Steps>
+
+1. Create an empty folder and go into it. The Compose project is named after the folder, so two copies in two folders never collide.
+
+   ```bash
+   mkdir ouo11y-stack && cd ouo11y-stack
+   ```
+
+2. Download the stack as `compose.yaml`.
+
+   ```bash
+   curl -fsSLo compose.yaml https://ouo11y.com/downloads/quickstart.yaml
+   ```
+
+   Or save it from the page: [quickstart.yaml](/downloads/quickstart.yaml). The full file is at the end of this page.
+
+3. Log in to the GitHub container registry with your token. Keep the token in your shell, never in a file.
+
+   ```bash
+   echo $GHCR_TOKEN | docker login ghcr.io -u <github-user> --password-stdin
+   ```
+
+   You see `Login Succeeded`.
+
+4. Start the stack.
+
+   ```bash
+   docker compose up -d
+   ```
+
+   The first run pulls about 1.5 GB of images. Then you see every service as `Started`, and `grafana-plugin` as `Exited`: it copies the Grafana app onto the Grafana volume and stops, on every start.
+
+5. Check that the collector asks for a credential. Without one it answers `401`:
+
+   ```bash
+   curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:4318/v1/traces -H 'Content-Type: application/json' -d '{"resourceSpans":[]}'
+   ```
+
+   With the demo project's credential it answers `200`:
+
+   ```bash
+   curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:4318/v1/traces -u demo:pt_dev_demo_0000000000000000 -H 'Content-Type: application/json' -d '{"resourceSpans":[]}'
+   ```
+
+6. Check that rum-api reaches Loki and Tempo:
+
+   ```bash
+   curl -s localhost:8080/readyz
+   ```
+
+   You see `{"checks":{"loki":"ok","tempo":"ok"},"ready":true}`. Right after a start Loki still reports `Ingester not ready: waiting for 15s after being ready`; ask again after half a minute.
+
+7. Open Grafana at [http://localhost:3000](http://localhost:3000), log in as `admin` / `testing567`, and go to **More apps → ouo11y RUM**. The Overview is empty: nothing has sent a session yet.
+
+</Steps>
+
+## Send a first session
+
+A session is a set of OpenTelemetry log records with the same `session.id`. This command sends the two that open and close one, the way an SDK would, to the collector's OTLP/HTTP endpoint:
+
+```bash
+NOW=$(date +%s)000000000; SID=curl-$(date +%s); curl -s -w '%{http_code}\n' -X POST localhost:4318/v1/logs -u demo:pt_dev_demo_0000000000000000 -H 'Content-Type: application/json' -d '{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"curl-shop"}},{"key":"service.version","value":{"stringValue":"1.0.0"}},{"key":"ouo.platform","value":{"stringValue":"web"}}]},"scopeLogs":[{"logRecords":[{"timeUnixNano":"'$NOW'","eventName":"session.start","body":{"stringValue":"session started"},"attributes":[{"key":"session.id","value":{"stringValue":"'$SID'"}},{"key":"user.id","value":{"stringValue":"u-1"}}]},{"timeUnixNano":"'$NOW'","eventName":"exception","body":{"stringValue":"TypeError: cart is undefined"},"attributes":[{"key":"session.id","value":{"stringValue":"'$SID'"}},{"key":"user.id","value":{"stringValue":"u-1"}},{"key":"exception.type","value":{"stringValue":"TypeError"}},{"key":"exception.message","value":{"stringValue":"cart is undefined"}},{"key":"ouo.exception.fatal","value":{"boolValue":false}},{"key":"ouo.exception.handled","value":{"boolValue":true}}]}]}]}]}'; echo "session $SID"
+```
+
+You see `{"partialSuccess":{}}200` and the session id. In Grafana, **ouo11y RUM → Sessions** now lists a `curl-shop` session from user `u-1`, status **errored**: it has one exception that was not fatal. Open it to see its timeline. [Sessions and health](/docs/concepts/sessions/) explains why it is errored and not crashed.
+
+The collector stamped `ouo.project.id = demo` on it from the credential. Whatever a client sends in that attribute is overwritten.
+
+## What is listening
+
+| Service | Address on your machine | Who uses it |
+|---|---|---|
+| Grafana | `http://localhost:3000` | you, as `admin` / `testing567` |
+| Collector, OTLP/HTTP | `http://localhost:4318` (`/v1/traces`, `/v1/logs`, `/v1/metrics`) | every SDK and backend |
+| Collector, replay | `http://localhost:4319/v1/replay/chunks` | the SDKs' replay uploads |
+| Collector, Sentry bridge | `http://localhost:4320` | Sentry SDKs, only if you use the [bridge](/docs/operate/sentry-bridge/) |
+| Collector, OTLP/gRPC | `127.0.0.1:4317` | backends on this machine |
+| Collector, health | `http://127.0.0.1:13133` | readiness checks |
+| rum-api | `http://localhost:8080` | Grafana; published for debugging only |
+| Loki, Tempo, Mimir | `:3100`, `:3200`, `:9009` | Grafana and rum-api; published for debugging only |
+
+Loki, Tempo, Mimir and rum-api are published on every interface of your laptop, so other devices on your network can reach them. That is fine on a laptop. On a server, use the [VM install](/docs/operate/vm/), which binds everything except the proxy to `127.0.0.1`.
+
+### Ports already taken
+
+Put the ones you need to move in a `.env` file next to `compose.yaml`, then run `docker compose up -d` again:
+
+```ini
+OUO_GRAFANA_PORT=13000
+OUO_OTLP_HTTP_PORT=14318
+OUO_REPLAY_PORT=14319
+```
+
+The other variables are `OUO_SENTRY_PORT`, `OUO_OTLP_GRPC_PORT`, `OUO_COLLECTOR_HEALTH_PORT`, `OUO_RUM_API_PORT`, `OUO_LOKI_PORT`, `OUO_TEMPO_PORT` and `OUO_MIMIR_PORT`. An SDK then needs both collector URLs, for example `endpoint: "http://localhost:14318"` and `replayEndpoint: "http://localhost:14319"`. The SDK only guesses the replay port when the OTLP port is 4318.
+
+## Credentials in this file
+
+Every value below is a development value, written in this public file. They are fine on a laptop and never acceptable on a host other people can reach. [Project tokens](/docs/operate/tokens/) shows how to make real ones.
+
+| What | Value | Public or secret | Used by |
+|---|---|---|---|
+| Grafana login | `admin` / `testing567` | secret | you (`OUO_GRAFANA_ADMIN_PASSWORD`) |
+| Project credential | id `demo`, token `pt_dev_demo_0000000000000000` | **public by design** | apps and backends, as HTTP Basic |
+| Internal project | id `internal`, token `pt_dev_internal_00000000000000` | public | rum-api's own telemetry |
+| Ingest token | `it_dev_0000000000000000` | secret | collector → rum-api replay forwarding |
+| Read token | `rt_dev_0000000000000000` | secret | Grafana → rum-api reads |
+| Admin token | `at_dev_0000000000000000` | secret | rum-api's operator API (delete by user or project) |
+| Source map upload token | `demo:ut_dev_demo_0000000000000000` | secret | uploading source maps for project `demo` from CI |
+
+A project token ships inside your web bundle, so anyone can read it. It only lets a client write telemetry into one project, within the collector's CORS, size and rate limits. [Project credentials](/docs/concepts/credentials/) explains the model.
+
+The browser origins allowed to post are `http://localhost:*` and `http://127.0.0.1:*`. Add yours with `OUO_ALLOWED_ORIGINS` in `.env`, comma separated, no spaces.
+
+## Versions
+
+The ouo11y images default to `:latest`, which follows each release. The file's header names the versions it was generated for and their digests. To stay on exactly those, pin them in `.env`:
+
+```ini
+OUO_COLLECTOR_VERSION=0.4.0
+OUO_RUM_API_VERSION=0.5.0
+OUO_GRAFANA_VERSION=0.5.0
+```
+
+When a newer `latest` rejects a config from this file, `docker compose logs <service>` names the key; pin the versions above, and download the file again after the next release.
+
+## Stop and clean up
+
+Stop the stack and keep its data:
+
+```bash
+docker compose down
+```
+
+Stop it and delete the data (sessions, traces, replays, Grafana settings):
+
+```bash
+docker compose down -v
+```
+
+## When something does not work
+
+| You see | Cause | Fix |
+|---|---|---|
+| `denied` or `403` pulling `ghcr.io/ouo11y/...` | no pull access, or logged in as another user | the early-access steps above; `docker logout ghcr.io` and log in again |
+| `configs.content` or `additional properties 'content' not allowed` | Compose older than 2.24 | update Docker Desktop or the Compose plugin |
+| `Bind for 0.0.0.0:3000 failed: port is already allocated` | something else uses that port | move it in `.env`, see above; do not stop the other program |
+| `401` with the credential | a typo in the id or token | the token is `pt_dev_demo_` followed by sixteen zeros |
+| `/readyz` says `loki` is not `ok` | Loki is still starting | wait half a minute and ask again |
+| Grafana has no **ouo11y RUM** app | the `grafana-plugin` step failed | `docker compose logs grafana-plugin` should end with `ouo11y-rum-app 0.9.0 installed` |
+| A browser app gets CORS errors | its origin is not allowed | set `OUO_ALLOWED_ORIGINS` and `docker compose up -d` |
+
+## The file
+
+<QuickstartFile qs="_shared" path="quickstart.yaml" title="compose.yaml" open={false} />
+
+## Next
+
+Send real telemetry: with [the SDK](/docs/instrument/ouo-sdk/), with [plain OpenTelemetry](/docs/instrument/bring-your-own-otel/), or by building [Tiny Shop](/docs/quickstarts/1-tiny-shop/) against this stack.

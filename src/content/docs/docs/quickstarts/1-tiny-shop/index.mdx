@@ -1,0 +1,114 @@
+---
+title: 'Quickstart 1: Tiny Shop'
+description: Build a small Express API and React shop from an empty folder, trace both with OpenTelemetry, and find one crashed session with its trace and replay in Grafana. About 30 minutes.
+sidebar: { order: 0, label: 'Overview' }
+---
+
+import { Aside, Steps, LinkCard, CardGrid } from '@astrojs/starlight/components';
+import Flow from '../../../../../components/diagrams/Flow.astro';
+import Sequence from '../../../../../components/diagrams/Sequence.astro';
+import Download from '../../../../../components/Download.astro';
+
+You build a two-folder shop: an Express API and a React page. First they work with no telemetry at all. Then you start the ouo11y stack from one file, trace the API with the OpenTelemetry Node SDK, add `@ouo11y/browser` to the page, and break things on purpose. At the end, one click in the browser is one trace from the button to the API's own spans, and Grafana shows a **crashed** session with that trace and a replay of what you clicked.
+
+**Time:** about 30 minutes. **You need:** Node 24 or newer, Docker Desktop, VS Code, and pull access to the ouo11y images (see below).
+
+## What you build
+
+<Flow
+  caption="Two apps on your laptop send OTLP to the collector of a local ouo11y stack; Grafana shows the session."
+  columns={[
+    { label: 'frontend/  :5173', arrow: 'fetch + traceparent', nodes: [
+      { title: 'Tiny Shop page', sub: 'React · @ouo11y/browser<br>sessions, errors, replay', tone: 'info' },
+    ] },
+    { label: 'backend/  :5001', arrow: 'OTLP', nodes: [
+      { title: 'Tiny Shop API', sub: 'Express · OpenTelemetry Node SDK<br>auto + manual spans', tone: 'accent' },
+    ] },
+    { label: 'stack/  (one compose file)', nodes: [
+      { title: 'Collector', sub: ':4318 OTLP · :4319 replay' },
+      { title: 'Loki · Tempo · Mimir', sub: 'events · traces · metrics' },
+      { title: 'rum-api', sub: 'sessions · replay store' },
+    ] },
+    { label: 'You', nodes: [
+      { title: 'Grafana :3000', sub: 'Explore · ouo11y RUM app', tone: 'accent' },
+    ] },
+  ]}
+/>
+
+The page sends its own telemetry to the collector too (spans, events and replay chunks); the arrow above shows the call that ties the two apps together. Here is what happens when you click **Checkout** at the end of the quickstart. Press **Play** to step through it.
+
+<Sequence
+  caption="The browser's fetch span becomes the root of the API's trace, and session.id rides along in baggage."
+  actors={['Browser', 'API', 'Collector', 'Grafana']}
+  steps={[
+    { from: 0, to: 0, label: 'click Checkout', note: 'fetch span starts' },
+    { from: 0, to: 1, label: 'OPTIONS /api/checkout', note: 'CORS preflight for traceparent, baggage' },
+    { from: 0, to: 1, label: 'POST /api/checkout', note: 'traceparent + baggage(session.id)' },
+    { from: 1, to: 1, label: 'manual spans', note: 'checkout, validate cart, charge card' },
+    { from: 1, to: 0, label: '200 { orderId }', tone: 'ok' },
+    { from: 1, to: 2, label: 'server spans', note: 'OTLP /v1/traces' },
+    { from: 0, to: 2, label: 'fetch span, cart.added, replay', note: ':4318 and :4319' },
+    { from: 3, to: 2, label: 'one trace, one session', note: 'Tempo, Loki, ouo11y RUM' },
+  ]}
+/>
+
+## The steps
+
+Each page ends with what you should see before you go on.
+
+<CardGrid>
+  <LinkCard title="1. The plain app" href="/docs/quickstarts/1-tiny-shop/plain-app/" description="An Express API and a React page, working, with no telemetry." />
+  <LinkCard title="2. The stack" href="/docs/quickstarts/1-tiny-shop/stack/" description="Grafana, Loki, Tempo, Mimir, rum-api and the collector from one compose file." />
+  <LinkCard title="3. Backend traces" href="/docs/quickstarts/1-tiny-shop/backend-traces/" description="The OpenTelemetry Node SDK, manual spans, and the API's traces in Tempo." />
+  <LinkCard title="4. The browser SDK" href="/docs/quickstarts/1-tiny-shop/browser-sdk/" description="@ouo11y/browser in the React app, with trace headers to the API." />
+  <LinkCard title="5. See it in Grafana" href="/docs/quickstarts/1-tiny-shop/grafana/" description="One trace across both apps, the browser events, and the crashed session." />
+  <LinkCard title="6. Clean up and troubleshooting" href="/docs/quickstarts/1-tiny-shop/clean-up/" description="Stop the stack, and what to do when something does not work." />
+</CardGrid>
+
+<Aside type="caution" title="Early access: the images are private">
+The ouo11y container images on `ghcr.io` are private while we are in early access, so step 2 only works with pull access. Email [hello@ouo11y.com](mailto:hello@ouo11y.com) for it; we answer quickly. Step 1 needs no access, and everything else (the SDKs, the files on these pages) is public.
+</Aside>
+
+## The finished files
+
+Every file is on these pages, ready to copy. If you get stuck, compare with the finished `backend/` and `frontend/` folders, the ones you have at the end:
+
+<Download qs="tiny-shop" />
+
+### Short on time? Run the finished files
+
+<Steps>
+
+1. Download and unzip the finished files above. You get a `tiny-shop/` folder with `backend/` and `frontend/`.
+
+2. Start the stack as on [page 2](/docs/quickstarts/1-tiny-shop/stack/).
+
+3. In `tiny-shop/backend`:
+
+   ```bash
+   npm install
+   ```
+
+   ```bash
+   npm start
+   ```
+
+   It prints `[otel] tracing to http://localhost:4318/v1/traces` and serves on `:5001`.
+
+4. In `tiny-shop/frontend`, in a second terminal:
+
+   ```bash
+   npm install
+   ```
+
+   ```bash
+   npm run dev
+   ```
+
+5. Open http://localhost:5173, click **Add**, **Checkout**, **Call broken API** and **Throw error**, then go to [page 5](/docs/quickstarts/1-tiny-shop/grafana/).
+
+</Steps>
+
+## What you should see at the end
+
+In Grafana, under **More apps → ouo11y RUM → Sessions**, one session with the status `crashed`. It has the trace of your checkout, from the browser's `POST` span down to `charge card` in the API, and a replay of your clicks.

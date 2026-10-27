@@ -1,0 +1,257 @@
+---
+title: Sentry bridge
+description: Keep the Sentry mobile SDKs, change only the DSN host, and get the same sessions, errors, spans and replay in ouo11y while Sentry still receives everything. How to run the bridge, and why it is exactly one replica.
+sidebar: { order: 9 }
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+import Sequence from '../../../../components/diagrams/Sequence.astro';
+
+Apps that use Sentry's mobile SDKs can send to ouo11y without changing their instrumentation. The collector's `ouosentry` receiver accepts Sentry envelopes, forwards each one to your Sentry byte for byte, returns Sentry's answer unchanged, and then translates a copy into OpenTelemetry: sessions, errors and native crashes, spans, logs, breadcrumbs, mobile vitals, and video replay.
+
+```text
+before: https://<public key>@o123.ingest.sentry.io/4504
+after:  https://<public key>@otel.example.com/4504
+```
+
+<Sequence
+  caption="Sentry's answer goes back to the app before ouo11y translates anything. If Sentry is down, the app retries exactly as it would without the bridge."
+  actors={['App (Sentry SDK)', 'Collector :4320', 'Sentry', 'ouo11y']}
+  steps={[
+    { from: 0, to: 1, label: 'POST /api/4504/envelope/', note: 'DSN public key' },
+    { from: 1, to: 1, label: 'check the key', note: 'unknown key: 403, never forwarded' },
+    { from: 1, to: 2, label: 'the same bytes' },
+    { from: 2, to: 1, label: 'status, headers, body' },
+    { from: 1, to: 0, label: 'unchanged', note: 'X-Sentry-Rate-Limits, Retry-After', tone: 'ok' },
+    { from: 1, to: 3, label: 'translated copy', note: 'sessions, errors, spans, replay', tone: 'accent' },
+  ]}
+/>
+
+## What is supported
+
+| `@sentry/react-native` | sentry-cocoa | Status |
+|---|---|---|
+| 8.30.0 to 8.32.0 | 9.30.1, 9.31.0 | **supported**: sessions, errors and native crashes, `http.client` spans, backend traces with `propagateTraceparent`, video replay with touches, logs, breadcrumbs, mobile vitals |
+| 7.11.0 (the Expo SDK 57 default) | 8.58.0 | **partial, upgrade to 8.x**: sessions, errors, crash, replay, logs and navigation work; under Expo 57 the SDK traces no `fetch`, so no backend correlation and no failed-request records |
+| other 8.x | 9.x | expected to work, not captured yet |
+
+Not built yet: native `sentry-cocoa` apps without React Native, Android SDKs, and browser SDKs (the bridge has no CORS and does not translate rrweb replays).
+
+Translated data carries the resource attribute `ouo.rum.mode = sentry`, so dashboards can split a rollout by cohort.
+
+## Configure it
+
+The bridge is part of the collector you already run, on port 4320. In the one-file stack it is on, answering locally (`upstream: none`: nothing leaves your machine). To forward to your Sentry, set in `.env`:
+
+```ini
+OUO_SENTRY_UPSTREAM=https://o123.ingest.sentry.io
+OUO_SENTRY_PROJECT_ID=4504
+OUO_SENTRY_PUBLIC_KEY=<the DSN's public key>
+OUO_SENTRY_SERVICE_NAME=mobile-store-ios
+```
+
+These fill the receiver's project table. In your own collector config, list one entry per Sentry project:
+
+```yaml
+receivers:
+  ouosentry:
+    endpoint: 0.0.0.0:4320
+    upstream_timeout: 30s
+    projects:
+      - sentry_project_id: "4504"
+        public_keys: ["<DSN public key>"]
+        upstream: https://o123.ingest.sentry.io   # or none
+        ouo_project_id: mobile-store
+        service_name: mobile-store-ios
+```
+
+<Aside type="note">
+In the one-file stack the project table stamps `ouo_project_id: demo` on everything the bridge translates. To file bridged sessions under your own project, set `ouo_project_id` in your own copy of the collector config ([Customize](/docs/operate/customize/#take-over-the-collector-config)).
+</Aside>
+
+The [VM install](/docs/operate/vm/) routes `https://<collector host>/api/*` to port 4320, so the DSN needs no port. Then point the app's DSN at the collector host and ship it.
+
+## Exactly one replica
+
+Sentry SDKs do not put a session id on most items. The bridge learns which session an item belongs to from earlier envelopes of the same device, and keeps that in memory: the session table, replay ids, trace ids, and replay segments and logs waiting for their session (up to 10 minutes and 1 minute). It is bounded (`state.max_sessions`, default 200,000 sessions, 4 hours after the last update) and never written to disk.
+
+**Forwarding to Sentry is stateless**: Sentry receives every envelope unchanged with any number of replicas. What breaks with two is the ouo11y copy, because a load balancer splits one device's envelopes between them:
+
+| In ouo11y | With two replicas behind a round-robin balancer |
+|---|---|
+| spans, logs and errors sent without a session item in the same envelope | matched only on the replica that saw the session; on the other they have no `session.id` and are missing from the timeline |
+| replay | segments on the replica that does not know the replay are held 10 minutes, then dropped: gaps |
+| error counts | too many errors on errored sessions |
+| `session.previous_id`, startup logs | lost when the other replica saw the previous session |
+
+Sticky routing by client address does not save it: phones move between Wi-Fi and cellular. Run one.
+
+**Restarts** lose the state too. Sessions already running are picked up mid-way, held replay segments are lost, and a duplicate `session.start` is possible (harmless). Restart in quiet hours.
+
+**Sizing.** Translation runs off the request path, from a bounded queue (`translate_queue_size`, 10,000 envelopes). Give the pod more CPU before thinking of more replicas. Watch:
+
+```text
+sum(rate(ouo_sentry_translate_dropped_total{reason="queue_full"}[5m]))
+```
+
+Those envelopes reached Sentry but were not translated.
+
+## On Docker Compose and the VM
+
+Nothing to do: one collector container runs the bridge. Never `docker compose up --scale otel-collector=2`.
+
+## On Kubernetes
+
+The Helm chart does not deploy the bridge. Run it as **its own Deployment with one replica** next to the chart, so the main collector can still scale. These manifests assume the release `ouo` in namespace `ouo`, bundled LGTM, and the rum-api Secret `ouo-rum-api-tokens` from [Helm](/docs/operate/helm/#install); check the names with `kubectl get svc,secret -n ouo`.
+
+<Steps>
+
+1. Save as `sentry-bridge.yaml`, with your Sentry project id, DSN key, upstream and ouo11y project:
+
+   ```yaml
+   apiVersion: v1
+   kind: ConfigMap
+   metadata:
+     name: ouo-sentry-bridge
+     namespace: ouo
+   data:
+     config.yaml: |
+       extensions:
+         health_check:
+           endpoint: 0.0.0.0:13133
+       receivers:
+         ouosentry:
+           endpoint: 0.0.0.0:4320
+           upstream_timeout: 30s
+           projects:
+             - sentry_project_id: "4504"
+               public_keys: ["<DSN public key>"]
+               upstream: https://o123.ingest.sentry.io
+               ouo_project_id: mobile-store
+               service_name: mobile-store-ios
+       connectors:
+         routing/sentry:
+           default_pipelines: [logs]
+           table:
+             - context: log
+               condition: log.attributes["ouo.replay.chunk"] == true
+               pipelines: [logs/replay]
+       processors:
+         memory_limiter: { check_interval: 1s, limit_mib: 512, spike_limit_mib: 128 }
+         ouoratelimit:
+           project: { rate: 1000, burst: 5000 }
+           client: { rate: 100, burst: 300, key_from: address }
+         resource/project:
+           attributes:
+             - { key: ouo.project.id, action: delete }
+             - { key: ouo.project.id, from_context: auth.username, action: upsert }
+         transform/events:
+           error_mode: ignore
+           log_statements:
+             - context: log
+               statements:
+                 - set(log.attributes["event.name"], log.event_name) where log.event_name != "" and log.attributes["event.name"] == nil
+                 - set(log.attributes["ouo.platform"], resource.attributes["ouo.platform"]) where log.attributes["ouo.platform"] == nil and resource.attributes["ouo.platform"] != nil
+         batch: { timeout: 1s, send_batch_size: 512, send_batch_max_size: 1024 }
+       exporters:
+         otlp_grpc/tempo: { endpoint: "ouo-tempo:4317", tls: { insecure: true } }
+         otlp_http/loki: { endpoint: "http://ouo-loki:3100/otlp", tls: { insecure: true } }
+         ouoreplay:
+           endpoint: http://ouo-rum-api:8080
+           ingest_token: ${env:OUO_INGEST_TOKEN}
+           sending_queue: { enabled: true, queue_size: 1000 }
+           retry_on_failure: { enabled: true, max_elapsed_time: 5m }
+       service:
+         extensions: [health_check]
+         telemetry:
+           metrics:
+             level: normal
+             readers:
+               - periodic:
+                   interval: 15000
+                   exporter:
+                     otlp: { protocol: http/protobuf, endpoint: "http://ouo-mimir:9009/otlp/v1/metrics" }
+         pipelines:
+           traces:
+             receivers: [ouosentry]
+             processors: [memory_limiter, ouoratelimit, resource/project, batch]
+             exporters: [otlp_grpc/tempo]
+           logs/sentry:
+             receivers: [ouosentry]
+             processors: [memory_limiter]
+             exporters: [routing/sentry]
+           logs:
+             receivers: [routing/sentry]
+             processors: [memory_limiter, ouoratelimit, resource/project, transform/events, batch]
+             exporters: [otlp_http/loki]
+           logs/replay:
+             receivers: [routing/sentry]
+             processors: [memory_limiter, ouoratelimit]
+             exporters: [ouoreplay]
+   ---
+   apiVersion: apps/v1
+   kind: Deployment
+   metadata:
+     name: ouo-sentry-bridge
+     namespace: ouo
+   spec:
+     replicas: 1                 # never more: the session state is in memory
+     strategy:
+       type: Recreate            # no overlap of the old and the new pod
+     selector:
+       matchLabels: { app.kubernetes.io/name: ouo-sentry-bridge }
+     template:
+       metadata:
+         labels: { app.kubernetes.io/name: ouo-sentry-bridge }
+       spec:
+         imagePullSecrets: [{ name: ghcr }]
+         containers:
+           - name: bridge
+             image: ghcr.io/ouo11y/collector:0.4.0   # the same version as the chart's collector
+             args: ["--config=/etc/otelcol/config.yaml"]
+             env:
+               - name: OUO_INGEST_TOKEN
+                 valueFrom: { secretKeyRef: { name: ouo-rum-api-tokens, key: ingest-token } }
+             ports:
+               - { name: sentry, containerPort: 4320 }
+             readinessProbe: { httpGet: { path: /, port: 13133 } }
+             livenessProbe: { httpGet: { path: /, port: 13133 } }
+             resources:
+               requests: { cpu: 250m, memory: 256Mi }
+               limits: { memory: 768Mi }
+             volumeMounts:
+               - { name: config, mountPath: /etc/otelcol }
+         volumes:
+           - name: config
+             configMap: { name: ouo-sentry-bridge }
+   ---
+   apiVersion: v1
+   kind: Service
+   metadata:
+     name: ouo-sentry-bridge
+     namespace: ouo
+   spec:
+     selector: { app.kubernetes.io/name: ouo-sentry-bridge }
+     ports:
+       - { name: sentry, port: 4320, targetPort: sentry }
+   ```
+
+   It exports straight to the chart's Tempo, Loki and rum-api, because the main collector requires a project credential that the bridge does not have.
+
+2. Apply it:
+
+   ```bash
+   kubectl apply -f sentry-bridge.yaml
+   ```
+
+3. Expose the Service on its own host (`sentry-bridge.example.com`) with your Ingress controller and TLS. The DSN host becomes that name, with no port.
+
+4. Check it: `kubectl -n ouo get deploy ouo-sentry-bridge` shows `1/1`. After the app sent a session, this grows in Mimir, and the session appears in the ouo11y RUM app:
+
+   ```text
+   sum by (outcome) (rate(ouo_sentry_envelopes_total[5m]))
+   ```
+
+</Steps>
+
+No HorizontalPodAutoscaler, no `kubectl scale`. Upgrade the bridge's image together with the chart's collector.

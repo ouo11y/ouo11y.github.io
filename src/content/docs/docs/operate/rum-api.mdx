@@ -1,0 +1,212 @@
+---
+title: rum-api configuration
+description: Every rum-api setting in its YAML file and environment variables, the replay store on disk or S3 and MinIO, retention and per-project overrides, its API, health checks and metrics.
+sidebar: { order: 5 }
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import Flow from '../../../../components/diagrams/Flow.astro';
+
+rum-api turns the telemetry in Loki and Tempo into session records, stores replay chunks, and serves the JSON API the Grafana app reads. It is internal: only the collector (writing replay chunks) and Grafana (reading) talk to it. Image: `ghcr.io/ouo11y/rum-api:0.5.0`, AGPL-3.0.
+
+<Flow
+  caption="rum-api stores only replays. Sessions are computed from Loki and Tempo on every read, so there is no session database to back up."
+  columns={[
+    { label: 'Writes', arrow: 'Bearer ingest token', nodes: [ { title: 'collector', sub: 'ouoreplay exporter' } ] },
+    { label: 'rum-api :8080', arrow: '', nodes: [ { title: 'rum-api', sub: 'sessions · replay · funnels', tone: 'accent' } ] },
+    { label: 'Reads from', nodes: [
+      { title: 'Loki', sub: 'session events, LogQL' },
+      { title: 'Tempo', sub: 'traces per session, TraceQL' },
+      { title: 'replay store', sub: 'disk or S3' },
+    ] },
+  ]}
+/>
+
+## How it is configured
+
+Like Loki and Tempo: a YAML file, with environment variables expanded into it.
+
+```bash
+rum-api -config.file=/etc/rum-api/config.yaml -config.expand-env=true
+```
+
+- **Order:** built-in defaults, then the file, then environment variables. An environment variable set to an empty string counts as unset.
+- **`-config.expand-env=true`** replaces `${VAR}` and `${VAR:-default}` before parsing, so secrets stay out of the file. Write `$${` for a literal `${`.
+- **Unknown keys are errors.** A typo stops the start instead of being ignored.
+- **`-config.verify`** loads and validates the file, prints the effective configuration with secrets redacted, and exits `0` (or `2` when invalid). In the compose stack:
+
+  ```bash
+  docker compose exec rum-api /rum-api -config.file=/etc/rum-api/config.yaml -config.expand-env=true -config.verify
+  ```
+
+  It starts with `config: valid`.
+
+In Helm, `rumApi.structuredConfig` is merged over the file the chart renders, and `rumApi.extraEnv` sets environment variables.
+
+## Every key
+
+Each key shows its default and, after `#`, the environment variable that overrides it.
+
+```yaml
+server:
+  http_listen_address: ":8080"            # RUM_API_ADDR
+  cors_allowed_origins: []                # CORS_ALLOWED_ORIGINS; local tooling only, browsers never call rum-api
+
+auth:                                     # all three are secrets: keep them in the environment
+  ingest_token: "${OUO_INGEST_TOKEN}"     # OUO_INGEST_TOKEN; empty: no check on the replay sink
+  read_token: "${OUO_READ_TOKEN}"         # OUO_READ_TOKEN; empty: no check on reads
+  admin_token: "${OUO_ADMIN_TOKEN}"       # OUO_ADMIN_TOKEN; empty: the admin API answers 404
+
+loki:
+  url: http://loki:3100                   # LOKI_URL
+  datasource_uid: loki                    # GRAFANA_LOKI_DATASOURCE_UID, for Explore links
+  delete_api: true                        # LOKI_DELETE_API; needs Loki's compactor with retention and deletes on
+  funnel_cache_ttl: 60s                   # LOKI_FUNNEL_CACHE_TTL; 0 disables
+
+tempo:
+  url: http://tempo:3200                  # TEMPO_URL
+  datasource_uid: tempo                   # GRAFANA_TEMPO_DATASOURCE_UID, for trace links
+  concurrency: 8                          # TEMPO_CONCURRENCY, parallel searches
+  cache_ttl: 60s                          # TEMPO_CACHE_TTL, per session and range
+
+grafana:
+  url: http://localhost:3000              # GRAFANA_URL; the browser-facing URL, for deep links
+
+session:
+  inactivity: 30m                         # SESSION_INACTIVITY; match the SDKs
+  max_duration: 4h                        # SESSION_MAX_DURATION; also how far back the list looks
+  detail_lookback: 168h                   # SESSION_DETAIL_LOOKBACK
+
+limits:
+  max_chunk_bytes: 4194304                # MAX_CHUNK_BYTES, an rrweb chunk
+  max_frame_chunk_bytes: 8388608          # MAX_FRAME_CHUNK_BYTES
+  max_video_chunk_bytes: 8388608          # MAX_VIDEO_CHUNK_BYTES, the decoded mp4
+  max_sourcemap_bytes: 67108864           # MAX_SOURCEMAP_BYTES, one decompressed source map
+
+sourcemaps:
+  cache_entries: 128                      # SOURCEMAP_CACHE_ENTRIES, parsed maps per replica
+  cache_ttl: 10m                          # SOURCEMAP_CACHE_TTL
+
+storage:
+  backend: filesystem                     # STORAGE_BACKEND: filesystem or s3
+  filesystem:
+    dir: /data                            # DATA_DIR; replays live in <dir>/replays
+  s3:
+    endpoint: ""                          # S3_ENDPOINT, host[:port], no scheme; empty: AWS
+    bucket: ""                            # S3_BUCKET; required for s3, never created by rum-api
+    region: us-east-1                     # S3_REGION
+    access_key_id: "${S3_ACCESS_KEY_ID}"          # S3_ACCESS_KEY_ID; empty: the AWS credential chain
+    secret_access_key: "${S3_SECRET_ACCESS_KEY}"  # S3_SECRET_ACCESS_KEY
+    session_token: ""                     # S3_SESSION_TOKEN, temporary credentials only
+    insecure: false                       # S3_INSECURE; true: plain HTTP (local MinIO)
+    insecure_skip_verify: false           # S3_INSECURE_SKIP_VERIFY
+    force_path_style: false               # S3_FORCE_PATH_STYLE; true for MinIO and most S3 compatibles
+    prefix: ""                            # S3_PREFIX, for example an environment
+    lifecycle_rules: false                # S3_LIFECYCLE_RULES; true: rum-api owns the bucket's ouo-replays-* expiration rules
+
+retention:
+  replays: 720h                           # REPLAY_RETENTION, from a session's last chunk; 0 keeps forever
+  logs: 720h                              # LOG_RETENTION; Loki's retention, how far back delete-by-user looks
+  sweep_interval: 1h                      # REPLAY_SWEEP_INTERVAL; 0 disables the sweeper
+  orphan_grace: 1h                        # session folders without meta.json older than this are removed
+  sourcemaps: 2160h                       # SOURCEMAP_RETENTION, from the upload; keep it >= logs
+
+projects: {}                              # per-project overrides, keyed by project id (below)
+```
+
+## Replay store
+
+### Local disk
+
+The default. Replays live under `storage.filesystem.dir`, in `replays/<session_id>/`. rum-api runs as the distroless `nonroot` user (uid 65532), so the directory must be writable by it: a root-owned bind mount stops it with `mkdir /data/replays: permission denied`. One volume means one replica.
+
+### S3 and MinIO
+
+```yaml
+storage:
+  backend: s3
+  s3:
+    endpoint: minio:9000          # omit for AWS
+    bucket: ouo-replays
+    region: us-east-1
+    access_key_id: "${S3_ACCESS_KEY_ID}"
+    secret_access_key: "${S3_SECRET_ACCESS_KEY}"
+    insecure: true                # MinIO over plain HTTP inside the network
+    force_path_style: true        # MinIO
+```
+
+- The bucket must exist. rum-api checks it at start (and exits if it is missing or the keys are wrong), and `/readyz` reports `"storage": "ok"`.
+- Leave both keys empty to use the AWS chain: environment variables, `~/.aws/credentials`, or an instance or pod role such as EKS IRSA.
+- Give rum-api a user that reaches only its bucket. It needs `s3:ListBucket`, `s3:GetBucketLocation`, and on objects `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject`, `s3:GetObjectTagging`, `s3:PutObjectTagging`; plus `s3:GetLifecycleConfiguration` and `s3:PutLifecycleConfiguration` with `lifecycle_rules: true`. [Deploy with Docker Compose](/docs/operate/compose/#replays-in-minio-or-s3) creates exactly that user.
+- Several replicas can share one bucket: `meta.json` is written with conditional requests, so concurrent writers never drop a chunk.
+- Every object carries an `ouo-retention` tag. With `lifecycle_rules: true`, rum-api writes one expiration rule per retention in use at start; the sweeper still runs for retentions shorter than a day.
+- Moving from disk to a bucket: the layout is the same, so `mc mirror <dir>/replays <alias>/<bucket>/[<prefix>/]replays` copies it.
+
+## Per project
+
+Keyed by project id, the user name in the collector's htpasswd. Restart rum-api after a change.
+
+```yaml
+projects:
+  web-store:
+    retention:
+      replays: 168h                       # replaces retention.replays
+      sourcemaps: 720h
+    upload_token: "${OUO_UPLOAD_TOKEN_WEB_STORE}"   # source-map uploads from CI; secret
+    sampling:                             # a server-side cap on what the SDKs sampled
+      session_rate: 0.5
+      replay_rate: 0.1
+      replay_on_error_rate: 1             # a session passing either replay rate keeps its replay
+```
+
+Upload tokens can also come from one variable: `OUO_UPLOAD_TOKENS=web-store:ut_…,mobile-store:ut_…`. Keep each project's log retention in Loki in step (in the compose stack: Loki's `runtime.yaml`).
+
+## The API
+
+Every route is JSON. Times (`from`, `to`) take RFC 3339, Unix seconds or milliseconds, or `now`, `now-30m`, `now-7d`; the default range is the last hour.
+
+| Route | Token | What |
+|---|---|---|
+| `GET /healthz` | none | `{"status":"ok"}` |
+| `GET /readyz` | none | Loki, Tempo (and the bucket) reachable; `503` otherwise |
+| `POST /v1/replay/chunks` | ingest | the collector's replay sink; not for SDKs |
+| `GET /v1/sessions` | read | filters `platform`, `status`, `version`, `user`, `service`, `limit` (at most 1000) |
+| `GET /v1/sessions/{id}` | read | the record, its timeline, its traces with Grafana Explore links |
+| `GET /v1/sessions/{id}/replay` | read | the replay's meta; `/events`, `/frames`, `/video` stream it by kind |
+| `DELETE /v1/sessions/{id}/replay` | read | removes one replay |
+| `GET /v1/stats/health` | read | healthy, errored, crashed per platform and version |
+| `POST /v1/funnels/query`, `GET /v1/funnels/dropped`, `GET /v1/funnels/steps` | read | [funnels](/docs/concepts/funnels/) |
+| `PUT /v1/sourcemaps` | the project's upload token | upload a source map |
+| `GET /v1/sourcemaps`, `POST /v1/symbolicate` | read | list maps, symbolicate a stack |
+| `DELETE /v1/admin/users/{user}`, `DELETE /v1/admin/projects/{project}` | admin | delete a user's or a project's replays, Loki events and Tempo traces |
+| `GET /v1/admin/audit`, `POST /v1/admin/retention/sweep` | admin | the deletion audit log; run the sweeper now |
+
+Read your sessions from the compose stack:
+
+```bash
+curl -s -H "Authorization: Bearer $(grep OUO_READ_TOKEN .env | cut -d= -f2)" 'localhost:8080/v1/sessions?from=now-1h'
+```
+
+You see `{"sessions":[…],"count":…}`, each with `status`, `user_id`, `error_count` and `trace_count`.
+
+<Aside type="caution">
+The read token reads every session of every project. Only Grafana should hold it. Access for people is Grafana's access control.
+</Aside>
+
+## Deletion audit log
+
+Every user or project deletion is written before it runs to an append-only log with a SHA-256 chain: `<dir>/audit/deletions.jsonl` on disk, create-only objects under `[<prefix>/]audit/` in a bucket. A deletion whose first entry cannot be written does not run.
+
+## Its own telemetry
+
+rum-api sends its traces, logs and metrics through the collector like any service, with `service.name = rum-api` and the credential in `OTEL_EXPORTER_OTLP_HEADERS`. Its metrics: `ouo.replay.chunks`, `ouo.replay.bytes` and `ouo.replay.chunks_sampled_out` per project, `ouo.retention.*` for the sweeper, `ouo.deletions*` for the admin API. In Mimir the dots become underscores.
+
+## When it will not start
+
+| Log line | Cause |
+|---|---|
+| `mkdir /data/replays: permission denied` | the data directory is not writable by uid 65532 |
+| `flag provided but not defined: -config.file` | an image older than 0.2.0 |
+| an unknown key | a typo in the file; `-config.verify` names it |
+| `replay store written by a newer replay schema` | the store was opened by a newer rum-api; run that version or newer ([Upgrading](/docs/operate/upgrade/#the-replay-schema-guard)) |
+| bucket missing, or access denied | the bucket must exist, and the keys must reach it |

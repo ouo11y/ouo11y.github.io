@@ -1,0 +1,250 @@
+---
+title: Deploy with Docker Compose
+description: Run the one-file stack as a long-lived install on one Docker host, with your own projects and secrets, debug ports on loopback, retention, and replays in MinIO or S3.
+sidebar: { order: 1 }
+---
+
+import { Steps, Aside } from '@astrojs/starlight/components';
+import Flow from '../../../../components/diagrams/Flow.astro';
+
+[Run the stack](/docs/start/quickstart/) starts everything with development credentials. This page turns the same file into an install you keep: your own projects and secrets, debug ports closed to the network, retention you chose, and optionally replays in an S3 bucket. Nothing in `compose.yaml` changes; you add files next to it.
+
+For a server on the internet, with TLS and a reboot-proof service, continue with [Single VM](/docs/operate/vm/) after this page.
+
+<Flow
+  caption="The folder you end with. Compose reads compose.yaml, compose.override.yaml and .env on its own."
+  columns={[
+    { label: 'Downloaded', nodes: [ { title: 'compose.yaml', sub: 'the one-file stack, unchanged' } ] },
+    { label: 'Yours', nodes: [
+      { title: '.env', sub: 'secrets, ports, retention', tone: 'accent' },
+      { title: 'projects.htpasswd', sub: 'one line per project', tone: 'accent' },
+      { title: 'compose.override.yaml', sub: 'your projects, loopback ports', tone: 'accent' },
+    ] },
+    { label: 'Optional', nodes: [ { title: 'compose.s3.yaml', sub: 'replays in MinIO' } ] },
+  ]}
+/>
+
+## Your own projects and secrets
+
+<Steps>
+
+1. In the stack's folder, make a project token and keep it: your apps will need it. Replace `web-store` with your project id (lowercase letters, digits, `.`, `_`, `-`).
+
+   ```bash
+   echo "pt_$(openssl rand -hex 16)" > web-store.token
+   ```
+
+2. Write the project registry. Each line is `<project id>:{SHA}<base64 of the SHA-1 of the token>`, exactly what `htpasswd -nbs` prints:
+
+   ```bash
+   printf '%s:{SHA}%s\n' web-store "$(tr -d '\n' < web-store.token | openssl dgst -binary -sha1 | openssl base64)" > projects.htpasswd
+   ```
+
+   A second project for the platform's own telemetry (rum-api's traces and metrics) keeps its rate limits apart from your apps:
+
+   ```bash
+   echo "pt_$(openssl rand -hex 16)" > internal.token
+   ```
+
+   ```bash
+   printf '%s:{SHA}%s\n' internal "$(tr -d '\n' < internal.token | openssl dgst -binary -sha1 | openssl base64)" >> projects.htpasswd
+   ```
+
+3. Write `.env` with new secrets. Every value here replaces a public development default:
+
+   ```bash
+   printf 'OUO_INGEST_TOKEN=it_%s\nOUO_READ_TOKEN=rt_%s\nOUO_ADMIN_TOKEN=at_%s\nOUO_GRAFANA_ADMIN_PASSWORD=%s\nOUO_UPLOAD_TOKENS=web-store:ut_%s\nOUO_BACKEND_OTLP_HEADERS=Authorization=Basic%%20%s\n' "$(openssl rand -hex 16)" "$(openssl rand -hex 16)" "$(openssl rand -hex 16)" "$(openssl rand -base64 18)" "$(openssl rand -hex 16)" "$(printf 'internal:%s' "$(tr -d '\n' < internal.token)" | base64)" > .env && chmod 600 .env
+   ```
+
+4. Save this as `compose.override.yaml`. It mounts your registry in place of the demo one, and binds rum-api, Loki, Tempo and Mimir to `127.0.0.1` so only this host reaches them:
+
+   ```yaml
+   # Your own projects instead of the public demo one, and loopback-only debug ports.
+   # Compose reads this file automatically next to compose.yaml.
+   services:
+     otel-collector:
+       configs: !override
+         - source: collector
+           target: /etc/otelcol/config.yaml
+         - source: projects
+           target: /etc/otelcol/projects.htpasswd
+     rum-api:
+       ports: !override
+         - "127.0.0.1:${OUO_RUM_API_PORT:-8080}:8080"
+     loki:
+       ports: !override
+         - "127.0.0.1:${OUO_LOKI_PORT:-3100}:3100"
+     tempo:
+       ports: !override
+         - "127.0.0.1:${OUO_TEMPO_PORT:-3200}:3200"
+     mimir:
+       ports: !override
+         - "127.0.0.1:${OUO_MIMIR_PORT:-9009}:9009"
+
+   configs:
+     projects:
+       file: ./projects.htpasswd
+   ```
+
+5. Apply it. Compose recreates only the containers whose configuration changed.
+
+   ```bash
+   docker compose up -d
+   ```
+
+6. Check that the demo credential is gone and yours works:
+
+   ```bash
+   curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:4318/v1/traces -u demo:pt_dev_demo_0000000000000000 -H 'Content-Type: application/json' -d '{"resourceSpans":[]}'
+   ```
+
+   You see `401`.
+
+   ```bash
+   curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:4318/v1/traces -u "web-store:$(cat web-store.token)" -H 'Content-Type: application/json' -d '{"resourceSpans":[]}'
+   ```
+
+   You see `200`. Grafana now takes the password in `.env`, not `testing567`.
+
+</Steps>
+
+Give your apps `projectId: "web-store"` and the token in `web-store.token`. Browser apps also need their origin allowed, in `.env`:
+
+```ini
+OUO_ALLOWED_ORIGINS=https://shop.example.com,https://*.preview.example.com
+```
+
+## Settings in `.env`
+
+| Variable | Default | What it sets |
+|---|---|---|
+| `OUO_ALLOWED_ORIGINS` | `http://localhost:*,http://127.0.0.1:*` | browser origins allowed by the collector, for all projects |
+| `OUO_RATELIMIT_PROJECT_RATE`, `_BURST` | `1000`, `5000` | requests per second per project |
+| `OUO_RATELIMIT_CLIENT_RATE`, `_BURST` | `100`, `300` | requests per second per client address |
+| `OUO_RATELIMIT_CLIENT_KEY` | `address` | `x_forwarded_for` behind a reverse proxy that sets the header |
+| `OUO_RETENTION_LOGS` | `720h` | Loki: events and logs (at least `24h`) |
+| `OUO_RETENTION_TRACES` | `336h` | Tempo |
+| `OUO_RETENTION_METRICS` | `2160h` | Mimir |
+| `OUO_RETENTION_REPLAYS` | `720h` | rum-api replays, from a session's last chunk; `0` keeps them |
+| `OUO_*_VERSION` | `latest` | pin `OUO_COLLECTOR_VERSION`, `OUO_RUM_API_VERSION`, `OUO_GRAFANA_VERSION` |
+| `OUO_*_PORT` | see [Run the stack](/docs/start/quickstart/#what-is-listening) | host ports |
+| `OUO_SENTRY_UPSTREAM`, `OUO_SENTRY_PROJECT_ID`, `OUO_SENTRY_PUBLIC_KEY` | `none`, `1`, a placeholder | the [Sentry bridge](/docs/operate/sentry-bridge/) |
+
+After any change: `docker compose up -d`. A change to `projects.htpasswd` alone needs a restart, because the collector reads it once at start:
+
+```bash
+docker compose restart otel-collector
+```
+
+## Replays in MinIO or S3
+
+By default rum-api keeps replays in the `rum-api-data` Docker volume. To keep them in a bucket instead, add MinIO and point rum-api at it.
+
+<Steps>
+
+1. Add the MinIO credentials to `.env`:
+
+   ```bash
+   printf 'OUO_MINIO_ROOT_USER=minioadmin\nOUO_MINIO_ROOT_PASSWORD=%s\nOUO_RUM_API_S3_ACCESS_KEY=rum-api\nOUO_RUM_API_S3_SECRET_KEY=%s\n' "$(openssl rand -hex 16)" "$(openssl rand -hex 16)" >> .env
+   ```
+
+2. Save this as `compose.s3.yaml`. `minio-init` creates the bucket and a `rum-api` user that can reach only that bucket; rum-api never uses the root credentials and never creates buckets.
+
+   ```yaml
+   # rum-api stores replays in MinIO instead of a Docker volume.
+   #   docker compose -f compose.yaml -f compose.override.yaml -f compose.s3.yaml up -d
+   services:
+     minio:
+       image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z
+       command: ["server", "/data", "--console-address", ":9001"]
+       ports:
+         - "127.0.0.1:${OUO_MINIO_PORT:-9000}:9000"
+         - "127.0.0.1:${OUO_MINIO_CONSOLE_PORT:-9001}:9001"
+       environment:
+         MINIO_ROOT_USER: ${OUO_MINIO_ROOT_USER:?set OUO_MINIO_ROOT_USER in .env}
+         MINIO_ROOT_PASSWORD: ${OUO_MINIO_ROOT_PASSWORD:?set OUO_MINIO_ROOT_PASSWORD in .env}
+       volumes:
+         - minio-data:/data
+
+     # One-shot: creates the bucket and a user that can reach only that bucket.
+     minio-init:
+       image: pgsty/mc:RELEASE.2026-09-16T00-00-00Z
+       depends_on: [minio]
+       environment:
+         MINIO_ROOT_USER: ${OUO_MINIO_ROOT_USER}
+         MINIO_ROOT_PASSWORD: ${OUO_MINIO_ROOT_PASSWORD}
+         BUCKET: ouo-replays
+         RUM_API_KEY: ${OUO_RUM_API_S3_ACCESS_KEY:?set OUO_RUM_API_S3_ACCESS_KEY in .env}
+         RUM_API_SECRET: ${OUO_RUM_API_S3_SECRET_KEY:?set OUO_RUM_API_S3_SECRET_KEY in .env}
+       entrypoint: ["/bin/sh", "-ec"]
+       command:
+         - |
+           i=0; until mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" >/dev/null 2>&1; do
+             i=$$((i+1)); [ $$i -lt 60 ] || { echo "minio not reachable"; exit 1; }; sleep 1; done
+           mc mb --ignore-existing "local/$$BUCKET"
+           cat > /tmp/policy.json <<POLICY
+           {"Version":"2012-10-17","Statement":[
+             {"Effect":"Allow","Action":["s3:GetBucketLocation","s3:ListBucket","s3:GetLifecycleConfiguration","s3:PutLifecycleConfiguration"],"Resource":["arn:aws:s3:::$$BUCKET"]},
+             {"Effect":"Allow","Action":["s3:GetObject","s3:PutObject","s3:DeleteObject","s3:GetObjectTagging","s3:PutObjectTagging"],"Resource":["arn:aws:s3:::$$BUCKET/*"]}]}
+           POLICY
+           mc admin policy create local rum-api /tmp/policy.json
+           mc admin user add local "$$RUM_API_KEY" "$$RUM_API_SECRET"
+           mc admin policy attach local rum-api --user "$$RUM_API_KEY" || true
+           echo "bucket $$BUCKET and user $$RUM_API_KEY ready"
+
+     rum-api:
+       environment:
+         STORAGE_BACKEND: s3
+         S3_ENDPOINT: minio:9000
+         S3_BUCKET: ouo-replays
+         S3_ACCESS_KEY_ID: ${OUO_RUM_API_S3_ACCESS_KEY}
+         S3_SECRET_ACCESS_KEY: ${OUO_RUM_API_S3_SECRET_KEY}
+         S3_INSECURE: "true"
+         S3_FORCE_PATH_STYLE: "true"
+         S3_LIFECYCLE_RULES: "true"
+       depends_on:
+         minio-init:
+           condition: service_completed_successfully
+
+   volumes:
+     minio-data:
+   ```
+
+   The official `minio/minio` images are no longer published; `pgsty/minio` and `pgsty/mc` are the community-maintained builds of the same server and client.
+
+3. Start with all three files. Name them every time from now on, or set `COMPOSE_FILE=compose.yaml:compose.override.yaml:compose.s3.yaml` in `.env`.
+
+   ```bash
+   docker compose -f compose.yaml -f compose.override.yaml -f compose.s3.yaml up -d
+   ```
+
+   `minio-init` ends with `bucket ouo-replays and user rum-api ready`, and rum-api's readiness now checks the bucket too:
+
+   ```bash
+   curl -s localhost:8080/readyz
+   ```
+
+   You see `"storage":"ok"` next to `loki` and `tempo`.
+
+</Steps>
+
+For AWS S3 or another S3-compatible store, skip MinIO and set only rum-api's environment: leave `S3_ENDPOINT` empty for AWS (it uses `s3.<region>.amazonaws.com`) and set `S3_REGION`; drop `S3_INSECURE` and `S3_FORCE_PATH_STYLE`. Leave the keys empty to use the AWS credential chain. Every key: [rum-api configuration](/docs/operate/rum-api/#replay-store).
+
+Replays already in the volume are not moved. They use the same layout as the bucket, so `mc mirror <volume path>/replays local/ouo-replays/replays` copies them over.
+
+## Back up
+
+| What | Where | Why |
+|---|---|---|
+| `.env`, `projects.htpasswd`, the override files | the stack's folder | your secrets and projects; not in any image |
+| replays | volume `<folder>_rum-api-data`, or the bucket | cannot be rebuilt |
+| Grafana's database (users, your dashboards) | volume `<folder>_grafana-data` | cannot be rebuilt |
+| Loki, Tempo, Mimir | volumes `<folder>_loki-data`, `_tempo-data`, `_mimir-data` | telemetry; back up as your retention needs require |
+
+`docker volume inspect <name>` shows where a volume lives on the host.
+
+## Limits of this setup
+
+<Aside type="caution">
+One Docker host is one failure domain, and Loki, Tempo and Mimir run as single binaries on local disks. That suits a pilot or a small production app. For redundancy, use [Helm on Kubernetes](/docs/operate/helm/) with an LGTM stack in replicated mode on object storage.
+</Aside>

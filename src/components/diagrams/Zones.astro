@@ -1,0 +1,83 @@
+---
+// Deployment topology: rows of zones (the internet, a cluster, a namespace), each a labelled,
+// dashed region holding boxes or nested zones. A row's `link` is drawn as an arrow to the next
+// row, with its label. Pure HTML and CSS; zones in a row stack on narrow screens.
+// <Zones rows={[{ zones: [{ label: 'Internet', nodes: [{ title: 'Browser' }] }], link: 'HTTPS' }]} />
+import '../../styles/diagram.css';
+
+type Tone = 'accent' | 'ok' | 'warn' | 'bad' | 'info';
+interface Node { title: string; sub?: string; tone?: Tone; }
+interface Zone { label: string; sub?: string; tone?: Tone; nodes?: Node[]; zones?: Zone[]; }
+interface Row { zones: Zone[]; link?: string; }
+interface Props { rows: Row[]; caption?: string; }
+const { rows, caption } = Astro.props;
+---
+<figure class="dg zones not-content" role="group" aria-label={caption}>
+  {rows.map((row, i) => (
+    <>
+      <div class="row">
+        {row.zones.map((z) => (
+          <section class:list={['zone', z.tone && `tone-${z.tone}`, z.tone && 'toned']}>
+            <header><b>{z.label}</b>{z.sub && <small set:html={z.sub} />}</header>
+            {z.nodes && (
+              <div class="nodes">
+                {z.nodes.map((n) => (
+                  <div class:list={['node', n.tone && `tone-${n.tone}`, n.tone && 'toned']}>
+                    <b>{n.title}</b>
+                    {n.sub && <small set:html={n.sub} />}
+                  </div>
+                ))}
+              </div>
+            )}
+            {z.zones && (
+              <div class="inner">
+                {z.zones.map((c) => (
+                  <section class:list={['zone', 'child', c.tone && `tone-${c.tone}`, c.tone && 'toned']}>
+                    <header><b>{c.label}</b>{c.sub && <small set:html={c.sub} />}</header>
+                    <div class="nodes">
+                      {(c.nodes ?? []).map((n) => (
+                        <div class:list={['node', n.tone && `tone-${n.tone}`, n.tone && 'toned']}>
+                          <b>{n.title}</b>
+                          {n.sub && <small set:html={n.sub} />}
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                ))}
+              </div>
+            )}
+          </section>
+        ))}
+      </div>
+      {i < rows.length - 1 && <div class="down" aria-hidden={row.link ? undefined : 'true'}>{row.link && <span set:html={row.link} />}</div>}
+    </>
+  ))}
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<style>
+  .row { display: flex; gap: 12px; align-items: stretch; }
+  .zone { flex: 1 1 0; min-width: 0; border: 1.5px dashed var(--dg-line); border-radius: 12px; padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 8px; }
+  .zone.toned { border-color: color-mix(in srgb, var(--tone) 70%, transparent); background: color-mix(in srgb, var(--tone) 4%, transparent); }
+  .zone header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
+  .zone header b { font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--dg-ink-2); }
+  .zone header small { font-size: 11.5px; color: var(--dg-ink-3); }
+  .inner { display: flex; gap: 10px; align-items: stretch; flex-wrap: wrap; }
+  .inner > .zone { flex: 1 1 200px; }
+  .nodes { display: flex; flex-wrap: wrap; gap: 8px; }
+  .node { flex: 1 1 130px; min-width: 0; padding: 8px 10px; border: 1.5px solid var(--dg-line); border-radius: 9px; background: var(--dg-node); display: flex; flex-direction: column; gap: 2px; }
+  .node.toned { border-color: var(--tone); background: color-mix(in srgb, var(--tone) 10%, var(--dg-node)); }
+  .node b { font-size: 13.5px; overflow-wrap: anywhere; }
+  .node small { font-size: 11.5px; color: var(--dg-ink-3); overflow-wrap: anywhere; }
+  .down { position: relative; height: 40px; display: flex; align-items: center; padding-left: calc(50% + 14px); }
+  .down::before { content: ""; position: absolute; left: 50%; top: 2px; bottom: 9px; width: 2px; background: repeating-linear-gradient(180deg, var(--dg-accent) 0 6px, transparent 6px 10px); }
+  .down::after { content: ""; position: absolute; left: calc(50% - 4px); bottom: 1px; border: 5px solid transparent; border-top: 8px solid var(--dg-accent); }
+  .down span { font-size: 11.5px; color: var(--dg-ink-2); }
+  .zones { container-type: inline-size; }
+  @container (max-width: 640px) {
+    .row { flex-direction: column; }
+    .down { padding-left: 34px; }
+    .down::before { left: 18px; }
+    .down::after { left: 14px; }
+  }
+</style>

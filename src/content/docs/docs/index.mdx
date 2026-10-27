@@ -1,19 +1,70 @@
 ---
 title: ouo11y docs
-description: Open Unified Observability. Real user sessions, errors, traces and replay on OpenTelemetry, with or without our SDK.
+description: Open Unified Observability. Real user sessions, errors, traces and replay on OpenTelemetry, with or without our SDK, on infrastructure you run.
 ---
 
-import { CardGrid, LinkCard } from '@astrojs/starlight/components';
+import { CardGrid, LinkCard, Aside } from '@astrojs/starlight/components';
+import Flow from '../../../components/diagrams/Flow.astro';
 
-ouo11y is open-source, OpenTelemetry-native observability for what your users actually experience: sessions, errors, crashes, Web Vitals, traces and session replay from web and mobile apps, joined to your backend traces and shown in Grafana.
+ouo11y is open-source real user monitoring built on OpenTelemetry. It shows what your users went through (sessions, errors, crashes, Web Vitals, the requests they sent and the backend spans those requests caused, and a replay of the screen) on one timeline in Grafana.
 
-Everything is OTLP with OpenTelemetry semantic conventions, stored in Loki, Tempo and Mimir, and runs on infrastructure you control.
+Every signal is OTLP with OpenTelemetry semantic conventions. It is stored in Loki, Tempo and Mimir, on infrastructure you run. Nothing leaves it unless you add an exporter.
+
+<Flow
+  caption="What you run: one collector at the edge, the LGTM stack, rum-api for sessions and replay, Grafana to look at it."
+  columns={[
+    { label: 'Your apps', arrow: 'OTLP + replay', nodes: [
+      { title: 'Web, mobile', sub: '@ouo11y SDK or plain OTel' },
+      { title: 'Backend', sub: 'any OTel SDK' },
+    ] },
+    { label: 'Edge', arrow: 'OTLP', nodes: [
+      { title: 'ouo11y collector', sub: 'project credential<br>rate limit · CORS', tone: 'accent' },
+    ] },
+    { label: 'Storage', nodes: [
+      { title: 'Loki · Tempo · Mimir', sub: 'events, traces, metrics' },
+      { title: 'rum-api', sub: 'sessions · replay store' },
+    ] },
+    { label: 'View', nodes: [
+      { title: 'Grafana', sub: 'ouo11y RUM app', tone: 'accent' },
+    ] },
+  ]}
+/>
+
+## Where to start
 
 <CardGrid>
-  <LinkCard title="Principles" description="What we promise, and what you can hold us to." href="/docs/start/principles/" />
-  <LinkCard title="Two ways in" description="Our SDK, or plain OpenTelemetry. Pick per app." href="/docs/start/two-paths/" />
-  <LinkCard title="Run it locally" description="The whole stack with one compose file." href="/docs/start/quickstart/" />
-  <LinkCard title="Bring your own OTel" description="The exact contract: what ouo11y reads from a browser." href="/docs/instrument/bring-your-own-otel/" />
-  <LinkCard title="Semantic conventions" description="Every ouo.* attribute and when it becomes OTel." href="/docs/concepts/semantic-conventions/" />
-  <LinkCard title="Customize" description="Every layer is yours to change." href="/docs/operate/customize/" />
+  <LinkCard title="Principles" description="Six promises, and how the product keeps each one." href="/docs/start/principles/" />
+  <LinkCard title="Two ways in" description="Our SDK or plain OpenTelemetry. Pick per app; the result is the same." href="/docs/start/two-paths/" />
+  <LinkCard title="Run the stack" description="One file, one command: the whole stack on your laptop in about two minutes." href="/docs/start/quickstart/" />
+  <LinkCard title="Quickstarts" description="Build a small shop, instrument it, and find a failed checkout in Grafana." href="/docs/quickstarts/" />
 </CardGrid>
+
+## If you are evaluating ouo11y for a platform team
+
+Read in this order. Each page stands on its own, and nothing points you to a repository.
+
+| Question | Page |
+|---|---|
+| What runs, and what talks to what? | [Architecture](/docs/concepts/architecture/) |
+| How is the edge secured, and what is public? | [Project credentials and the collector as the edge](/docs/concepts/credentials/) |
+| What is a session, and how is it judged healthy? | [Sessions and health](/docs/concepts/sessions/) |
+| Which attribute names will land in our data? | [Semantic conventions and `ouo.*`](/docs/concepts/semantic-conventions/) |
+| How is replay stored, and what can it capture? | [Replay model](/docs/concepts/replay/) |
+| How do we deploy it? | [Docker Compose](/docs/operate/compose/), [single VM](/docs/operate/vm/), [Helm on Kubernetes](/docs/operate/helm/) |
+| How do we change the pipeline? | [Collector](/docs/operate/collector/), [Customize](/docs/operate/customize/) |
+| How do we upgrade and rotate tokens? | [Upgrading](/docs/operate/upgrade/), [Project tokens](/docs/operate/tokens/) |
+
+<Aside type="note" title="Early access">
+The SDKs are public on npm. The three ouo11y container images (`collector`, `rum-api`, `grafana`) and the Helm chart are private until ouo11y reaches a stable version. Email [hello@ouo11y.com](mailto:hello@ouo11y.com) for pull access.
+</Aside>
+
+## What is released today
+
+| Component | Version | Where |
+|---|---|---|
+| `@ouo11y/browser` | 0.3.0 | npm, public |
+| `@ouo11y/react-native` | 0.2.1 | npm, public |
+| collector | 0.4.0 | `ghcr.io/ouo11y/collector`, private |
+| rum-api | 0.5.0 | `ghcr.io/ouo11y/rum-api`, private |
+| grafana (Grafana 13.2.1 with the ouo11y RUM app 0.9.0) | 0.5.0 | `ghcr.io/ouo11y/grafana`, private |
+| Helm chart `ouo` | not published yet | see [Helm on Kubernetes](/docs/operate/helm/) |

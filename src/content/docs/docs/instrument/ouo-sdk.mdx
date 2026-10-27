@@ -1,0 +1,598 @@
+---
+title: Browser SDK
+description: "@ouo11y/browser 0.3: install, every option, the API, sessions, sampling, replay privacy, first-party endpoint, interactions, compatibility and size."
+sidebar: { order: 1 }
+---
+
+import { Aside, Steps } from '@astrojs/starlight/components';
+import Flow from '../../../../components/diagrams/Flow.astro';
+import Sequence from '../../../../components/diagrams/Sequence.astro';
+import Timeline from '../../../../components/diagrams/Timeline.astro';
+import SessionLanes from '../../../../components/diagrams/SessionLanes.astro';
+import SamplingGrid from '../../../../components/diagrams/SamplingGrid.astro';
+
+`@ouo11y/browser` is a Real User Monitoring SDK built on OpenTelemetry JS. It records sessions, errors, fetch and XHR traces, Web Vitals, navigations and an rrweb session replay, and sends them to the ouo11y collector as plain OTLP. It is Apache-2.0 and on npm. This page describes version **0.3.0**.
+
+The SDK is a convenience, not a lock-in. Everything it sends is described in [the contract](/docs/instrument/bring-your-own-otel/#the-contract), and you can produce the same data with upstream OpenTelemetry packages and no ouo11y code at all. Pick the SDK when you want sessions, replay and delivery done for you; pick [plain OpenTelemetry](/docs/instrument/bring-your-own-otel/) when you want to own every line.
+
+## Install
+
+```bash
+npm install @ouo11y/browser
+```
+
+ESM only, TypeScript types included. React integration is a separate entry, `@ouo11y/browser/react` ([below](#react)).
+
+## Initialise
+
+<Steps>
+
+1. Create a file that starts the SDK, and import it first in your app's entry file, before the app renders. The SDK must be running before your first request and your first error.
+
+   ```ts
+   // src/rum.ts
+   import { initRUM } from "@ouo11y/browser";
+
+   export const rum = initRUM({
+     endpoint: "http://localhost:4318",            // the collector's OTLP/HTTP base URL
+     projectId: "demo",                            // the project, the Basic auth user name
+     projectToken: "pt_dev_demo_0000000000000000", // public by design, the Basic auth password
+     service: { name: "web-store", version: "1.4.2", environment: "local" },
+     tracing: { propagateTo: [/^http:\/\/localhost:8081\//] }, // your API
+     replay: { enabled: true, maskAllInputs: true },
+     debug: true,
+   });
+   ```
+
+   ```ts
+   // src/main.ts
+   import "./rum";
+   // ...then render your app
+   ```
+
+2. Open the app with the browser's console open. With `debug: true` the SDK prints one line with the URLs it derived and the project id (never the token):
+
+   ```
+   [ouo] @ouo11y/browser@… initialised { endpoint: "http://localhost:4318", replayEndpoint: "http://localhost:4319", traces: "http://localhost:4318/v1/traces", logs: "http://localhost:4318/v1/logs", replay: "http://localhost:4319/v1/replay/chunks", projectId: "demo", session: "…", user: "…" }
+   ```
+
+3. In the network panel you see `POST` requests to `/v1/logs` and `/v1/traces` answered `200`, and, with replay on, to `/v1/replay/chunks`. In Grafana, the session appears in the ouo11y app's sessions list.
+
+</Steps>
+
+Call `initRUM` once. A second call warns and returns the running instance; after `rum.shutdown()` a new `initRUM` starts a fresh one. From anywhere else in your code, `getRUM()` returns the running instance.
+
+### The project credential
+
+Every request carries `Authorization: Basic base64(projectId + ":" + projectToken)`. The token is **public by design**: it ships in your bundle, names one project and only grants the right to write telemetry into it under the collector's rate and size limits, like every RUM vendor's key. It is rotated in the collector's credentials file. A missing or empty `projectId` or `projectToken`, or a `projectId` containing `:`, makes `initRUM` throw, so a misconfigured deployment fails at once instead of sending data the collector rejects with `401`.
+
+## Options
+
+Only `endpoint`, `projectId`, `projectToken` and `service` are required. Every other option has the default shown.
+
+### Connection and identity
+
+| Option | Default | Meaning |
+|---|---|---|
+| `endpoint` | required | The collector's OTLP/HTTP base URL. Traces go to `${endpoint}/v1/traces`, events to `${endpoint}/v1/logs`. A relative path such as `/otel` is a route on the page's own origin: see [First-party endpoint](#first-party-endpoint). |
+| `replayEndpoint` | derived | Base URL of the collector's replay receiver; chunks go to `${replayEndpoint}/v1/replay/chunks`. When `endpoint` uses port `4318`, the default is the same host on port `4319`. Otherwise it is `endpoint` itself, behind a proxy that routes `/v1/replay/*`. |
+| `projectId` | required | The project id, the Basic auth user name. |
+| `projectToken` | required | The public project token, the Basic auth password. |
+| `service.name` | required | Resource attribute `service.name`. |
+| `service.version` | required | Resource attribute `service.version`, also put on every span and log record. This is the "app version" that health is broken down by. |
+| `service.environment` | required | Resource attribute `deployment.environment.name`. |
+| `user.id` | anonymous | The initial user id. Without it the SDK generates an anonymous id, persists it, and marks signals with `ouo.user.anonymous = true`. |
+| `debug` | `false` | Log the SDK's decisions to the console with the `[ouo]` prefix. |
+
+### Tracing options
+
+| Option | Default | Meaning |
+|---|---|---|
+| `tracing.propagateTo` | `[]` | URLs that receive `traceparent` and `baggage` on fetch and XHR. Same-origin requests always do. A RegExp, or a string that must equal the **whole** request URL: OpenTelemetry compares strings with `===`, so `"http://localhost:8081"` matches no API call. Write `/^http:\/\/localhost:8081\//`. |
+| `tracing.ignoreUrls` | `[]` | URLs never traced. The OTLP and replay endpoints are always ignored. |
+| `tracing.documentLoad` | `true` | A `documentLoad` span from Navigation Timing, with its resource fetches. See [Linking the page load](#linking-the-page-load). |
+| `tracing.interactions` | `true` | A `click` span per click that caused work, parent of the requests and navigation it caused. See [Interactions](#interactions-and-soft-navigations). |
+| `tracing.softNavigations` | `true` | A `soft-navigation` span per single-page route change, until the new route settles. |
+| `tracing.idleTimeoutMs` | `1000` | The quiet period (no request, no DOM change) that ends a click or soft-navigation span. |
+
+### Click and long task options
+
+| Option | Default | Meaning |
+|---|---|---|
+| `clicks.rageClicks` | `{ threshold: 3, windowMs: 1000, radiusPx: 30 }` | Emit `ouo.rage_click` for `threshold` clicks on one element or spot within `windowMs`. `false` turns it off. |
+| `clicks.deadClicks` | `true` | Emit `ouo.dead_click` for a click on a button or link after which nothing happened. |
+| `longTasks` | `{ thresholdMs: 100, maxPerPage: 50 }` | Emit `ouo.long_animation_frame` (Chromium 123+) or `ouo.long_task` (older Chromium) for main-thread work of `thresholdMs` or more, at most `maxPerPage` per page view. `false` turns it off. Firefox and Safari have neither browser API, so nothing is emitted there. |
+
+### Replay options
+
+| Option | Default | Meaning |
+|---|---|---|
+| `replay.enabled` | `true` | When `false`, rrweb is never downloaded. |
+| `replay.maskAllInputs` | `true` | Mask every input value in the recording. |
+| `replay.sampleRate` | `1` | Fraction of sent sessions that get a full replay. See [Sampling](#sampling). |
+| `replay.onErrorSampleRate` | `0` | Fraction of the other sessions that keep the last 30 to 60 seconds in memory and upload them, and the rest of the session, from the first error. |
+| `replay.flushIntervalMs` | `5000` | Upload a chunk at least this often. |
+| `replay.maxChunkBytes` | `262144` | Upload a chunk when the buffer reaches this size (256 KB). |
+| `replay.blockSelector` | none | CSS selector of elements recorded as an empty box of the same size, in addition to the `ouo-block` class. |
+| `replay.maskTextSelector` | none | CSS selector of elements whose text is masked, in addition to the `ouo-mask` class. |
+
+### Session options
+
+| Option | Default | Meaning |
+|---|---|---|
+| `session.inactivityTimeoutMs` | `1800000` (30 min) | The session ends after this long without activity. |
+| `session.maxDurationMs` | `14400000` (4 h) | The session ends at this age. |
+| `session.sampleRate` | `1` | Fraction of sessions that send anything at all. Unsampled sessions send `traceparent` with the sampled flag off, so your backend drops its side too. |
+
+### Delivery options
+
+| Option | Default | Meaning |
+|---|---|---|
+| `transport.compression` | `true` | gzip request bodies of 1 KB or more with `CompressionStream` (`Content-Encoding: gzip`). Sent uncompressed where the browser lacks it. |
+| `transport.maxAttempts` | `5` | Attempts per request, the first included, on network errors, timeouts, `408`, `429` and `5xx`, before the request goes to the offline store. Other `4xx` answers are never retried. |
+| `transport.offline` | `{ maxBytes: 5242880, maxAgeMs: 86400000 }` | Keep unsent requests in IndexedDB (memory where it is unavailable), at most 5 MB (oldest dropped first) and 24 hours old, and send them when back online or on the next page load. `false` drops them instead. |
+| `transport.beacon` | `false` | At page hide, use `navigator.sendBeacon` once the keepalive budget is spent. A beacon cannot carry `Authorization`, so this only works behind a [first-party route](#first-party-endpoint) whose proxy adds the credential. |
+
+## API
+
+`initRUM` returns a `RUM` object. No method throws, and `flush()` and `shutdown()` never reject.
+
+| Call | What it does |
+|---|---|
+| `rum.setUser({ id })` | Identify the user. From anonymous to identified (a login) the session continues with the new `user.id`. From one identified user to another, the session ends with `user_change` and a new one starts. |
+| `rum.clearUser()` | Logout: back to a fresh anonymous id, and a new session (`user_change`). |
+| `rum.endSession()` | End the session now (`manual`). The next activity starts a new one. |
+| `rum.captureError(err, attrs?)` | Report a caught error as a handled, non-fatal `exception`, with your attributes. Marks the session errored. |
+| `rum.addEvent(name, attrs?)` | A custom event on the session's timeline, with your attributes and `ouo.event.custom = true`. |
+| `rum.setRoute(name)` | Name the current route, for example `/products/:id`. Sets `app.screen.name` on every later signal. The React helpers call it for you. |
+| `rum.replay.pause()` | Stop recording and flush what is buffered. |
+| `rum.replay.resume()` | Start recording again, with a full snapshot. |
+| `rum.replay.isRecording()` | `true` while this tab records. |
+| `rum.session.id()`, `.userId()`, `.deviceId()` | The current ids, for example to show a support code. |
+| `await rum.flush()` | Send everything batched now. |
+| `await rum.shutdown()` | Flush, then remove every listener, observer, timer, patch and OpenTelemetry global the SDK installed. `initRUM` works again afterwards. |
+| `rum.deliveryStats()` | Counters since init: `sent`, `retried`, `queued`, `dropped`, `droppedBytes`, `dropReasons`, `rawBytes`, `wireBytes`. |
+
+```ts
+rum.setUser({ id: "user-42" });
+rum.addEvent("cart.added", { sku: "sku-1", qty: 2 });
+try {
+  await pay(cart);
+} catch (err) {
+  rum.captureError(err, { "cart.id": cart.id });
+}
+```
+
+### React
+
+`@ouo11y/browser/react` keeps React out of the core. React 16.8 or later is an optional peer dependency.
+
+```tsx
+import { OuoErrorBoundary, routeTemplate, useOuoRoute } from "@ouo11y/browser/react";
+import { matchRoutes, useLocation, useRoutes } from "react-router-dom";
+
+function App() {
+  useOuoRoute(routeTemplate(matchRoutes(routes, useLocation()))); // "/products/:id" -> app.screen.name
+  return (
+    <OuoErrorBoundary fallback={({ error, reset }) => <Failed error={error} onRetry={reset} />}>
+      {useRoutes(routes)}
+    </OuoErrorBoundary>
+  );
+}
+```
+
+- `OuoErrorBoundary` reports render errors of its children as a handled `exception` with `ouo.exception.kind = react.error_boundary` and `ouo.react.component_stack`, and renders `fallback`: a node, or a function of `{ error, reset }`. It also takes optional `attributes` and `onError`. React's development build rethrows the error to `window`, so in development you see it twice; production builds report it once.
+- `useOuoRoute(template)` calls `rum.setRoute`. `routeTemplate(matches)` joins React Router's `matchRoutes` output into one template. With any other router, call `useOuoRoute` with the matched pattern.
+- The entry is a client module (`"use client"`), so `OuoErrorBoundary` can wrap children in a Next.js App Router server layout.
+
+## Sessions
+
+A session is one visit: one user, one browser profile, one origin. Its id is a UUID made in the browser, kept in `localStorage` and shared by every tab of the origin. The rules are the same on every ouo11y SDK and in the [session concepts](/docs/concepts/sessions/).
+
+- **Start.** `initRUM` resumes the stored session if it was active in the last 30 minutes and is younger than 4 hours, with no new event. Otherwise it emits `session.end` for the expired one and starts a new session with `session.start` and `session.previous_id`.
+- **Activity** keeps a session alive: a click, a key press, a scroll, a touch or pointer down, the tab becoming visible, a navigation, or an outbound request.
+- **Tabs** of one origin share the session through the `storage` event. A session ended in one tab is not ended again by another.
+- **Errors do not end a web session.** An uncaught error marks the session crashed and the user keeps using the page.
+
+A session ends for one of four reasons, written to `ouo.session.end_reason`:
+
+<SessionLanes
+  duration={100}
+  caption="Each new session points at the one before it with session.previous_id. A login does not rotate the session; a different user does."
+  lanes={[
+    { label: 'inactivity', note: '30 min without activity', segments: [
+      { from: 0, to: 34, label: 'A', end: 'inactivity' },
+      { from: 34, to: 62, label: '', idle: true, tone: 'info' },
+      { from: 62, to: 100, label: 'B', sub: 'previous_id = A', tone: 'ok' },
+    ] },
+    { label: 'max_duration', note: 'older than 4 h', segments: [
+      { from: 0, to: 70, label: 'A', sub: 'busy for 4 hours', end: 'max_duration' },
+      { from: 70, to: 100, label: 'B', sub: 'previous_id = A', tone: 'ok' },
+    ] },
+    { label: 'user_change', note: 'another user, or clearUser()', segments: [
+      { from: 0, to: 22, label: 'A', sub: 'anonymous' },
+      { from: 22, to: 48, label: 'A', sub: 'setUser(ana)', end: 'user_change' },
+      { from: 48, to: 100, label: 'B', sub: 'setUser(bo)', tone: 'ok' },
+    ] },
+    { label: 'manual', note: 'rum.endSession()', segments: [
+      { from: 0, to: 40, label: 'A', end: 'manual' },
+      { from: 40, to: 55, label: '', idle: true, tone: 'info' },
+      { from: 55, to: 100, label: 'B', sub: 'at the next activity', tone: 'ok' },
+    ] },
+  ]}
+/>
+
+A `user_change` starts the next session at once; `session.end` carries the previous `user.id` and the new session the new one. After `inactivity`, `max_duration` or `manual`, the next session starts with the next activity or signal.
+
+**Device.** `device.id` (an OpenTelemetry attribute) is random, made once per browser profile and origin, and stored apart from the session and the user, so it survives rotation, login and logout and links the sessions of one browser. It is a resource attribute and is also on `session.start` and `session.end`. No IP address and no fingerprint is ever used.
+
+**Storage.** The SDK keeps three `localStorage` keys: `ouo.session`, `ouo.user` and `ouo.device`. Where storage throws or is full (a sandboxed iframe, private mode), they live in memory and the session lasts as long as the page.
+
+## What is on every signal
+
+Every span and log record carries `session.id`, `user.id`, `ouo.user.anonymous`, `ouo.platform = "web"` and `service.version`; `session.previous_id` when the session replaced an expired one; and `app.screen.name` once you name a route with `setRoute`. The resource carries `service.name`, `service.version`, `deployment.environment.name` and `device.id`.
+
+Requests to `tracing.propagateTo` URLs carry two headers:
+
+```
+traceparent: 00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01
+baggage: session.id=a4d47dfa-…,user.id=3c63803d-…,ouo.platform=web
+```
+
+### Events
+
+Events are OpenTelemetry log records with an `event.name`. Names that start with `ouo.` wait for an OpenTelemetry convention; see [Semantic conventions](/docs/concepts/semantic-conventions/).
+
+| `event.name` | When | Attributes |
+|---|---|---|
+| `session.start` | a new session | `ouo.session.started_at` (epoch ms), `device.id` |
+| `session.end` | expired, user changed, or `endSession()` | `ouo.session.end_reason`, `ouo.session.duration_ms`, `ouo.session.started_at`, `ouo.session.ended_at`, `device.id` |
+| `exception` | uncaught error or unhandled rejection (fatal); `captureError`, `console.error`, a failed resource load, a React error boundary (non-fatal) | `exception.type`, `exception.message`, `exception.stacktrace`, `ouo.exception.fatal`, `ouo.exception.handled`, `ouo.exception.kind` (`uncaught`, `unhandledrejection`, `captured`, `console`, `resource`, `react.error_boundary`) |
+| `http.request.failed` | a fetch or XHR answered `5xx`, or a network failure (status 0). A `4xx` is not an error. | `http.request.method`, `url.full`, `http.response.status_code` |
+| `navigation` | page load, `pushState`, `replaceState`, `popstate` | `url.path`, `url.full`, `ouo.navigation.from`, `ouo.navigation.kind` (`load`, `push`, `replace`, `pop`) |
+| `web_vital` | TTFB, FCP, LCP, CLS, INP; CLS and the final INP when the page is hidden or left | `ouo.web_vital.name`, `.value`, `.rating`, `.id`, `.delta`, `.navigation_type`, `url.path` |
+| `ouo.rage_click` | a burst of clicks on one spot (one event per burst) | `app.widget.id`, `app.widget.name`, `app.screen.coordinate.x` / `.y`, `url.path`, `ouo.click.count`, `ouo.click.duration_ms` |
+| `ouo.dead_click` | a click on a button, link or `role=button` after which no request, DOM change or navigation happened | `app.widget.id`, `app.widget.name`, `app.screen.coordinate.x` / `.y`, `url.path` |
+| `ouo.long_animation_frame` | a long animation frame (Chromium 123+) | `ouo.long_task.duration_ms`, `.blocking_duration_ms`, the longest script's `code.file.path`, `code.function.name` and invoker, `url.path` |
+| `ouo.long_task` | a long task (older Chromium) | `ouo.long_task.duration_ms`, `.container_type`, `.container_src`, `url.path` |
+| `ouo.replay.skipped` | replay stopped for this page view because its first snapshot is over 2 MB | `ouo.replay.skip_reason`, `ouo.replay.snapshot_bytes` |
+| your name | `rum.addEvent(name, attrs)` | your attributes and `ouo.event.custom = true` |
+
+Dead clicks never count form fields, labels, disabled buttons, or links and submit buttons that leave the page.
+
+### Spans
+
+`documentLoad` with its `documentFetch` and `resourceFetch` children; one `CLIENT` span per fetch or XHR (`http.request.method`, `url.full`, `http.response.status_code`, `server.address`); `click` and `soft-navigation`.
+
+## Trace propagation to your API
+
+The fetch span of the browser is the parent of your server's span. Your API reads `traceparent` and `baggage`, its OpenTelemetry SDK continues the trace, and a baggage span processor copies `session.id` onto its spans. Setting up the server side is on [Your backend](/docs/instrument/backend/).
+
+<Sequence
+  caption="One trace from the click to the database; session.id travels in baggage."
+  actors={['Browser', 'Your API', 'Collector']}
+  steps={[
+    { from: 0, to: 0, label: 'click', note: 'click span opens' },
+    { from: 0, to: 1, label: 'OPTIONS preflight', note: 'cross-origin only' },
+    { from: 1, to: 0, label: '204', note: 'allows traceparent, baggage', tone: 'ok' },
+    { from: 0, to: 1, label: 'POST /api/checkout', note: 'traceparent + baggage' },
+    { from: 1, to: 1, label: 'server span', note: 'child of the fetch span' },
+    { from: 1, to: 0, label: '200', tone: 'ok' },
+    { from: 0, to: 2, label: 'click + fetch spans', note: 'OTLP /v1/traces' },
+    { from: 1, to: 2, label: 'server spans with session.id', note: 'OTLP /v1/traces' },
+  ]}
+/>
+
+<Aside type="caution" title="CORS">
+For a cross-origin API, the preflight answer must list `traceparent` and `baggage` in `Access-Control-Allow-Headers`. If it does not, the browser drops them silently: the request still works, but the traces are not joined.
+</Aside>
+
+## Interactions and soft navigations
+
+Browsers have no async context, so a `fetch` sent after an `await` in a click handler would start a new trace. The SDK opens an "idle span" instead:
+
+- **`click`** starts at the click and is the parent of every span started while it is open: the requests the handler sends, after any number of `await`s, and the `soft-navigation` it causes. Attributes: `app.widget.id`, `app.widget.name`, `app.screen.coordinate.x` / `.y`, `url.path`.
+- **`soft-navigation`** starts at `pushState`, `replaceState` or `popstate` and parents the requests the new route sends. Its duration is how long the route change took to settle. Attributes: `url.path`, `url.full`, `ouo.navigation.from`, `ouo.navigation.kind`, `app.screen.name`.
+- A span ends `tracing.idleTimeoutMs` (1 s) after its last activity (a child span starting or ending, a DOM change), after 15 s at most, when a new click supersedes it, or when the page is hidden. The reason is in `ouo.interaction.end_reason`: `idle`, `timeout`, `superseded`, `hidden`.
+
+<Timeline
+  duration={4}
+  caption="A click that loads data and changes route: one trace, the click span is the root."
+  spans={[
+    { from: 0, to: 1.9, label: 'click', detail: 'button "Checkout"', tone: 'accent' },
+    { from: 0.05, to: 0.42, label: 'POST /api/cart', detail: 'after an await', tone: 'info' },
+    { from: 0.45, to: 1.9, label: 'soft-navigation', detail: '/checkout', tone: 'ok' },
+    { from: 0.5, to: 0.9, label: 'GET /api/shipping', detail: 'new route loads', tone: 'info' },
+  ]}
+  events={[
+    { at: 0.9, label: 'last activity', detail: 'then 1 s of quiet ends both spans', tone: 'warn' },
+  ]}
+/>
+
+A click that caused no request and no navigation is not exported as a span (it would be a trace of one span); it still appears on the timeline when it was a dead click or part of a rage burst. Two limits of the heuristic: a request started by a timer while an interaction is open is attributed to it, and a page with continuous animation keeps a span open until the 15 s cap. An explicit `context.with(span, …)` in your code always wins.
+
+Element names never read input values, nor the text of elements inside `ouo-mask` or `ouo-block`. Text is read only from buttons and links; `aria-label` and `data-testid` win over text.
+
+## Linking the page load
+
+A server-rendered page can make the browser's `documentLoad` span a child of the server span that rendered it. Write the W3C `traceparent` of that span into the page head:
+
+```html
+<meta name="traceparent" content="00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01" />
+```
+
+With OpenTelemetry Go (`otelhttp`), in the handler that renders the page:
+
+```go
+sc := trace.SpanContextFromContext(r.Context())
+meta := fmt.Sprintf("00-%s-%s-%s", sc.TraceID(), sc.SpanID(), sc.TraceFlags())
+// <meta name="traceparent" content="{{ .TraceParent }}"> in the template
+```
+
+With OpenTelemetry JS on Node:
+
+```js
+const c = trace.getActiveSpan()?.spanContext();
+const meta = `00-${c.traceId}-${c.spanId}-0${c.traceFlags}`;
+```
+
+In any other language, inject the current context with the W3C propagator into a map and print its `traceparent`. Do not cache the page with the tag: each response has its own span. Tempo then shows server span, `documentLoad`, then `documentFetch` and `resourceFetch` in one trace. An unsampled session records no `documentLoad`.
+
+## Sampling
+
+Three decisions, each a function of the session id, stored with the session so reloads, other tabs and later rate changes agree:
+
+1. `session.sampleRate`: is this session sent at all? An unsampled session sends no span, event or replay, and its requests carry `traceparent` with the sampled flag `00`.
+2. `replay.sampleRate`: of the sent sessions, which get a full replay from their start.
+3. `replay.onErrorSampleRate`: of the rest, which record into memory and upload from their first error.
+
+Move the sliders to see what 100 sessions become:
+
+<SamplingGrid session={1} replay={0.2} onError={0.5} caption="Each dot is a session. The decisions are independent, so the shares multiply." />
+
+The rule is a hash, shared with `@ouo11y/react-native` and the server's per-project cap, so a server rate lower than the app's keeps a subset of the app's sample:
+
+```
+sampled(id, rate, salt) = fmix32(fnv1a32(salt + ":" + id)) / 2^32 < rate
+```
+
+FNV-1a 32 over UTF-16 code units, then MurmurHash3's `fmix32` finaliser; the salts are `session`, `replay` and `replay_on_error`.
+
+## Replay
+
+Replay uses [rrweb](https://github.com/rrweb-io/rrweb). The rrweb code is a separate chunk that is only downloaded when replay is on and the session is sampled for it.
+
+### Privacy
+
+- **Inputs are masked by default** (`replay.maskAllInputs: true`).
+- **`ouo-block`**: add this class to an element to leave it out of the recording. It is replayed as an empty box of the same size.
+- **`ouo-mask`**: add this class to replace the element's text with asterisks.
+- `replay.blockSelector` and `replay.maskTextSelector` do the same for any CSS selector, without touching your markup.
+- No canvas and no fonts are recorded. A blocked iframe's document is neither recorded nor observed.
+
+```html
+<div class="ouo-block"><credit-card-form></credit-card-form></div>
+<p class="ouo-mask">Delivery to {{ customer.address }}</p>
+```
+
+```ts
+initRUM({
+  // ...
+  replay: { blockSelector: ".data-grid, #map", maskTextSelector: "[data-private]" },
+});
+```
+
+### Error-triggered replay
+
+With `replay.onErrorSampleRate`, a session that did not win a full replay can still keep the moments before an error. It records into memory, with a full snapshot every 30 seconds and the last two kept, so 30 to 60 seconds are always available. At the first error (uncaught, unhandled rejection, `captureError`, `console.error`, error boundary; not resource errors), it uploads that buffer and then records the rest of the session normally. The switch is stored with the session.
+
+<Timeline
+  duration={150}
+  caption="Only the buffer kept at the error and what follows it are uploaded."
+  spans={[
+    { from: 0, to: 60, label: 'buffer, dropped', detail: 'older than two snapshots', tone: 'info' },
+    { from: 60, to: 102, label: 'buffer, kept', detail: 'memory only', tone: 'warn' },
+    { from: 102, to: 150, label: 'recording', detail: 'uploaded every 5 s', tone: 'ok' },
+  ]}
+  events={[
+    { at: 102, label: 'exception', detail: 'first error: upload the buffer', tone: 'bad' },
+  ]}
+/>
+
+To record only sessions with an error, set `replay: { sampleRate: 0, onErrorSampleRate: 1 }`. The buffer still costs the recording, not the upload.
+
+### Chunks and tabs
+
+- The recording is uploaded in chunks `{ session_id, seq, started_at, ended_at, events }` every 5 seconds or at 256 KB, with `x-ouo-session-id` and `x-ouo-seq` headers. `seq` is stored with the session, so a reload continues the sequence; every page load starts with a full snapshot.
+- Only one tab records: the visible tab the user last focused, clicked or typed in. It claims a lease on the `BroadcastChannel` `ouo.replay`, starts with a full snapshot and an rrweb custom event `ouo.tab`; the tab that loses the lease, or is hidden, stops and flushes. The replay shows what the user looked at, one tab after the other.
+- Pending replay data in memory is capped at 2 MB, oldest chunks dropped first.
+
+### Cost
+
+rrweb's cost grows with the DOM. Measured in Chromium on a page of 10,000 elements: the first full snapshot is one task of about 40 to 50 ms and about 1 MB of JSON before gzip; 10,000 text changes a second cost about 6 % of the main thread. A first snapshot over the 2 MB buffer (in the order of 20,000 elements) could never be uploaded, so the SDK stops replay for that page view and emits `ouo.replay.skipped`. Cheapest first: block the biggest widget (`ouo-block` on a 10,000-cell table makes it cost nothing), lower `replay.sampleRate`, record only on error, or `rum.replay.pause()` around a heavy view.
+
+## First-party endpoint
+
+Ad blockers block requests to known telemetry hosts and paths. A user running one sends nothing, so their sessions and errors are missing. Serve the collector under your own origin and give the SDK a relative endpoint:
+
+```ts
+initRUM({ endpoint: "/otel", projectId, projectToken, service });
+// traces -> /otel/v1/traces, logs -> /otel/v1/logs, replay -> /otel/v1/replay/chunks
+```
+
+<Flow
+  caption="Same origin: no CORS preflight, nothing for a blocklist to match. Any prefix works; /otel is an example."
+  columns={[
+    { label: 'Browser', arrow: 'same origin', nodes: [
+      { title: 'Your page', sub: 'endpoint: "/otel"' },
+    ] },
+    { label: 'Your origin', nodes: [
+      { title: 'Reverse proxy', sub: 'strips /otel, keeps body and headers', tone: 'accent' },
+    ] },
+    { label: 'Collector', nodes: [
+      { title: ':4319 replay', sub: '/otel/v1/replay/* → /v1/replay/*' },
+      { title: ':4318 OTLP/HTTP', sub: '/otel/* → /v1/traces, /v1/logs' },
+    ] },
+  ]}
+/>
+
+The proxy must:
+
+- Strip the prefix and send `/otel/v1/replay/*` to port 4319 and the rest of `/otel/*` to port 4318. Put the replay rule first where rules match in order.
+- Pass the body and headers untouched: `Authorization`, `Content-Type`, `Content-Encoding: gzip`. Do not decompress.
+- Allow bodies up to 8 MB.
+- Pass `429` and `503` and their `Retry-After` header back unchanged; the SDK waits as asked.
+- Add `X-Forwarded-For` and run the collector with `OUO_RATELIMIT_CLIENT_KEY=x_forwarded_for`, or every user shares one rate-limit bucket.
+
+nginx:
+
+```nginx
+upstream ouo_otlp   { server ouo-collector:4318; }
+upstream ouo_replay { server ouo-collector:4319; }
+
+server {
+    # ... your site ...
+
+    # Replay chunks. The longer prefix wins over /otel/.
+    location /otel/v1/replay/ {
+        proxy_pass http://ouo_replay/v1/replay/;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        client_max_body_size 8m;
+    }
+
+    # OTLP/HTTP traces and logs.
+    location /otel/ {
+        proxy_pass http://ouo_otlp/;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        client_max_body_size 8m;
+    }
+}
+```
+
+Caddy:
+
+```txt
+example.com {
+    # ... your site ...
+
+    handle /otel/v1/replay/* {
+        uri strip_prefix /otel
+        reverse_proxy ouo-collector:4319
+    }
+
+    handle_path /otel/* {
+        reverse_proxy ouo-collector:4318
+    }
+}
+```
+
+Next.js rewrites (the collector need not be reachable from the browser):
+
+```js
+// next.config.js
+module.exports = {
+  async rewrites() {
+    const collector = process.env.OUO_COLLECTOR_HOST; // for example "ouo-collector.internal"
+    return [
+      // First match wins: replay before the catch-all.
+      { source: "/otel/v1/replay/:path*", destination: `http://${collector}:4319/v1/replay/:path*` },
+      { source: "/otel/:path*", destination: `http://${collector}:4318/:path*` },
+    ];
+  },
+};
+```
+
+Vite dev server, so development and production use the same route:
+
+```ts
+// vite.config.ts
+export default defineConfig({
+  server: {
+    proxy: {
+      "/otel/v1/replay": { target: "http://localhost:4319", rewrite: (p) => p.replace(/^\/otel/, "") },
+      "/otel": { target: "http://localhost:4318", rewrite: (p) => p.replace(/^\/otel/, "") },
+    },
+  },
+});
+```
+
+Check it: in the network panel, the SDK's requests now go to your own origin, with no `OPTIONS` preflight.
+
+**`sendBeacon` through the proxy.** With `transport: { beacon: true }`, the SDK can use `navigator.sendBeacon` at page hide. A beacon cannot set headers, so the proxy must add the credential to requests that arrive without one. The token is public, so the proxy may hold it. In nginx, add to both locations:
+
+```nginx
+map $http_authorization $ouo_authorization {
+    ""      "Basic <base64 of projectId:projectToken>";
+    default $http_authorization;
+}
+# in both locations:
+proxy_set_header Authorization $ouo_authorization;
+```
+
+## Delivery
+
+Every request (traces, logs, replay chunks) goes through one delivery layer, so a flaky network, a busy collector or a closed tab loses as little as possible.
+
+| Situation | What the SDK does |
+|---|---|
+| Page visible | gzip the body (1 KB or more), `POST` with `keepalive` while the 64 KB keepalive budget allows, abort after 30 s. |
+| Network error, timeout, `408`, `429`, `5xx` | Retry with exponential backoff and jitter (1 s, 2 s, 4 s, … up to 30 s), or after `Retry-After`, up to `transport.maxAttempts`. Then the offline store. |
+| Any other `4xx` | Dropped at once and counted: retrying cannot help. |
+| Offline | Straight to the offline store; sent on the `online` event. |
+| Page hidden or closing | Sent synchronously, uncompressed, with `fetch(…, { keepalive: true })`, split to fit the 64 KB budget; what does not fit goes to the offline store. |
+| Offline store | IndexedDB `ouo-delivery`, shared by the origin's tabs; at most 5 MB, oldest first out, 24 h maximum age. Sent oldest first when back online, when the page is shown again, after any successful request, and on the next page load, by one tab at a time. |
+
+Delivery is at least once. A duplicate (same span id, same log line, same chunk `seq`) is absorbed by Tempo, Loki and the replay receiver.
+
+## Compatibility and safety
+
+### Browsers
+
+| | Supported: tested, every feature | Runs: syntax floor ES2022 |
+|---|---|---|
+| Chrome, Edge | versions of the last 2 years (130+ in October 2026) | 94+ |
+| Firefox | versions of the last 2 years (131+) | 93+ |
+| Safari, iOS Safari (every iOS browser) | 18+ | 16.4+ |
+
+No syntax newer than ES2022 ships, so your bundle still parses on the "runs" versions. Optional features are detected and the SDK does without them: Long Animation Frames and Long Tasks (Chromium only), `CompressionStream` (bodies sent uncompressed), `BroadcastChannel` (each tab stops recording only when hidden), `MutationObserver` (no DOM activity for interaction spans), `crypto.randomUUID`.
+
+**Web Vitals per engine.** Chromium reports all five. Firefox reports TTFB, FCP, LCP and INP (it has no Layout Instability API, so no CLS). WebKit reports TTFB, FCP, LCP and INP. FCP, LCP, CLS and INP are only reported for a page that was visible from the start: a tab loaded in the background reports TTFB only, and `debug: true` logs "page loaded hidden".
+
+### The host page is never broken
+
+- **Every hook is guarded.** Listeners, patched `history` and `console.error`, fetch and XHR hooks, observers, timers and rrweb catch their own exceptions. An SDK error never reaches `window.onerror`, an `unhandledrejection` handler, or the caller of a patched function. With `debug: true` it is logged as `[ouo] contained`.
+- **Patched functions behave like the originals.** They call the original first, with the same `this` and arguments, and return its result; what the original throws reaches the caller unchanged. Errors are observed with `addEventListener` only, never by assigning `window.onerror`, so your own handlers and `preventDefault()` work as before.
+- **If the SDK cannot start**, `initRUM` warns, removes what it installed and returns an inert instance. Only a configuration error throws.
+- **Server rendering.** Both entries import in Node without `window` or `document`; `initRUM` there returns an inert instance. Calling it at module scope of a client component is fine.
+- **Strict CSP and Trusted Types.** No `unsafe-eval`, no `unsafe-inline`, no Trusted Types policy needed. Add the collector's origins to `connect-src`.
+- **Long sessions.** A one-hour soak test of a busy single-page app with replay on shows no growth in listeners, observers, timers, DOM nodes or heap after the warm-up.
+
+### Collector side
+
+For a collector on another origin, its CORS must allow your page's origin, the headers `Authorization` and `Content-Type` on OTLP, plus `Content-Encoding`, `X-Ouo-Session-Id` and `X-Ouo-Seq` on the replay receiver, and expose `Retry-After`. A CORS error with no `POST` at all means the origin or `Authorization` is not allowed.
+
+| Collector answer | Meaning | SDK |
+|---|---|---|
+| `401` | wrong or missing credential | dropped |
+| `429`, `503` | rate limited | retried after `Retry-After` |
+| `413` | payload too large | dropped |
+
+## Bundle size
+
+Measured on the published 0.3.0 package, gzip level 9:
+
+| File | Size | Loaded |
+|---|---|---|
+| main entry (`index.js`, OpenTelemetry and web-vitals included) | 44 KB | always |
+| rrweb chunk | 77 KB | only when replay is on and the session is sampled for it, or buffers for on-error replay |
+| `@ouo11y/browser/react` | under 1 KB | when you import it |
+
+The package is marked `sideEffects: false`. With `replay.enabled: false` the rrweb chunk is never requested.
+
+## Errors from a minified bundle
+
+The SDK sends `exception.stacktrace` exactly as the browser reports it. For a minified production bundle that means minified frames. Source map upload and symbolication are not released yet; this page will say so when they are.
+
+## Leaving the SDK
+
+The SDK only emits OpenTelemetry and the replay chunks of [the contract](/docs/instrument/bring-your-own-otel/#the-contract). You can replace it with [plain OpenTelemetry](/docs/instrument/bring-your-own-otel/) later without touching the server side; nothing stored is SDK-specific.

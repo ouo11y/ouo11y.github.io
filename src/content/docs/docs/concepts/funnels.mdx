@@ -1,0 +1,90 @@
+---
+title: Funnels
+description: How ouo11y counts the sessions that go from one page or event to the next, in order, where they stop, and the replays of those that stopped. Computed from the events you already send.
+sidebar: { order: 6 }
+---
+
+import Stages from '../../../../components/diagrams/Stages.astro';
+import Timeline from '../../../../components/diagrams/Timeline.astro';
+
+A **funnel** answers: of the sessions that did step 1, how many then did step 2, then step 3? ouo11y computes it from the session events already in Loki. Nothing new is collected, and nothing changes in your app for page steps.
+
+Funnels need rum-api 0.5.0 and the Grafana app 0.9.0 (the `grafana` image 0.5.0). In Grafana: **More apps → ouo11y RUM → Funnels**. The [funnels quickstart](/docs/quickstarts/3-funnels/) builds one from 50 generated sessions.
+
+## What a step can be
+
+| Step | Example | Matches |
+|---|---|---|
+| **Page is** | `/checkout` | a `navigation` event whose `url.path` is exactly that |
+| **Page starts with** | `/products/` | a `navigation` event whose `url.path` starts with it |
+| **Event** | `add_to_cart` | any event with that `event.name`, except `navigation` |
+
+`@ouo11y/browser` records every page load and every `history.pushState`, `replaceState` and back or forward as a `navigation` event, so page steps work without code. For an event step, record the action where it happens:
+
+```js
+rum.addEvent("add_to_cart", { "product.id": product.id });
+```
+
+Name events after what happened, in `snake_case`, and keep the set small and stable: the funnel matches the name, not the attributes. Built-in events such as `exception` can be steps too.
+
+## How a funnel is counted
+
+<Stages
+  caption="One query per step kind, joined in memory per session. Results are cached for 60 seconds."
+  stages={[
+    { who: 'Grafana app', title: 'Ask', body: '2 to 10 steps, a time range up to 31 days, optional filters and <code>within</code>.', carries: 'POST /v1/funnels/query<br>read token' },
+    { who: 'rum-api', title: 'Read Loki', body: 'One LogQL query for the page steps, one for the event steps, in parallel.', tone: 'accent', carries: 'events with <code>session.id</code>' },
+    { who: 'rum-api', title: 'Walk each session', body: 'Find the deepest path through the steps, in order.', carries: 'counts, times' },
+    { who: 'Grafana app', title: 'Show', body: 'Bars per step, conversion, time between steps, the sessions that dropped.', tone: 'ok' },
+  ]}
+/>
+
+The rules:
+
+- **The unit is the session.** Each step reports the sessions that reached it, and the distinct `user.id` of those sessions. Events without a `session.id` are ignored.
+- **Strict order within one session.** A session reaches step *n* when it has a step-*n* event after the event it used for step *n − 1*. Other events in between do not matter. A repeated step counts once. A step done before the previous one does not count.
+- **Best attempt.** Every occurrence of step 1 is tried as a start, and the deepest path wins. A shopper who stalls, goes back to the home page and buys later in the same session is counted as a purchase.
+- **Optional window (`within`).** Every step must be reached within that time of the attempt's step 1. At most 7 days.
+- **Only events inside the time range count.** A session whose step 1 happened before the range does not enter, even if later steps fall inside it. Widen the range rather than shifting it.
+
+<Timeline
+  duration={300}
+  caption="Funnel home → product page → add_to_cart → order_paid. The first attempt stops at the product page; the second, from the later home visit, reaches order_paid. The session counts as converted."
+  events={[
+    { at: 0, label: 'navigation', detail: '/ (step 1)', tone: 'ok' },
+    { at: 20, label: 'navigation', detail: '/products/7 (step 2)', tone: 'ok' },
+    { at: 90, label: 'navigation', detail: '/ (step 1 again)', tone: 'info' },
+    { at: 120, label: 'navigation', detail: '/products/3 (step 2)', tone: 'ok' },
+    { at: 150, label: 'add_to_cart', detail: 'step 3', tone: 'ok' },
+    { at: 280, label: 'order_paid', detail: 'step 4', tone: 'ok' },
+  ]}
+/>
+
+## Reading one
+
+- **The bar** is the sessions that reached the step. The big percentage is relative to step 1.
+- **% of previous step** is the step's own conversion. The lowest one is the leak to fix first.
+- **median · p75** is the time from the previous step, for the sessions that made it. A long p75 with an ordinary median means a slow minority: watch their replays.
+- **sessions · users**: one user with three sessions counts three times in sessions and once in users.
+- **The dropped count** above a bar opens the list of sessions that reached the previous step and stopped: when they entered, how long they took, their last page, and a link to the session with its replay, errors and traces.
+
+The funnel lives in the URL (`?step=page:/&step=page:/products/*&step=event:add_to_cart`). Copy the address bar to share it. There are no saved funnels yet.
+
+## Filters
+
+`service` (`service.name`), `environment` (`deployment.environment.name`), `platform` (`ouo.platform`) and `project` (`ouo.project.id`) are Loki labels and narrow the query cheaply. `release` (`service.version`) is structured metadata. All are exact matches.
+
+## Limits
+
+| Limit | Value |
+|---|---|
+| steps | 2 to 10 |
+| a step value | 1 to 256 characters, case-sensitive |
+| `within` | up to 7 days |
+| time range | up to 31 days |
+| events read per step kind | 100,000 |
+| cache | 60 s per funnel and range (`loki.funnel_cache_ttl`) |
+
+Past 100,000 events of one kind the funnel is computed on the first 100,000 and undercounts the end of the range. Narrow the range or add a filter for a busy app.
+
+Session sampling (`session.sampleRate` in the SDK) scales every step down equally: percentages stay right, counts do not.

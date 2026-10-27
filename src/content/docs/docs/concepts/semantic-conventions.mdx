@@ -1,0 +1,195 @@
+---
+title: Semantic conventions and ouo.*
+description: Every OpenTelemetry name ouo11y uses, every ouo.* name in use today with what emits it, its OpenTelemetry status, and the policy for moving to OpenTelemetry names.
+sidebar: { order: 2 }
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+ouo11y uses OpenTelemetry semantic conventions wherever one exists. Where none exists yet, the name is prefixed `ouo.`. This page lists every such name that the released components put into your data, so you know what you are storing and what will change.
+
+Checked against: `@ouo11y/browser` 0.3.0, `@ouo11y/react-native` 0.2.1, collector 0.4.0 (its replay receiver and Sentry bridge), rum-api 0.5.0. The Grafana app (0.9.0) emits nothing; it reads these names.
+
+## The policy
+
+**`ouo.` is a placeholder, not a brand.**
+
+1. **OpenTelemetry first.** Before adding an `ouo.` name we look for an OpenTelemetry convention, stable or in development. If one fits, we use it.
+2. **Move when OpenTelemetry decides.** When OpenTelemetry defines a convention for something we prefix, or tells us how to model it, we move to it.
+3. **No silent breaks.** During a migration window the SDKs and the collector emit both names, the Grafana app and rum-api read both, and the change is listed in the changelog and in [Announcements](/announcements/).
+4. **Upstream, not around.** Where we need something OpenTelemetry lacks, we would rather help define it upstream than keep a private name.
+
+<Aside type="note" title="Stable and in development">
+Many OpenTelemetry conventions for apps and browsers have the status *Development*: they exist, but can still change. Where one fits exactly, it is listed below as the target. We move to a Development convention when it matches what we send, and emit both names while it settles.
+</Aside>
+
+## OpenTelemetry names ouo11y uses
+
+| Name | Status in OpenTelemetry | Where |
+|---|---|---|
+| `service.name`, `service.version` | Stable | resource, every signal |
+| `deployment.environment.name` | Development | resource |
+| `session.id`, `session.previous_id` | Development | every span and log record |
+| `session.start`, `session.end` (event names) | Development | session events |
+| `user.id` | Development | every span and log record |
+| `device.id` | Development | resource, session events |
+| `exception.type`, `exception.message`, `exception.stacktrace` | Stable | `exception` events |
+| `http.request.method`, `http.response.status_code`, `url.full`, `url.path` | Stable | spans, `http.request.failed`, `navigation` |
+| `event.name` | Stable | every RUM event (a log record) |
+| `app.jank` (event), `app.jank.frame_count` | Development | React Native and Sentry bridge frame stats |
+| `app.screen.name` | Development | React Native screens |
+| browser, OS and device resource attributes from the OpenTelemetry browser detector | as upstream | resource |
+
+## Event names
+
+RUM events are OpenTelemetry log records with an `event.name`. Spans are ordinary spans: none of their names has the `ouo.` prefix.
+
+| `event.name` | Emitted by | OpenTelemetry status |
+|---|---|---|
+| `session.start`, `session.end` | browser, React Native, Sentry bridge | OpenTelemetry, Development |
+| `exception` | browser, React Native, Sentry bridge | `exception.*` attributes are Stable; `app.crash` (Development) covers crashes only |
+| `navigation` | browser, React Native, Sentry bridge | no convention |
+| `web_vital` | browser | **`browser.web_vital`** (Development), one to one |
+| `http.request.failed` | browser, React Native, Sentry bridge | no convention |
+| `http.request` | React Native (opt in), Sentry bridge | no convention |
+| `ui.tap` | React Native, Sentry bridge | close to `app.widget.click` (Development) |
+| `app.lifecycle` | React Native, Sentry bridge | **`device.app.lifecycle`** (Development) |
+| `app.jank` | React Native, Sentry bridge | OpenTelemetry, Development |
+| `log` | React Native, Sentry bridge | no convention |
+| `console`, `breadcrumb`, `sentry.message` | Sentry bridge | no convention |
+| `ouo.app.start`, `ouo.screen.display`, `ouo.stall` | React Native, Sentry bridge | no convention for app start, time to display or stalls |
+| `ouo.rage_click`, `ouo.dead_click` | browser | no convention |
+| `ouo.long_task`, `ouo.long_animation_frame` | browser | no convention |
+| `ouo.replay.skipped` | browser | no convention |
+| your own names, from `addEvent()` | browser, React Native | yours; they carry `ouo.event.custom = true` |
+
+## Every `ouo.` attribute
+
+Grouped by what they describe. "Target" is the OpenTelemetry name we move to when it fits; "none" means OpenTelemetry has no convention yet.
+
+### Resource
+
+| Name | Emitted by | Meaning | Target |
+|---|---|---|---|
+| `ouo.platform` | browser, React Native, Sentry bridge | `web` or `mobile`; also on every record and in `baggage` | none |
+| `ouo.sdk.name`, `ouo.sdk.version` | browser, React Native | `@ouo11y/browser` or `@ouo11y/react-native`, and its version | `telemetry.distro.name`, `telemetry.distro.version` (Development) |
+| `ouo.project.id` | the collector, from the credential | the project; also on replay chunk records | none |
+| `ouo.rum.mode` | Sentry bridge (`sentry`); React Native if your app sets it | which instrumentation a cohort uses during a rollout | none |
+| `ouo.app.build` | Sentry bridge | the build part of the Sentry release | **`app.build_id`** (Development) |
+| `ouo.sentry.release` | Sentry bridge | the raw Sentry release string | none |
+| `ouo.device.simulator` | React Native (resource), Sentry bridge (per record) | `true` on a simulator | none |
+
+### Users and sessions
+
+| Name | Emitted by | Meaning | Target |
+|---|---|---|---|
+| `ouo.user.anonymous` | browser, React Native | `true` while `user.id` is the SDK's anonymous id | none |
+| `ouo.session.started_at`, `ouo.session.ended_at` | browser, React Native (Sentry bridge: `started_at`) | epoch milliseconds, on `session.start` / `session.end` | none |
+| `ouo.session.duration_ms` | browser, React Native, Sentry bridge | length of the ended session | none |
+| `ouo.session.end_reason` | browser, React Native, Sentry bridge | why it ended, see [Sessions](/docs/concepts/sessions/#end) | none |
+| `ouo.sentry.session_match` | Sentry bridge | how a Sentry item was matched to a session: `envelope`, `replay`, `device`, `trace`, `start`, `none` | none |
+
+### Errors and crashes
+
+| Name | Emitted by | Meaning | Target |
+|---|---|---|---|
+| `ouo.exception.fatal` | browser, React Native, Sentry bridge | the error crashed the app or the session ([health](/docs/concepts/sessions/#health)) | none (`exception.escaped` is deprecated; `app.crash` is a separate event) |
+| `ouo.exception.handled` | browser, React Native, Sentry bridge | the app caught and reported it | none |
+| `ouo.exception.kind` | browser, React Native | where it came from: `uncaught`, `unhandledrejection`, `console`, `captured`, `resource`, `react.error_boundary`; React Native also `sentry`, `native` | none |
+| `ouo.exception.debug_ids` | browser | script URL to source-map debug id, as JSON | none |
+| `ouo.exception.trace_link` | React Native | how the exception was linked to a trace | none |
+| `ouo.react.component_stack` | browser | the React error boundary's component stack | none |
+| `ouo.crash.mechanism`, `.timestamp`, `.frames`, `.images`, `.arch`, `.signal`, `.mach_exception`, `.address`, `.thread_main` | React Native | the previous run's native crash, reported on the next launch | none (`app.crash`, Development, has no such details yet) |
+| `ouo.sentry.mechanism`, `ouo.sentry.event_id` | React Native, Sentry bridge | Sentry's mechanism type and event id | none |
+| `ouo.sentry.level`, `ouo.sentry.debug_images`, `ouo.sentry.synthetic` | Sentry bridge | Sentry level, debug images, a synthetic error for an unsampled one | none |
+| `ouo.sentry.tag.<key>` | Sentry bridge, only with `copy_tags` on (at most 32) | Sentry tags | none |
+
+### Navigation and interaction
+
+| Name | Emitted by | Meaning | Target |
+|---|---|---|---|
+| `ouo.navigation.from` | browser, React Native, Sentry bridge | the previous path or screen | none |
+| `ouo.navigation.kind` | browser (`load`, `push`, `replace`, `pop`), Sentry bridge (`screen`) | how the navigation happened | none |
+| `ouo.navigation.source` | Sentry bridge | `transaction` or `breadcrumb` | none |
+| `ouo.interaction.type` | browser, `click` span | `click` | none |
+| `ouo.interaction.end_reason` | browser, `click` and `soft-navigation` spans | `idle`, `timeout`, `superseded`, `hidden` | none |
+| `ouo.click.count`, `ouo.click.duration_ms` | browser, `ouo.rage_click` | size and length of the burst | none |
+| `ouo.ui.target`, `ouo.ui.path` | React Native, Sentry bridge, `ui.tap` | the tapped component and its path | close to `app.widget.id`, `app.widget.name` (Development) |
+| `ouo.app.state` | React Native, Sentry bridge, `app.lifecycle` | `foreground`, `inactive`, `background` | **`ios.app.state`**, `android.app.state` (Development) |
+| `ouo.app.screen` | Sentry bridge | last screen at the time of an error | **`app.screen.name`** (Development) |
+| `ouo.breadcrumb.category`, `ouo.breadcrumb.data.<key>` | Sentry bridge | Sentry breadcrumb fields | none |
+
+### Requests
+
+| Name | Emitted by | Meaning | Target |
+|---|---|---|---|
+| `ouo.http.failed` | browser, React Native, on the fetch / XHR **span** | `true` for status 500 and above or a network error | none (`error.type`, Stable, says why, not whether it counts for health) |
+| `ouo.sentry.span_status` | Sentry bridge, `http.request.failed` | Sentry's span status | none |
+| `ouo.sentry.measurement.<name>` | Sentry bridge, transaction root span | Sentry's raw measurements | none |
+
+### Performance
+
+| Name | Emitted by | Meaning | Target |
+|---|---|---|---|
+| `ouo.web_vital.name`, `.value`, `.rating`, `.id`, `.delta`, `.navigation_type` | browser, `web_vital` | the `web-vitals` library's fields for CLS, FCP, INP, LCP, TTFB | **`browser.web_vital.*`** (Development), one to one |
+| `ouo.long_task.duration_ms`, `.blocking_duration_ms`, `.render_start_ms`, `.script_count`, `.container_type`, `.container_src` | browser, `ouo.long_task`, `ouo.long_animation_frame` | Long Tasks and Long Animation Frames | none |
+| `ouo.long_task.script.duration_ms`, `.invoker`, `.invoker_type`, `.char_position` | browser | the script that caused it | none |
+| `ouo.app.start.type`, `ouo.app.start.duration_ms` | React Native, Sentry bridge, `ouo.app.start` | `cold` or `warm`, and how long | none |
+| `ouo.screen.ttid_ms` (React Native, Sentry bridge), `ouo.screen.ttfd_ms` (Sentry bridge) | `ouo.screen.display` | time to initial and to full display | none |
+| `ouo.frames.total`, `.slow`, `.frozen`, `.delay_ms` | React Native, Sentry bridge, `app.jank` | frame counts and delay | partly `app.jank.*` (Development), also emitted |
+| `ouo.stall.count`, `.total_ms`, `.longest_ms`, `.period_ms` | React Native, Sentry bridge, `ouo.stall` | JavaScript event-loop stalls | none |
+| `ouo.vital.source` | React Native, Sentry bridge | `ouo` or `sentry` | none |
+| `ouo.vital.window` | React Native, Sentry bridge | `app_start`, `screen`, `interaction` | none |
+| `ouo.device.locale`, `.thermal_state`, `.orientation`, `.free_memory`, `.memory_size`, `.low_power_mode`, `.battery_level`, `.charging` | Sentry bridge, on errors and messages | Sentry's device context | none (`device.*` covers only id, manufacturer and model) |
+| `ouo.app.in_foreground`, `ouo.app.start_time`, `ouo.app.memory` | Sentry bridge | Sentry's app context | none |
+
+### Replay and other events
+
+| Name | Emitted by | Meaning | Target |
+|---|---|---|---|
+| `ouo.event.custom` | browser, React Native, Sentry bridge | `true` on your own events (`addEvent()`, `sentry.message`) | none |
+| `ouo.replay.seq`, `ouo.replay.kind`, `ouo.replay.encoding` | collector replay receiver, Sentry bridge | chunk number; `rrweb`, `frames` or `video`; `json` | none (OpenTelemetry has no replay signal) |
+| `ouo.replay.chunk` | Sentry bridge | routing flag inside the collector | none |
+| `ouo.replay.skip_reason`, `ouo.replay.snapshot_bytes` | browser, `ouo.replay.skipped` | why a recording was skipped | none |
+| `ouo.sentry.sdk`, `ouo.sentry.origin`, `ouo.sentry.log.template` | Sentry bridge | Sentry SDK name and log fields | none |
+
+## Metrics
+
+rum-api's own metrics, sent through the collector as `service.name = rum-api`. None has an OpenTelemetry equivalent.
+
+| Metric | Attributes |
+|---|---|
+| `ouo.replay.chunks`, `ouo.replay.bytes`, `ouo.replay.chunks_sampled_out` | `ouo.project.id` |
+| `ouo.deletions` | `action`, `status`, `dry_run` |
+| `ouo.deletions.replays` | `action` |
+| `ouo.retention.sweeps` | `result` |
+| `ouo.retention.sessions_deleted`, `ouo.retention.bytes_deleted` | `ouo.project.id` (and `reason` for sessions) |
+| `ouo.retention.sweep.duration` (histogram, seconds), `ouo.retention.sweep.last_success` (gauge) | |
+
+The collector's own metrics use Prometheus-style names: `ouo_auth_failures_total`, `ouo_ratelimit_rejected_total`, `ouo_replay_chunks_total`, `ouo_sentry_envelopes_total`, `ouo_sentry_upstream_duration_seconds`, `ouo_sentry_items_total`, `ouo_sentry_translate_dropped_total`. See [Collector](/docs/operate/collector/#its-own-metrics).
+
+## In Loki
+
+Loki turns dots into underscores. `ouo.project.id` is the label `ouo_project_id`, `event.name` is `event_name`, `ouo.platform` is `ouo_platform`. The stream labels are `service_name`, `event_name`, `ouo_platform`, `deployment_environment_name` and `ouo_project_id`; every other attribute is structured metadata:
+
+```text
+{service_name="web-store", event_name="exception"} | ouo_exception_fatal="true"
+```
+
+## Not telemetry
+
+These carry the prefix but never reach your data: browser storage keys (`ouo.session`, `ouo.user`, `ouo.device` in `localStorage`; `ouo.session`, `ouo.user`, `ouo.crash` in AsyncStorage), the `ouo.replay` BroadcastChannel, the CSS classes `ouo-mask` and `ouo-block`, the collector components (`ouoreplay`, `ouosentry`, `ouoratelimit`, `ouoauth`), the `OUO_*` environment variables and the Helm chart's names.
+
+## The renames we expect first
+
+When the Development conventions below stabilize, or sooner if they settle as they are:
+
+| Today | OpenTelemetry |
+|---|---|
+| event `web_vital`, `ouo.web_vital.*` | event `browser.web_vital`, `browser.web_vital.*` |
+| event `app.lifecycle`, `ouo.app.state` | event `device.app.lifecycle`, `ios.app.state` / `android.app.state` |
+| `ouo.app.build` | `app.build_id` |
+| `ouo.app.screen` | `app.screen.name` |
+| `ouo.sdk.name`, `ouo.sdk.version` | `telemetry.distro.name`, `telemetry.distro.version` |
+
+Each one comes with a migration window and an announcement, as in the policy above. Spot a convention we missed? Email [hello@ouo11y.com](mailto:hello@ouo11y.com); it is a bug.

@@ -1,0 +1,78 @@
+---
+title: Fifty shoppers
+description: A Playwright script drives 50 real browser sessions through the shop, each following a persona, and prints the funnel Grafana must show.
+sidebar: { order: 4, label: 4. Fifty shoppers }
+---
+
+import QuickstartFile from '../../../../../components/QuickstartFile.astro';
+import Funnel from '../../../../../components/diagrams/Funnel.astro';
+
+One session makes a dull funnel. The generator drives 50 headless Chromium sessions through the shop. Each one is a real browser running the real SDK, so its page views, events and replay reach ouo11y as a person's would.
+
+Each session follows one persona, with random pauses. A seed makes the mix the same on every run, so the script can print how many sessions must reach each step: the answer to check Grafana against.
+
+| Persona | Sessions | What it does | Last funnel step it reaches |
+|---|---|---|---|
+| bounce | 5 | opens `/` and leaves | 1. `/` |
+| deep link | 5 | lands on `/products/2` from an "ad", buys | none: never opens `/` |
+| out of order | 3 | opens a product, adds to cart, then goes to `/` | 1. `/` |
+| browse | 9 | opens a product, sometimes a second | 2. `/products/*` |
+| cart | 8 | adds to cart once or twice | 3. `add_to_cart` |
+| abandon | 6 | reaches checkout, never pays | 4. `/checkout` |
+| declined | 4 | pays with card `...0002`, declined | 4. `/checkout` |
+| buyer | 10 | sometimes goes back home first, then buys | 5. `order_paid` |
+
+In the fourth terminal:
+
+```bash
+cd ~/Desktop/tiny-shop-funnels/generate-sessions
+```
+
+<QuickstartFile qs="tiny-shop-funnels" path="result/generate-sessions/package.json" title="generate-sessions/package.json" />
+
+`PERSONAS` holds each persona's weight, the step it reaches and what it does. The last lines count, per step, the sessions whose persona reaches it.
+
+<QuickstartFile qs="tiny-shop-funnels" path="result/generate-sessions/generate.mjs" title="generate-sessions/generate.mjs" open={false} />
+
+```bash
+npm install
+```
+
+```bash
+npx playwright install chromium
+```
+
+```bash
+npm run generate
+```
+
+## What you should see
+
+It prints one line per session as it finishes. After about a minute it ends with:
+
+```text
+50 sessions sent. Expected funnel page:/ -> page:/products/* -> event:add_to_cart -> page:/checkout -> event:order_paid:
+  1. page:/                45 sessions
+  2. page:/products/*      37 sessions   dropped 8
+  3. event:add_to_cart     28 sessions   dropped 9
+  4. page:/checkout        20 sessions   dropped 8
+  5. event:order_paid      10 sessions   dropped 10
+  (not entered: 5 sessions that never opened /)
+```
+
+That is the answer Grafana must give, plus your own purchase from the Instrument page. Drawn as a funnel:
+
+<Funnel
+  caption="The generator's count. Click a drop-off for the personas behind it."
+  steps={[
+    { kind: 'page', value: '/', count: 45 },
+    { kind: 'page', match: 'starts with', value: '/products/', count: 37, dropped: '<b>bounce</b> (5) and <b>out of order</b> (3): they reached <code>/</code> and no product page after it.' },
+    { kind: 'event', value: 'add_to_cart', count: 28, dropped: '<b>browse</b> (9).' },
+    { kind: 'page', value: '/checkout', count: 20, dropped: '<b>cart</b> (8).' },
+    { kind: 'event', value: 'order_paid', count: 10, dropped: '<b>abandon</b> (6) and <b>declined</b> (4).' },
+  ]}
+/>
+
+Run it again and every number doubles: each run adds the same 45 / 37 / 28 / 20 / 10.
+
+Next: [build and read the funnel](/docs/quickstarts/3-funnels/funnel/).

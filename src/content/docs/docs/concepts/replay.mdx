@@ -1,0 +1,132 @@
+---
+title: Replay model
+description: One session, one replay, many ordered chunks. How rrweb, native frames and Sentry video chunks travel through the collector to rum-api, how they are stored, masked, sampled and deleted.
+sidebar: { order: 4 }
+---
+
+import Stages from '../../../../components/diagrams/Stages.astro';
+import Flow from '../../../../components/diagrams/Flow.astro';
+
+**One session has exactly one replay.** The replay is an ordered list of chunks, keyed by the session's `session.id`. There is no separate replay id, so the replay, the timeline and the traces of a session join on the same key.
+
+OpenTelemetry has no signal for replay, so chunks are not OTLP. They are JSON, posted over HTTP with the same project credential to the collector's replay receiver, and they never pass through Loki.
+
+## Three kinds of replay
+
+| Kind | Recorded by | What a chunk holds | Player in Grafana |
+|---|---|---|---|
+| `rrweb` | `@ouo11y/browser`, or your own `rrweb` | rrweb DOM events | rrweb player |
+| `frames` | `@ouo11y/react-native` on iOS | JPEG screenshots, masked on the device, and touches | frame player with touch marks |
+| `video` | the Sentry React Native SDK, through the collector's [Sentry bridge](/docs/operate/sentry-bridge/) | an mp4 segment and touches | video player |
+
+A session's replay has one kind: the kind of its first chunk. A chunk of another kind for the same session is refused.
+
+## The chunk pipeline (web)
+
+<Stages
+  caption="The browser never talks to rum-api. The collector authenticates the chunk, stamps the project, and forwards it."
+  stages={[
+    { who: 'Browser', title: 'Record', body: '<code>rrweb.record</code> for the life of the page. A full snapshot on every page load, and every 5 minutes.', carries: 'events in memory' },
+    { who: 'Browser', title: 'Cut a chunk', body: 'Every 5 s, or at 256 KB, whichever comes first, and on <code>pagehide</code>. <code>seq</code> goes up by one per chunk.', carries: 'gzip JSON<br>Basic credential' },
+    { who: 'Collector :4319', title: 'Check and stamp', body: 'Credential, CORS, size (8 MiB, rrweb 4 MiB), rate limit. Stamps <code>ouo.project.id</code>. One log record per chunk.', tone: 'accent', carries: 'Bearer ingest token<br>X-Ouo-Project-Id' },
+    { who: 'rum-api', title: 'Store', body: '<code>replays/&lt;session_id&gt;/000003.json.gz</code> and <code>meta.json</code>, on disk or in S3.', carries: 'Bearer read token' },
+    { who: 'Grafana app', title: 'Play', body: 'Reads every chunk in <code>seq</code> order through Grafana\'s plugin proxy and plays them as one recording.', tone: 'ok' },
+  ]}
+/>
+
+What each step answers when something is wrong:
+
+| Step | Answer | Meaning |
+|---|---|---|
+| Collector | `202` | queued for rum-api |
+| | `400` | not a valid chunk, or bad gzip |
+| | `401` | no credential, or a wrong one |
+| | `413` | above the size limit |
+| | `429` + `Retry-After` | rate limited; the SDK retries |
+| | `503` + `Retry-After: 1` | the collector is under memory pressure or its queue is full; the SDK retries |
+| rum-api (to the collector) | `409` | the session already holds a replay of another kind |
+| | `403` | the session's replay belongs to another project |
+
+The collector retries rum-api for up to 5 minutes, so a rum-api restart loses nothing.
+
+## A chunk
+
+```json
+{
+  "session_id": "6f1c2b7e-…",
+  "seq": 3,
+  "started_at": 1793140000000,
+  "ended_at": 1793140005000,
+  "events": [ { "type": 3, "data": { "source": 2 }, "timestamp": 1793140001200 } ]
+}
+```
+
+- Timestamps are epoch milliseconds, on the device's clock. The timeline aligns them with the session's telemetry.
+- `seq` is per session, from `0` to `999999`. It is saved with the session, so a page reload continues the sequence. Posting the same `seq` again replaces that chunk.
+- A replay holds one full snapshot per page load. The player concatenates the chunks; a missing chunk only means playback resumes at the next full snapshot.
+
+`frames` chunks add `"kind": "frames"`, `"schema_version": 1`, the viewport, and `frames` (base64 JPEG, longest side at most 1000 px, quality 0.5, about one per second while the screen changes) and `touches`. `video` chunks carry an mp4 segment instead.
+
+## Storage
+
+rum-api keeps the same layout on a local disk and in an S3-compatible bucket:
+
+```text
+replays/
+  schema.json                     the newest chunk schema this store was opened with
+  <session_id>/
+    meta.json                     kind, project_id, chunk count, time range, bytes
+    000000.json.gz                chunk 0
+    000001.json.gz
+    000002.mp4                    video chunks only: the decoded segment, next to its JSON
+```
+
+Moving from disk to a bucket is a copy of that tree. On S3 several rum-api replicas can share one bucket: `meta.json` is written with conditional requests, so concurrent writers never drop a chunk. See [rum-api configuration](/docs/operate/rum-api/#replay-store).
+
+`schema.json` protects you from a downgrade. A rum-api that finds a store written by a newer chunk schema refuses to start, rather than half-read newer data. See [Upgrading](/docs/operate/upgrade/).
+
+## Privacy
+
+Masking happens **before the data leaves the device**. Nothing downstream can unmask it.
+
+- **Web:** every input is masked (`maskAllInputs`, on by default). Add the class `ouo-mask` to mask an element's text, `ouo-block` to replace an element with an empty box of its size.
+- **iOS frames:** text inputs, text views, labels, React Native text, images and web views are painted over in black on the device. A view with the accessibility identifier (React Native `testID`) `ouo-mask` is masked too; `ouo-unmask` opts a view and its children out.
+- Each `frames` and `video` chunk records whether it was masked, and the player shows it.
+- Replay is a separate switch from telemetry. It can be off (`replay.enabled: false`) while traces and errors keep flowing, and it can be paused at run time.
+
+To keep no replay at all for a project, whatever its apps send, set its server-side `replay_rate` and `replay_on_error_rate` to `0` in rum-api (below): chunks are dropped at the sink.
+
+## Sampling
+
+The SDK decides once per session, and the decision is kept with the session:
+
+| Option | Default | What happens |
+|---|---|---|
+| `replay.sampleRate` | `1` | this share of sessions records and uploads from the start |
+| `replay.onErrorSampleRate` | `0` | this share of the other sessions keeps the last 30 to 60 seconds in memory, and starts uploading (buffer first) at the first error |
+
+So with `sampleRate: 0.1` and `onErrorSampleRate: 1`, one session in ten is recorded in full, and every session that hits an error has a replay of the minute before it.
+
+rum-api can cap this per project on the server (`projects.<id>.sampling`), with the same deterministic rule as the SDKs, so it keeps a subset of what the SDKs sampled and error-triggered replays survive. Use it to bound storage for an app you do not control.
+
+## Retention and deletion
+
+<Flow
+  caption="Replay has its own retention, enforced by rum-api; Loki, Tempo and Mimir enforce theirs."
+  columns={[
+    { label: 'Setting', arrow: '', nodes: [
+      { title: 'retention.replays', sub: 'default 720h, from the last chunk' },
+      { title: 'projects.<id>.retention.replays', sub: 'per project' },
+    ] },
+    { label: 'Enforced by', nodes: [
+      { title: 'rum-api sweeper', sub: 'every hour; on S3 also bucket lifecycle rules', tone: 'accent' },
+    ] },
+  ]}
+/>
+
+- `DELETE /v1/sessions/{id}/replay` with the read token removes one replay.
+- The operator API, behind the admin token, deletes everything of a user or a project (replays, a Loki delete request, the Tempo traces), and writes each deletion to an append-only audit log.
+
+## Cost
+
+A web chunk is small: rrweb records changes to the page, not pixels. iOS frames are larger, about 20 to 40 KB per frame at one frame per second while the screen changes, and close to nothing while it does not. On mobile, sampling and `pause()` matter more than on the web. [Benchmarks](/docs/operate/benchmarks/) has measured bytes per session.

@@ -1,0 +1,233 @@
+---
+title: Everything is customizable
+description: No vendor should tell you how to observe your system. Working snippets to take over the collector config, redact with OTTL, send a copy to another backend, sample, set retention, and change session rules.
+sidebar: { order: 7 }
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+
+No vendor should tell you how to observe your own system. Every layer of ouo11y is a standard part with defaults you can change. Each snippet below was run against the released collector 0.4.0.
+
+| Layer | What you change | Where |
+|---|---|---|
+| Instrumentation | our SDK, plain OpenTelemetry, or both; timeouts, sampling, masking | the SDK options, [Two ways in](/docs/start/two-paths/) |
+| Collector | redaction, enrichment, extra exporters, limits | its config, this page and [Collector](/docs/operate/collector/) |
+| Storage | Loki, Tempo and Mimir settings, object storage, retention | their configs, or your own LGTM stack ([Helm](/docs/operate/helm/#your-own-lgtm-stack)) |
+| Sessions and replay | inactivity, maximum duration, replay retention and sampling per project | [rum-api](/docs/operate/rum-api/) and the SDKs |
+| Dashboards | your own panels next to ours, or none of ours | Grafana Explore: LogQL, TraceQL, PromQL |
+| Deployment | laptop, VM, Kubernetes; bring your own Grafana | [Operate](/docs/operate/compose/) |
+
+## Take over the collector config
+
+Everything on this page edits the collector's config file. First make it yours.
+
+<Tabs>
+<TabItem label="Docker Compose">
+
+<Steps>
+
+1. Copy the running config out of the container:
+
+   ```bash
+   docker compose cp otel-collector:/etc/otelcol/config.yaml ./collector.yaml
+   ```
+
+2. Mount your copy instead. Add the `collector-local` source to the collector's `configs` in `compose.override.yaml` ([Deploy with Docker Compose](/docs/operate/compose/#your-own-projects-and-secrets)):
+
+   ```yaml
+   services:
+     otel-collector:
+       configs: !override
+         - source: collector-local
+           target: /etc/otelcol/config.yaml
+         - source: projects
+           target: /etc/otelcol/projects.htpasswd
+
+   configs:
+     collector-local:
+       file: ./collector.yaml
+     projects:
+       file: ./projects.htpasswd
+   ```
+
+3. After each edit, validate, then recreate the collector:
+
+   ```bash
+   docker run --rm -v "$PWD/collector.yaml:/etc/otelcol/config.yaml:ro" -v "$PWD/projects.htpasswd:/etc/otelcol/projects.htpasswd:ro" -e OUO_INGEST_TOKEN=x ghcr.io/ouo11y/collector:0.4.0 validate --config=/etc/otelcol/config.yaml
+   ```
+
+   ```bash
+   docker compose up -d --force-recreate otel-collector
+   ```
+
+</Steps>
+
+</TabItem>
+<TabItem label="Helm">
+
+Render the chart's config, edit it, and give it back as `collector.configOverride`, which replaces the generated config entirely:
+
+```bash
+helm template ouo ./ouo -n ouo -f my-values.yaml -s templates/collector/configmap.yaml > collector-configmap.yaml
+```
+
+Copy the `config.yaml` key's content into your values file:
+
+```yaml
+collector:
+  configOverride: |
+    extensions:
+      ...
+```
+
+Then `helm upgrade ouo ./ouo -n ouo -f my-values.yaml`. With an override, chart values that only feed the generated config (limits, rate limits, origins) no longer apply: set them in your copy.
+
+</TabItem>
+</Tabs>
+
+<Aside type="caution" title="Dollar signs in a collector config">
+The collector expands `${…}` in its config before anything else. Write `$$` for a literal `$`. In an OTTL replacement, refer to a group as `$${1}`, not `$$1`: Go's regex reads `$1REDACTED` as a group named `1REDACTED` and silently drops it.
+</Aside>
+
+## Redact before anything is stored
+
+A `transform` processor with OTTL rewrites attributes on every span and log record, for every app, including apps whose code you do not control. Add it to `processors:`:
+
+```yaml
+processors:
+  transform/redact:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          - replace_pattern(span.attributes["url.full"], "([?&](token|email|password)=)[^&]*", "$${1}REDACTED")
+    log_statements:
+      - context: log
+        statements:
+          - replace_pattern(log.attributes["url.full"], "([?&](token|email|password)=)[^&]*", "$${1}REDACTED")
+          - replace_pattern(log.attributes["exception.message"], "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+[.][A-Za-z]+", "<email>")
+          - replace_pattern(log.body, "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+[.][A-Za-z]+", "<email>")
+          - delete_key(log.attributes, "user.email")
+```
+
+Then put it in the `traces` and `logs` pipelines, after `resource/project` and before `batch`:
+
+```yaml
+    traces:
+      processors: [memory_limiter, ouoratelimit, resource/project, transform/redact, batch]
+    logs:
+      processors: [memory_limiter, ouoratelimit, resource/project, transform/events, transform/redact, batch]
+```
+
+A request to `https://shop.example.com/api?email=ana@example.com&page=2` is stored as `https://shop.example.com/api?email=REDACTED&page=2`, an exception message `no cart for ana@example.com` as `no cart for <email>`, and `user.email` is gone. Check it in Grafana Explore on Loki:
+
+```text
+{service_name="web-store", event_name="http.request.failed"} | url_full=~".*REDACTED.*"
+```
+
+To remove an attribute outright, the `attributes` processor is shorter:
+
+```yaml
+processors:
+  attributes/drop-ip:
+    actions:
+      - key: client.address
+        action: delete
+```
+
+Replay chunks do not pass through these processors: their body is the recording. Mask on the device instead ([Replay model, Privacy](/docs/concepts/replay/#privacy)).
+
+## Send a copy somewhere else
+
+Your telemetry is OTLP, so any OTLP backend takes a copy. Add an exporter:
+
+```yaml
+exporters:
+  otlp_http/copy:
+    endpoint: https://otlp.example.com
+    headers:
+      Authorization: "Bearer ${env:COPY_TOKEN}"
+```
+
+and list it next to the existing one in each pipeline you want copied:
+
+```yaml
+    traces:
+      exporters: [otlp_grpc/tempo, otlp_http/copy]
+    logs:
+      exporters: [otlp_http/loki, otlp_http/copy]
+```
+
+Pass `COPY_TOKEN` in the collector's environment (in compose, `environment:` in the override). Each exporter has its own queue and retries, so a slow copy does not hold back Loki or Tempo.
+
+The same pattern sends everything to **a collector of your own** behind ours, with the processors our distribution does not ship (`filter`, `probabilistic_sampler`, `tail_sampling`, a Kafka exporter): replace the Loki, Tempo and Mimir exporters with one `otlp_http` exporter pointing at it.
+
+## Sample
+
+The ouo11y distribution has no sampling or `filter` processor. Dropping single events at the edge would also skew session health, because a session's status is computed from all of its events. Sample whole sessions, where the session is known:
+
+| What | Where | Setting |
+|---|---|---|
+| whole sessions | the SDK, decided once per session | `session.sampleRate` |
+| replays | the SDK | `replay.sampleRate`, `replay.onErrorSampleRate` ([Replay model](/docs/concepts/replay/#sampling)) |
+| replays, a cap per project for apps you do not control | rum-api | `projects.<id>.sampling` ([rum-api](/docs/operate/rum-api/#per-project)) |
+| backend traces | your backends' OpenTelemetry SDK | `OTEL_TRACES_SAMPLER=parentbased_traceidratio`, `OTEL_TRACES_SAMPLER_ARG=0.1` |
+
+`parentbased_*` keeps the browser's decision for traces it started, so a sampled session keeps its backend spans. If you must sample spans in a pipeline, do it in your own collector behind ours (above).
+
+## Retention
+
+One setting per signal. In Docker Compose, in `.env`; in Helm, `retention.*`:
+
+```ini
+OUO_RETENTION_LOGS=720h
+OUO_RETENTION_TRACES=336h
+OUO_RETENTION_METRICS=2160h
+OUO_RETENTION_REPLAYS=720h
+```
+
+Loki, Tempo and Mimir delete expired data in their compactors; rum-api's sweeper deletes expired replays every hour. Per project, set `retention.projects.<id>.logs` and `.replays` in Helm, or `projects.<id>.retention.replays` in rum-api's config file.
+
+## Session rules
+
+The SDK decides when a session ends; rum-api must use the same timeouts to end sessions that never sent `session.end`. Change both together:
+
+```ts
+initRUM({
+  // …
+  session: { inactivityTimeoutMs: 15 * 60 * 1000, maxDurationMs: 2 * 60 * 60 * 1000 },
+});
+```
+
+```yaml
+session:            # rum-api config, or rumApi.config.sessionInactivity / sessionMaxDuration in Helm
+  inactivity: 15m
+  max_duration: 2h
+```
+
+## Rate limits and CORS
+
+| Setting | Docker Compose (`.env`) | Helm |
+|---|---|---|
+| browser origins | `OUO_ALLOWED_ORIGINS` | `collector.allowedOrigins` |
+| per project | `OUO_RATELIMIT_PROJECT_RATE`, `_BURST` | `collector.rateLimit.project.*` |
+| per client | `OUO_RATELIMIT_CLIENT_RATE`, `_BURST`, `OUO_RATELIMIT_CLIENT_KEY` | `collector.rateLimit.client.*` |
+| body size | in the collector config: `max_request_body_size` | `collector.limits.*` |
+
+## Dashboards
+
+Everything ouo11y stores is queryable without the app:
+
+```text
+sum by (service_version) (count_over_time({event_name="exception", ouo_platform="web"} | ouo_exception_fatal="true" [1h]))
+```
+
+```text
+{ span.session.id = "6f1c2b7e-…" }
+```
+
+```text
+sum(rate(ouo_ratelimit_rejected_total[5m]))
+```
+
+Build your own panels next to the ouo11y RUM app, in the same Grafana, from the same data sources (`loki`, `tempo`, `mimir`).

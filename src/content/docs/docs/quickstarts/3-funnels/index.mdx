@@ -1,0 +1,74 @@
+---
+title: 'Quickstart 3: Tiny Shop Funnels'
+description: A five-page shop whose page views and custom events make a funnel. Fifty generated shoppers, the funnel in Grafana, and the replay of a shopper who gave up.
+sidebar: { order: 0, label: Overview }
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import Flow from '../../../../../components/diagrams/Flow.astro';
+import Funnel from '../../../../../components/diagrams/Funnel.astro';
+import Download from '../../../../../components/Download.astro';
+
+<Aside type="caution" title="This quickstart builds two images from the ouo11y source">
+Funnels are newer than the images this guide was verified with (`rum-api` and `grafana` `0.4.0`), so [the stack](/docs/quickstarts/3-funnels/stack/) page builds rum-api and Grafana from a clone of the ouo11y repository. That repository is private for now: **without read access to it you cannot finish this quickstart.** The first page, the plain shop, works for anyone. The collector image on ghcr.io is private too. Email [hello@ouo11y.com](mailto:hello@ouo11y.com) for access.
+
+`rum-api` `0.5.0` and `grafana` `0.5.0` have since been released with funnels. This guide has not been re-run against them yet; until it is, the commands below are the verified ones.
+</Aside>
+
+A small shop: an Express API and a React app with five pages. Its page views and three custom events make a funnel: home, a product page, add to cart, checkout, order paid. A script drives 50 real browser sessions through the shop, each one following a persona that stops at a known place. You build the funnel in Grafana, read where shoppers drop and how long each step takes, and open the replay of a session that gave up at checkout.
+
+Plan on about **40 minutes**, most of it waiting for installs and the first image build. You need Node 24 or newer and Docker Desktop.
+
+<Download qs="tiny-shop-funnels" />
+
+## What you build
+
+<Flow
+  caption="The browser SDK turns every page change into a navigation event and every rum.addEvent into a custom event. Loki stores both; rum-api counts them per session."
+  columns={[
+    { label: 'Traffic', arrow: 'drives', nodes: [
+      { title: 'generate-sessions', sub: '50 headless Chromium sessions<br>8 personas', tone: 'info' },
+    ] },
+    { label: 'Your apps', arrow: 'OTLP', nodes: [
+      { title: 'Web app :5173', sub: 'React · @ouo11y/browser<br>navigation · add_to_cart · order_paid' },
+      { title: 'API :5001', sub: 'Express · OpenTelemetry Node SDK' },
+    ] },
+    { label: 'Edge', nodes: [
+      { title: 'ouo-collector', sub: ':4318 OTLP · :4319 replay', tone: 'accent' },
+    ] },
+    { label: 'Storage', nodes: [
+      { title: 'Loki', sub: 'page views · custom events' },
+      { title: 'Tempo', sub: 'traces' },
+      { title: 'rum-api', sub: 'funnels · sessions · replays' },
+    ] },
+    { label: 'View', nodes: [
+      { title: 'Grafana :3000', sub: 'ouo11y RUM → Funnels', tone: 'accent' },
+    ] },
+  ]}
+/>
+
+At the end you read this funnel in Grafana. Click a hatched drop-off to see who stopped there.
+
+<Funnel
+  caption="The funnel the 50 generated sessions make. Checkout to paid is the steepest fall."
+  steps={[
+    { kind: 'page', value: '/', count: 45 },
+    { kind: 'page', match: 'starts with', value: '/products/', count: 37, dropped: '8 sessions opened the home page and left: the <b>bounce</b> persona, and the out-of-order sessions that opened <code>/</code> last.' },
+    { kind: 'event', value: 'add_to_cart', count: 28, dropped: '9 sessions looked at a product and did not add it: the <b>browse</b> persona.' },
+    { kind: 'page', value: '/checkout', count: 20, dropped: '8 sessions added to cart and never opened checkout: the <b>cart</b> persona.' },
+    { kind: 'event', value: 'order_paid', count: 10, dropped: '10 sessions reached checkout and did not pay: 6 left the form, 4 had card <code>...0002</code> declined. You open their replays on the last page.' },
+  ]}
+/>
+
+## The pages
+
+1. [The plain shop](/docs/quickstarts/3-funnels/plain-shop/): an API and a five-page React shop, no telemetry.
+2. [The stack](/docs/quickstarts/3-funnels/stack/): collector, Tempo, Loki, rum-api and Grafana, one service at a time.
+3. [Instrument](/docs/quickstarts/3-funnels/instrument/): traces from the API, page steps and event steps from the shop.
+4. [Fifty shoppers](/docs/quickstarts/3-funnels/shoppers/): the session generator and the answer it prints.
+5. [Build and read the funnel](/docs/quickstarts/3-funnels/funnel/): the five steps in Grafana, and what each number means.
+6. [Drop-off to replay](/docs/quickstarts/3-funnels/replay/): the sessions that stopped, their replays, clean-up and fixes.
+
+## Already have the files?
+
+The download above is the finished folder. With it you can skip the typing, but not the [stack](/docs/quickstarts/3-funnels/stack/) page: rum-api and Grafana are still built from your clone, so set `OUO11Y_REPO` as it shows. Each page says which terminal and folder a command runs in.

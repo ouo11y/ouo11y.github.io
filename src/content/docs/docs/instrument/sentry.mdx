@@ -1,0 +1,128 @@
+---
+title: Coming from Sentry
+description: Keep @sentry/react-native, point its DSN at the ouo11y Sentry bridge, and get the same sessions in ouo11y while Sentry keeps receiving everything.
+sidebar: { order: 6 }
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import Flow from '../../../../components/diagrams/Flow.astro';
+
+If your mobile app already uses `@sentry/react-native`, you can see its sessions in ouo11y without changing SDKs. The ouo11y collector includes a **Sentry bridge**: it accepts Sentry envelopes, forwards every one to your Sentry unchanged, and translates a copy into OpenTelemetry for ouo11y. Sentry keeps working exactly as before.
+
+<Flow
+  caption="Sentry sees its own answers, byte for byte. ouo11y only translates envelopes that Sentry accepted."
+  columns={[
+    { label: 'Your app', arrow: 'envelopes', nodes: [
+      { title: '@sentry/react-native', sub: 'DSN host → the bridge' },
+    ] },
+    { label: 'ouo11y collector', nodes: [
+      { title: 'Sentry bridge', sub: ':4320 /api/{project}/envelope/', tone: 'accent' },
+    ] },
+    { label: 'Destinations', nodes: [
+      { title: 'Your Sentry', sub: 'forwarded unchanged; its status and rate limits go back to the app' },
+      { title: 'ouo11y', sub: 'sessions · errors · traces · replay · logs, as OpenTelemetry' },
+    ] },
+  ]}
+/>
+
+This page is the client side: what to set in your app. Running the bridge is an operator task: it needs a project table that maps your Sentry project id and public key to an ouo11y project and to your Sentry upstream, and it runs as one replica, because it keeps session state in memory.
+
+## Supported SDK versions
+
+| `@sentry/react-native` | sentry-cocoa | Status |
+|---|---|---|
+| 8.30.0 to 8.32.0 | 9.30.1, 9.31.0 | **Supported**: sessions, errors and native crashes, transactions with `http.client` spans, backend traces, video replay with touches, logs, breadcrumbs, mobile vitals. |
+| 7.11.0 (the Expo SDK 57 default) | 8.58.0 | **Partial, upgrade to 8.x.** Sessions, errors, crashes, replay, logs and navigation translate. Under Expo 57 this version traces no `fetch`, so there is no backend correlation and no failed requests. |
+| other 8.x | 9.x | Expected to work, not yet captured. |
+
+iOS only for now. Android (`sentry-android`), native `sentry-cocoa` apps without React Native, and browser SDKs are not supported by the bridge.
+
+## 1. Point the DSN at the bridge
+
+```ts
+Sentry.init({
+  dsn: "https://<public key>@sentry-bridge.example.com/<sentry project id>",
+  // ...
+});
+```
+
+Keep the same public key and project id as your Sentry DSN; only the host changes. Nothing else in the SDK changes.
+
+<Aside type="caution" title="Expo with @sentry/react-native 8: check that the native SDK starts">
+When the Expo config plugin writes a `sentry.options.json` (the plugin has `options`, or `SENTRY_ENVIRONMENT` is set at prebuild), a Release build's JS SDK expects your native code to start sentry-cocoa and skips it. Without that native start nothing is sent at all, to Sentry or to ouo11y: errors, transactions, sessions and replays all travel through the native transport. Set `useNativeInit: true` in the plugin, or pass `autoInitializeNativeSdk: true` to `Sentry.init`.
+</Aside>
+
+## 2. Join your backend's traces
+
+Sentry propagates `sentry-trace` and `baggage`. An OpenTelemetry backend reads W3C `traceparent` only, so without it your backend starts a new trace for every request. Turn it on, for your backends only:
+
+```ts
+Sentry.init({
+  // ...
+  tracesSampleRate: 1.0,
+  propagateTraceparent: true,                           // also send W3C traceparent
+  tracePropagationTargets: ["https://api.example.com"], // your backends only
+});
+```
+
+- `tracePropagationTargets` entries are substrings or regular expressions matched against the URL. A broad entry such as `"localhost"` or `/.*/` also sends trace headers to third-party APIs, which then fail CORS or see your trace ids.
+- Your backend's CORS must allow `traceparent`, `tracestate`, `baggage` and `sentry-trace` where a web view calls it. The backend side is on [Your backend](/docs/instrument/backend/).
+- This is an app change: it ships with your next release. Older releases keep their backend traces separate.
+
+## 3. Choose a `tracesSampleRate`
+
+Sentry sets the sampled flag in `traceparent` from `tracesSampleRate`. Below `1.0`, unsampled requests send `traceparent: 00-<trace>-<span>-00`, and an OpenTelemetry backend with the default `ParentBased(AlwaysOn)` sampler **drops its spans** for them. Pick one:
+
+- `tracesSampleRate: 1.0`: every request is traced on both sides. Sentry bills transactions, so check your quota.
+- A lower rate, knowingly: ouo11y shows backend traces only for the sampled share.
+- A backend sampler that ignores the parent's flag (`AlwaysOn`): backend traces are complete, but unsampled requests appear as backend-only traces whose parent span was never recorded.
+
+## 4. Keep requests inside a span
+
+When a request starts with no active span, Sentry still sends `traceparent`, with a random parent span id that no span has. In Tempo the backend span then hangs off a missing root.
+
+- Keep `enableAutoPerformanceTracing` (on by default) and the React Navigation integration, so screens and their data loads run inside a transaction.
+- Wrap requests started outside screens (timers, background sync, startup) in `Sentry.startSpan({ name, op: "task" }, () => fetch(...))`.
+
+## 5. Filter breadcrumbs
+
+The bridge turns breadcrumbs into timeline events. Breadcrumb messages and data are app content and reach Sentry and ouo11y as they are, so remove personal data here, before the SDK sends it:
+
+```ts
+Sentry.init({
+  // ...
+  beforeBreadcrumb(crumb) {
+    if (crumb.category === "console" && crumb.level === "debug") return null; // noisy console output
+    return crumb;
+  },
+});
+```
+
+## 6. Never both at once on one device
+
+If you roll out [`@ouo11y/react-native`](/docs/instrument/react-native/#next-to-sentry) next to Sentry, devices that run both SDKs must send Sentry to your **direct** Sentry DSN, never to the bridge. Otherwise ouo11y gets every session twice, and Sentry's spans never parent your backend spans (the ouo11y SDK owns `traceparent`). Also drop the ouo11y SDK's uploads from Sentry's breadcrumbs and tracing on those devices.
+
+## 7. Expect different session durations
+
+Sentry ends a mobile session the moment the app goes to the background; the bridge keeps Sentry's boundaries. The ouo11y SDK ends it 30 seconds after backgrounding. The same use reads about 30 seconds shorter through the bridge. Compare durations within one path, not across paths; session counts, crash-free and error rates are not affected.
+
+## 8. Check it
+
+Run your app's main flow, then:
+
+1. In Sentry, the events, sessions and replays arrive as before.
+2. In the ouo11y app, the session appears with its errors, requests and replay.
+3. In Grafana, **Explore**, Tempo: each request's trace has your backend's server span as a child of the app's `http.client` span, and no backend span points at a missing parent.
+
+## How Sentry maps to ouo11y
+
+| Sentry | ouo11y through the bridge |
+|---|---|
+| sessions, crash-free rate | sessions with Sentry's boundaries; `crashed` / total is the same |
+| error events | `exception` events; `captureMessage` is `sentry.message`, not an error |
+| transactions, `http.client` spans | traces in Tempo; failed requests and navigations derived from them |
+| video replay | the same replay segments Sentry accepted |
+| Sentry Logs | `log` events on the session |
+| breadcrumbs | timeline events |
+| ANRs and app hangs | the ANR error counts as `errored` |
+| quota and rate limits | passed back to the SDK unchanged |

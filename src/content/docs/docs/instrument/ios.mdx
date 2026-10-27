@@ -1,0 +1,40 @@
+---
+title: iOS
+description: What ouo11y offers for iOS today, released and not, and how to instrument a native Swift app now.
+sidebar: { order: 4 }
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="The native Swift package is not released yet">
+`OuoReplay`, the Swift package for native iOS session replay (SwiftPM name `ouo11y-ios`), is built and tested, but it has no public release you can add by URL. This page lists what you can use today. It will hold the install steps when the package is published, and [Announcements](/announcements/) will say so.
+</Aside>
+
+## What is released for iOS
+
+| You have | Use | Status |
+|---|---|---|
+| A React Native or Expo app | [`@ouo11y/react-native`](/docs/instrument/react-native/) | **Released** on npm. Its Expo module carries the native iOS parts: screenshot replay with on-device masking, native crash capture (signals and uncaught `NSException`), app start and frame vitals. They are autolinked as CocoaPods from the npm package. |
+| A native Swift app | OpenTelemetry Swift and [the contract](/docs/instrument/bring-your-own-otel/#the-contract) | **Works today**, without replay. See below. |
+| A native Swift app with Sentry | [The Sentry bridge](/docs/instrument/sentry/) | Native `sentry-cocoa` apps without React Native are not supported by the bridge yet. |
+
+## A native Swift app today
+
+ouo11y reads OpenTelemetry, so a Swift app that sends the signals of [the contract](/docs/instrument/bring-your-own-otel/#the-contract) gets sessions, health, timelines and traces, with no ouo11y code. With [OpenTelemetry Swift](https://github.com/open-telemetry/opentelemetry-swift):
+
+- **Export** spans and log records over OTLP/HTTP to the collector's `:4318/v1/traces` and `:4318/v1/logs`, with the header `Authorization: Basic base64("<project id>:<project token>")`.
+- **Resource**: `service.name`, `service.version` (your app version), `deployment.environment.name`, and `ouo.platform = "mobile"`.
+- **Session**: keep a `session.id` (a UUID) yourself and put it, with `user.id`, on every span and log record as attributes. Follow the [mobile rules](/docs/instrument/react-native/#sessions-on-mobile): a new session at every cold start, and after more than 30 seconds in the background.
+- **Events**: log records with `event.name` `session.start`, `session.end`, `exception` (with `ouo.exception.fatal = true` for a crash, sent at the next launch), `http.request.failed` and `navigation`. The attributes are in the [event table](/docs/instrument/bring-your-own-otel/#event-attributes).
+- **Backend traces**: send `traceparent`, and `baggage` with `session.id`, to your API, and set up [your backend](/docs/instrument/backend/) to copy it onto its spans.
+
+What you do not get this way yet is replay: frame chunks need the `OuoReplay` package.
+
+## What the native package will contain
+
+So you can plan, this is what exists and is tested today, and is not yet published:
+
+- **`OuoReplay`** (iOS 15+, no third-party dependencies): snapshots the key window about once a second and on touches, paints opaque rectangles over labels, text inputs, images and web views **before the frame leaves the device**, drops unchanged frames, and uploads gzip JPEG frame chunks to the collector's replay receiver with the project credential. The same masking options as the React Native SDK: `maskText`, `maskInputs`, `maskImages`, `maskWebViews`, all on by default, and per-view `ouo-mask` and `ouo-unmask` through `accessibilityIdentifier`.
+- **Crash capture** and **vitals** (app start, slow and frozen frames) as separate targets.
+
+It is the same code that ships inside `@ouo11y/react-native` today, so the replays look and are masked the same way.

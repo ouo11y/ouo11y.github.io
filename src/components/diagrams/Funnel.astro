@@ -1,0 +1,106 @@
+---
+// A funnel report in HTML and CSS: one bar per step, sized by the sessions that reached it, with
+// the share of step 1, the share of the previous step and the drop-off between them. The lowest
+// "% of previous" is marked as the leak. Clicking a drop-off (a little JS) shows why those
+// sessions stopped; every number is readable without it.
+// <Funnel steps={[{ kind: 'page', value: '/', count: 45 }, { kind: 'event', value: 'order_paid', count: 10, dropped: 'Why they stopped.' }]} />
+import '../../styles/diagram.css';
+
+interface Step { kind: 'page' | 'event'; value: string; match?: 'is' | 'starts with'; count: number; time?: string; dropped?: string; }
+interface Props { steps: Step[]; caption?: string; }
+const { steps, caption } = Astro.props;
+const first = steps[0]?.count || 1;
+const pct = (n: number, of: number) => (of ? Math.round((n / of) * 1000) / 10 : 0);
+const prevPct = steps.map((s, i) => (i === 0 ? 100 : pct(s.count, steps[i - 1].count)));
+const leak = steps.length > 1 ? prevPct.slice(1).reduce((low, p, i) => (p < prevPct[low] ? i + 1 : low), 1) : -1;
+---
+<figure class="dg funnel not-content" role="group" aria-label={caption} data-funnel>
+  <ol class="steps">
+    {steps.map((s, i) => {
+      const drop = i > 0 ? steps[i - 1].count - s.count : 0;
+      return (
+        <li class:list={['step', { leak: i === leak }]}>
+          {i > 0 && (
+            <div class="drop">
+              <button type="button" class="drop-btn" aria-expanded="false" aria-controls={s.dropped ? `why-${i}` : undefined} disabled={!s.dropped}>
+                <span class="hatch" aria-hidden="true" />−{drop}
+                <span class="drop-text"> stopped after step {i}</span>
+              </button>
+              {i === leak && <span class="leak-tag">steepest fall</span>}
+            </div>
+          )}
+          {s.dropped && i > 0 && <p class="why" id={`why-${i}`} hidden set:html={s.dropped} />}
+          <div class="head">
+            <span class="num">{i + 1}</span>
+            <span class:list={['kind', `kind-${s.kind}`]}>{s.kind === 'page' ? 'Page' : 'Event'}</span>
+            {s.kind === 'page' && <span class="match">{s.match ?? 'is'}</span>}
+            <code>{s.value}</code>
+          </div>
+          <div class="track">
+            <div class="fill" style={`width:${pct(s.count, first)}%`} />
+            {i > 0 && <div class="lost" style={`left:${pct(s.count, first)}%;width:${pct(drop, first)}%`} />}
+          </div>
+          <div class="stats">
+            <span class="big">{pct(s.count, first)}%</span>
+            <span>{s.count} sessions</span>
+            {i > 0 && <span class:list={['prev', { bad: i === leak }]}>{prevPct[i]}% of previous step</span>}
+            {s.time && <span class="time">{s.time}</span>}
+          </div>
+        </li>
+      );
+    })}
+  </ol>
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+  for (const fig of document.querySelectorAll<HTMLElement>('[data-funnel]')) {
+    const buttons = [...fig.querySelectorAll<HTMLButtonElement>('.drop-btn[aria-controls]')];
+    for (const btn of buttons) {
+      btn.addEventListener('click', () => {
+        const open = btn.getAttribute('aria-expanded') !== 'true';
+        for (const b of buttons) {
+          b.setAttribute('aria-expanded', 'false');
+          const why = fig.querySelector<HTMLElement>(`#${b.getAttribute('aria-controls')}`);
+          if (why) why.hidden = true;
+        }
+        if (!open) return;
+        btn.setAttribute('aria-expanded', 'true');
+        const why = fig.querySelector<HTMLElement>(`#${btn.getAttribute('aria-controls')}`);
+        if (why) why.hidden = false;
+      });
+    }
+  }
+</script>
+
+<style>
+  .steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .step { display: flex; flex-direction: column; gap: 6px; }
+  .head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .num { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: var(--dg-accent); color: #fff; font-size: 11px; font-weight: 700; }
+  .kind { font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; padding: 1px 6px; border-radius: 6px; border: 1px solid var(--tone); color: var(--tone); }
+  .kind-page { --tone: var(--dg-accent); }
+  .kind-event { --tone: var(--dg-info); }
+  .match { font-size: 12px; color: var(--dg-ink-3); }
+  .head code { overflow-wrap: anywhere; }
+  .track { position: relative; height: 26px; border-radius: 6px; background: color-mix(in srgb, var(--dg-line) 45%, transparent); overflow: hidden; }
+  .fill { position: absolute; inset: 0 auto 0 0; background: var(--dg-accent); border-radius: 6px 0 0 6px; }
+  .lost { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--dg-bad) 55%, transparent) 0 4px, transparent 4px 8px); }
+  .stats { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; font-size: 12.5px; color: var(--dg-ink-2); }
+  .big { font-size: 18px; font-weight: 700; color: var(--dg-ink); }
+  .prev.bad { color: var(--dg-bad); font-weight: 700; }
+  .time { color: var(--dg-ink-3); }
+  .drop { display: flex; align-items: center; gap: 8px; padding-left: 26px; margin-top: 4px; }
+  .drop-btn { display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: 12px; font-weight: 700; padding: 2px 10px 2px 4px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--dg-bad) 50%, var(--dg-line)); background: var(--dg-node); color: var(--dg-bad); cursor: pointer; }
+  .drop-btn:disabled { cursor: default; }
+  .drop-btn[aria-expanded="true"] { background: color-mix(in srgb, var(--dg-bad) 12%, var(--dg-node)); }
+  .drop-text { font-weight: 400; color: var(--dg-ink-3); }
+  .hatch { width: 16px; height: 16px; border-radius: 4px; background: repeating-linear-gradient(135deg, var(--dg-bad) 0 3px, transparent 3px 6px); }
+  .leak-tag { font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--dg-bad); }
+  .why { margin: 0 0 0 26px; padding: 8px 12px; border-left: 3px solid var(--dg-bad); border-radius: 0 8px 8px 0; background: color-mix(in srgb, var(--dg-bad) 7%, var(--dg-node)); font-size: 13px; color: var(--dg-ink-2); }
+  .funnel { container-type: inline-size; }
+  @container (max-width: 480px) {
+    .drop, .why { padding-left: 0; margin-left: 0; }
+    .drop-text { display: none; }
+  }
+</style>

@@ -1,0 +1,57 @@
+---
+title: '6. Clean up and troubleshooting'
+description: Stop the apps and the stack, keep or delete its data, and fix the problems readers hit most often.
+sidebar: { order: 6, label: '6. Clean up' }
+---
+
+import Download from '../../../../../components/Download.astro';
+
+## Step 8. Clean up
+
+Stop the API and Vite with <kbd>Ctrl+C</kbd> in their terminal tabs. Stop the stack, keeping its data:
+
+```bash
+cd ~/Desktop/tiny-shop/stack
+```
+
+```bash
+docker compose down
+```
+
+or delete its data too:
+
+```bash
+docker compose down -v
+```
+
+## What you should see
+
+`docker compose ps -a` lists no containers. After `down`, the next `docker compose up -d` starts with your sessions and traces still there; after `down -v` it starts empty. Your `tiny-shop/` folder stays as it is: run `npm start` and `npm run dev` again to pick up where you left off.
+
+## When something does not work
+
+| You see | Cause and fix |
+|---|---|
+| `Bind for 0.0.0.0:4318 failed: port is already allocated` | another stack has the port: [step 4c](/docs/quickstarts/1-tiny-shop/stack/#4c-check-the-ports), move this one with `stack/.env` |
+| `denied` when pulling `ghcr.io/ouo11y/...` | not logged in to ghcr.io, or no read access yet: [step 4b](/docs/quickstarts/1-tiny-shop/stack/#4b-log-in-to-ghcrio) |
+| Vite: `@ouo/browser ... could not be resolved` | the package is `@ouo11y/browser` |
+| `Cannot read properties of undefined (reading 'export')` in the API | OpenTelemetry 2.x code: `new BatchSpanProcessor({ exporter })` from `@opentelemetry/sdk-trace` |
+| The backend trace starts at `POST /api/checkout`, without the browser span | `propagateTo` does not match the API URL (use the RegExp), or the page was not reloaded after editing `rum.js` |
+| No `OPTIONS` before the API calls | same as above: no trace headers are being added |
+| CORS error on `/v1/traces` or `/v1/replay/chunks` in the console | the page is not on `localhost` / `127.0.0.1` (the collector's allowed origins), or the replay URL is wrong after moving ports (`VITE_OUO_REPLAY_ENDPOINT`) |
+| `401` from the collector | the `Authorization` header is missing or wrong |
+| Nothing in Tempo yet | wait up to a minute: new traces reach search later than trace-by-id |
+
+Still stuck? Compare your folders with the finished ones:
+
+<Download qs="tiny-shop" />
+
+### The API on another port
+
+If 5001 is taken, start the API with `PORT=5002 npm start` and put `VITE_API_URL=http://localhost:5002` in `frontend/.env.local`; `rum.js` builds `propagateTo` from it. The web app must stay on a `localhost` or `127.0.0.1` origin, the only ones the quickstart collector allows (CORS).
+
+## Next
+
+- [Instrument your own backend](/docs/instrument/backend/) with any OpenTelemetry SDK.
+- [The ouo11y browser SDK](/docs/instrument/ouo-sdk/), or [bring your own OpenTelemetry](/docs/instrument/bring-your-own-otel/) to the browser.
+- [Architecture](/docs/concepts/architecture/): what each container of the stack does.
