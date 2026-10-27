@@ -1,0 +1,150 @@
+---
+title: 'Quickstart 2: Tiny Shop without the ouo11y SDK'
+description: The same shop as quickstart 1, with no ouo11y code in the browser. OpenTelemetry JS, rrweb and web-vitals send the session, its traces and its replay.
+sidebar: { order: 0, label: 'Overview' }
+---
+
+import { Aside, FileTree } from '@astrojs/starlight/components';
+import Flow from '../../../../../components/diagrams/Flow.astro';
+import Download from '../../../../../components/Download.astro';
+
+You build the same Tiny Shop as in quickstart 1: an Express API and a React page with three products, a checkout, a broken API call and a button that throws. The difference is the browser. There is no `@ouo11y/browser` in it. You instrument it yourself with three upstream open-source libraries:
+
+- the [OpenTelemetry JS SDK](https://opentelemetry.io/docs/languages/js/), for spans and log records;
+- [rrweb](https://github.com/rrweb-io/rrweb), for session replay;
+- Google's [web-vitals](https://github.com/GoogleChrome/web-vitals), for LCP, INP, CLS, FCP and TTFB.
+
+At the end, ouo11y shows the same session the SDK would have produced: `crashed`, with its activity list, its traces from the click to the API, and a replay. The code that made it is about 400 lines in one folder of your app, and you own every one of them.
+
+This is for teams that want ouo11y's sessions, health, traces and replays, but keep their browser instrumentation to standard libraries. It is also the clearest way to see what any RUM SDK does: you write it.
+
+## What you build
+
+You build it one step at a time, with no scripts. Each page is one step, and each ends with what you should see.
+
+1. [**The plain app**](/docs/quickstarts/2-tiny-shop-otel/plain-app/): an Express API and a React page, with no telemetry at all.
+2. [**The stack**](/docs/quickstarts/2-tiny-shop-otel/stack/): the collector, Tempo, Loki, Mimir, rum-api and Grafana, one folder per service.
+3. [**Backend traces**](/docs/quickstarts/2-tiny-shop-otel/backend/): the API traced with the OpenTelemetry Node SDK.
+4. **The browser, by hand**, in four parts:
+   [spans and the session](/docs/quickstarts/2-tiny-shop-otel/browser-spans/),
+   [RUM events](/docs/quickstarts/2-tiny-shop-otel/rum-events/),
+   [replay](/docs/quickstarts/2-tiny-shop-otel/replay/) and
+   [a custom event](/docs/quickstarts/2-tiny-shop-otel/custom-event/).
+5. [**The full picture**](/docs/quickstarts/2-tiny-shop-otel/full-picture/): one crashed session in Grafana, with everything joined.
+6. [**What the SDK adds**](/docs/quickstarts/2-tiny-shop-otel/what-the-sdk-adds/): what `@ouo11y/browser` does on top, and how hard each part is to add yourself.
+7. [**Clean up and troubleshooting**](/docs/quickstarts/2-tiny-shop-otel/clean-up/).
+
+Plan on about **45 minutes**. You end with this folder:
+
+<FileTree>
+- tiny-shop-otel/
+  - stack/ the ouo11y stack, one folder per service
+    - compose.yaml
+    - 10-collector/
+    - 20-tempo/
+    - 30-loki/
+    - 40-mimir/
+    - 50-rum-api/
+    - 60-grafana/
+  - backend/ Express API, OpenTelemetry traces
+    - instrumentation.js
+    - server.js
+  - frontend/ React app, OpenTelemetry + rrweb + web-vitals, no ouo11y SDK
+    - src/
+      - telemetry/
+        - config.js where the data goes
+        - session.js the session id
+        - otel.js spans, logs, propagation
+        - events.js the RUM events
+        - replay.js rrweb in chunks
+        - index.js starts it all
+      - App.jsx
+      - main.jsx
+</FileTree>
+
+## What ouo11y needs from a browser
+
+This is the whole contract. The ouo11y SDK does exactly this. Here you do it yourself, and each row links to the step that builds it.
+
+| What | How | Step |
+|---|---|---|
+| **Where** | OTLP/HTTP to the collector: `:4318/v1/traces` and `:4318/v1/logs`. Every request carries `Authorization: Basic base64("<project id>:<project token>")`. | [Step 6a](/docs/quickstarts/2-tiny-shop-otel/browser-spans/) |
+| **Who** | Resource attributes `service.name`, `service.version`, `deployment.environment.name`, and `ouo.platform = "web"`. | [Step 6a](/docs/quickstarts/2-tiny-shop-otel/browser-spans/) |
+| **Which session** | `session.id` and `user.id` on **every** span and log record. As attributes, not on the resource: the session can change while the page lives. Also in the `baggage` header to your API. | [Step 6a](/docs/quickstarts/2-tiny-shop-otel/browser-spans/) |
+| **What happened** | OTLP log records whose `event.name` is `session.start`, `session.end`, `exception`, `http.request.failed`, `navigation` or `web_vital`, with the [attributes of each](/docs/quickstarts/2-tiny-shop-otel/rum-events/#the-events-and-their-attributes). Any other name is a custom event. | [Step 6b](/docs/quickstarts/2-tiny-shop-otel/rum-events/) |
+| **Replay** | rrweb events in chunks `{ session_id, seq, started_at, ended_at, events }`, sent with `POST` to the collector's replay port (`:4319/v1/replay/chunks`) with the same credential and the `x-ouo-session-id` and `x-ouo-seq` headers. | [Step 6c](/docs/quickstarts/2-tiny-shop-otel/replay/) |
+
+<Flow
+  caption="Three files in your app make the three kinds of data. The collector is the only thing the browser talks to."
+  columns={[
+    { label: 'Your browser code', arrow: 'OTLP · HTTP', nodes: [
+      { title: 'otel.js', sub: 'spans, each with session.id and user.id' },
+      { title: 'events.js', sub: 'log records: session.start, exception, navigation, web_vital, …' },
+      { title: 'replay.js', sub: 'rrweb events, cut into chunks' },
+    ] },
+    { label: 'Collector', nodes: [
+      { title: ':4318/v1/traces', sub: 'project credential', tone: 'accent' },
+      { title: ':4318/v1/logs', sub: 'project credential', tone: 'accent' },
+      { title: ':4319/v1/replay/chunks', sub: 'credential + x-ouo-session-id, x-ouo-seq', tone: 'accent' },
+    ] },
+    { label: 'Stored in', nodes: [
+      { title: 'Tempo', sub: 'traces' },
+      { title: 'Loki', sub: 'events' },
+      { title: 'rum-api', sub: 'replay chunks' },
+    ] },
+    { label: 'You see', nodes: [
+      { title: 'ouo11y RUM in Grafana', sub: 'one session: status, activity, traces, replay', tone: 'ok' },
+    ] },
+  ]}
+/>
+
+From these, ouo11y builds the session, its timeline, its traces and its replay, and gives it a status. A session whose events carry `ouo.exception.fatal = true` is **crashed**. One with a non-fatal exception or an `http.request.failed` is **errored**. Any other session is **healthy**. [Sessions and health](/docs/concepts/sessions/) explains the rules.
+
+The `ouo.` attributes in this table wait for an OpenTelemetry semantic convention. Everything else is an OpenTelemetry name already. See [Semantic conventions](/docs/concepts/semantic-conventions/).
+
+## What you need
+
+- **Node 24** or newer, **Docker Desktop**, and **VS Code** with its `code` command. The first page checks all three.
+- **Pull access to the ouo11y images.** The collector, rum-api and Grafana images on `ghcr.io/ouo11y` are private for now.
+
+<Aside type="caution" title="The ouo11y images are private for now">
+To start the stack you need read access to the `ouo11y` packages on ghcr.io and a classic GitHub token with only the `read:packages` scope. Without that access, `docker compose up` stops with `denied`. You can still read every step, build the app and the browser instrumentation, and check the spans and requests in your browser's DevTools.
+</Aside>
+
+## Or run the finished files
+
+Every file of the finished quickstart is on these pages. To skip ahead, download the finished folder:
+
+<Download qs="tiny-shop-otel" />
+
+Unzip it (it makes a `tiny-shop-otel/` folder), log in to ghcr.io ([step 4b](/docs/quickstarts/2-tiny-shop-otel/stack/#4b-log-in-to-ghcrio)), then run each command from the folder named above it.
+
+From `stack/`:
+
+```bash
+docker compose up -d
+```
+
+From `backend/`:
+
+```bash
+npm install
+```
+
+```bash
+npm start
+```
+
+From `frontend/`, in a second terminal:
+
+```bash
+npm install
+```
+
+```bash
+npm run dev
+```
+
+Open http://localhost:5173 and follow [the full picture](/docs/quickstarts/2-tiny-shop-otel/full-picture/) to see the session.
+
+Ready to build it yourself? Start with [the plain app](/docs/quickstarts/2-tiny-shop-otel/plain-app/).

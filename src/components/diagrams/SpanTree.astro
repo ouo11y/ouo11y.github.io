@@ -1,0 +1,49 @@
+---
+// One trace as a tree of spans: a row per span, indented under its parent, with a bar on a
+// shared time axis. Pure HTML and CSS; on narrow screens the bars move under the names.
+// <SpanTree duration={200} spans={[{ name: 'POST', service: 'web', depth: 0, from: 0, to: 190 }]} />
+import '../../styles/diagram.css';
+
+type Tone = 'accent' | 'ok' | 'warn' | 'bad' | 'info';
+interface Span { name: string; service?: string; depth: number; from: number; to: number; note?: string; tone?: Tone; }
+interface Props { duration: number; unit?: string; spans: Span[]; caption?: string; }
+const { duration, unit = 'ms', spans, caption } = Astro.props;
+const pct = (t: number) => (t / duration) * 100;
+---
+<figure class="dg st not-content" role="group" aria-label={caption}>
+  <ol class="spans">
+    {spans.map((s) => (
+      <li class:list={['span', `tone-${s.tone ?? (s.depth === 0 ? 'accent' : 'info')}`]} style={`--d:${s.depth}`}>
+        <div class="name">
+          {s.service && <span class="svc">{s.service}</span>}
+          <code>{s.name}</code>
+          {s.note && <small>{s.note}</small>}
+        </div>
+        <div class="track">
+          <span class="bar" style={`left:${pct(s.from)}%;width:max(4px, ${pct(s.to) - pct(s.from)}%)`} />
+          <span class="dur">{s.to - s.from} {unit}</span>
+        </div>
+      </li>
+    ))}
+  </ol>
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<style>
+  .spans { list-style: none; margin: 0; padding: 0; }
+  .span { display: grid; grid-template-columns: minmax(0, 52%) minmax(0, 1fr); column-gap: 14px; align-items: center; padding: 5px 0; border-bottom: 1px solid color-mix(in srgb, var(--dg-line) 60%, transparent); }
+  .name { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; padding-left: calc(var(--d) * 16px); min-width: 0; position: relative; }
+  .span:not([style*="--d:0"]) .name::before { content: ""; position: absolute; left: calc(var(--d) * 16px - 11px); top: -2px; width: 7px; height: 11px; border-left: 1.5px solid var(--dg-line); border-bottom: 1.5px solid var(--dg-line); border-bottom-left-radius: 3px; }
+  .svc { font-size: 11px; color: var(--dg-ink-3); }
+  .name code { color: var(--tone); font-weight: 600; background: none; padding: 0; overflow-wrap: anywhere; }
+  .name small { flex-basis: 100%; color: var(--dg-ink-3); font-size: 12px; }
+  .track { position: relative; height: 18px; margin-right: 54px; }
+  .bar { position: absolute; top: 3px; height: 12px; border-radius: 4px; background: var(--tone); }
+  .dur { position: absolute; right: -54px; width: 50px; text-align: right; top: 0; font-size: 11px; color: var(--dg-ink-3); font-variant-numeric: tabular-nums; }
+  .span:hover { background: color-mix(in srgb, var(--tone) 8%, transparent); }
+  .st { container-type: inline-size; }
+  @container (max-width: 520px) {
+    .span { grid-template-columns: minmax(0, 1fr); row-gap: 4px; }
+    .track { margin-left: calc(var(--d) * 16px); }
+  }
+</style>

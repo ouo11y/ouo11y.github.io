@@ -1,0 +1,72 @@
+---
+title: 'The browser: replay'
+description: Record the page with rrweb, cut the events into numbered chunks and post them to the collector's replay receiver.
+sidebar: { order: 6, label: 'Browser: replay' }
+---
+
+import QuickstartFile from '../../../../../components/QuickstartFile.astro';
+import Sequence from '../../../../../components/diagrams/Sequence.astro';
+
+## 6c. Record the replay
+
+rrweb records the page as a stream of events: one full snapshot of the DOM, then only the changes (a click, a new node, a scroll). You cut that stream into chunks and post each one to the collector. This is the **replay** row of [the contract](/docs/quickstarts/2-tiny-shop-otel/#what-ouo11y-needs-from-a-browser).
+
+Each chunk is one JSON body:
+
+```jsonc
+{
+  "session_id": "<the session's id>",
+  "seq": 0,
+  "started_at": 1761600000000,
+  "ended_at": 1761600004890,
+  "events": [ /* rrweb events, in order */ ]
+}
+```
+
+`started_at` and `ended_at` are the timestamps, in milliseconds, of the chunk's first and last rrweb event.
+
+### How a chunk travels
+
+Press **Play** to follow one chunk from the page to the replay panel.
+
+<Sequence
+  caption="One session, one replay, many chunks. The collector checks each chunk's credential and headers; rum-api keeps them and serves them in seq order."
+  actors={['rrweb', 'replay.js', 'Collector :4319', 'rum-api']}
+  steps={[
+    { from: 0, to: 1, label: 'full snapshot', note: 'the first event' },
+    { from: 1, to: 1, label: 'open a chunk', note: 'session_id, seq, 5 s timer' },
+    { from: 0, to: 1, label: 'changes', note: 'clicks, DOM, scroll' },
+    { from: 1, to: 1, label: '5 s or 256 KB', note: 'flushReplay()' },
+    { from: 1, to: 2, label: 'POST /v1/replay/chunks', note: 'x-ouo-session-id, x-ouo-seq' },
+    { from: 2, to: 2, label: 'check', note: 'credential and headers' },
+    { from: 2, to: 1, label: '202 Accepted', tone: 'ok' },
+    { from: 2, to: 3, label: 'store the chunk', note: 'by session, by seq' },
+    { from: 1, to: 2, label: 'next chunk, seq + 1', note: 'keepalive if the page hides' },
+  ]}
+/>
+
+### The code
+
+Create `frontend/src/telemetry/replay.js`:
+
+<QuickstartFile qs="tiny-shop-otel" path="result/frontend/src/telemetry/replay.js" />
+
+- **One session, one replay, many chunks.** rrweb emits a stream of events; they are cut into chunks every 5 seconds or at 256 KB. `seq` numbers the chunks of a session and is kept in the session, so a reload continues the numbering; ouo11y plays the chunks in `seq` order.
+- **Each chunk names its session** twice: `session_id` in the body, and `x-ouo-session-id` / `x-ouo-seq` headers that the collector checks before it stores the chunk.
+- **A new session needs a full snapshot.** rrweb's later events only describe changes, so when the session is replaced the old chunk is sent and `record.takeFullSnapshot()` starts the new session's replay from a complete page.
+- **Privacy.** `maskAllInputs` keeps what users type out of the replay. Add the class `ouo-block` to an element to record it as an empty box, `ouo-mask` to mask its text.
+- **Leaving the page.** `keepalive` lets the last request outlive the page, but browsers allow only 64 KiB of keepalive bodies at a time, so a bigger last chunk is sent without it.
+
+### Start the replay
+
+Replace `frontend/src/telemetry/index.js` with its final version:
+
+<QuickstartFile qs="tiny-shop-otel" path="result/frontend/src/telemetry/index.js" />
+
+Compared with the second version, it starts the replay and, when the page is hidden, sends the last replay chunk before the spans and logs.
+
+## What you should see
+
+Reload http://localhost:5173 with the DevTools Network tab open and click around. Every few seconds a `POST /v1/replay/chunks` on port 4319 answers `202`. Click one: its request headers have `x-ouo-session-id`, the id the Console printed, and `x-ouo-seq`, which goes up by one for each chunk.
+
+Next: [the custom event](/docs/quickstarts/2-tiny-shop-otel/custom-event/).

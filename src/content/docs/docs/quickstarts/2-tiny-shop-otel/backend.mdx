@@ -1,0 +1,69 @@
+---
+title: Backend traces
+description: Trace the Express API with the OpenTelemetry Node SDK, and copy the browser's session onto every backend span with BaggageSpanProcessor.
+sidebar: { order: 3, label: 'Backend traces' }
+---
+
+import QuickstartFile from '../../../../../components/QuickstartFile.astro';
+import SpanTree from '../../../../../components/diagrams/SpanTree.astro';
+
+## Step 5. Instrument the backend
+
+The backend is the same as in quickstart 1: the OpenTelemetry Node SDK has never needed the ouo11y SDK. Stop the API with Ctrl+C in its terminal tab (still in `backend/`), then:
+
+```bash
+npm install @opentelemetry/api @opentelemetry/sdk-node @opentelemetry/sdk-trace @opentelemetry/exporter-trace-otlp-http @opentelemetry/instrumentation-http @opentelemetry/instrumentation-express @opentelemetry/baggage-span-processor @opentelemetry/resources @opentelemetry/semantic-conventions
+```
+
+Create `backend/instrumentation.js`:
+
+<QuickstartFile qs="tiny-shop-otel" path="result/backend/instrumentation.js" />
+
+- **The exporter** sends spans to the collector over OTLP/HTTP with the `demo` project credential, `Basic base64("demo:pt_dev_demo_0000000000000000")`.
+- **The resource** names the service, `tiny-shop-otel-backend`, its version and its environment.
+- **`HttpInstrumentation` and `ExpressInstrumentation`** make a server span for every request, and a span for each Express middleware and handler.
+- **`BaggageSpanProcessor`** is the line that matters for this quickstart. In [step 6a](/docs/quickstarts/2-tiny-shop-otel/browser-spans/) the browser sends `baggage: session.id=...,user.id=...` with every API call, and this processor copies both onto every backend span. That is how a backend span is found by its RUM session.
+
+Replace `backend/server.js` with:
+
+<QuickstartFile qs="tiny-shop-otel" path="result/backend/server.js" />
+
+The routes are the same as in step 2. The new parts are spans you write by hand: `db.select products` around a pretend database call, `checkout` with two children, `validate cart` and `charge card`, and on `/api/fail` an exception and an error status on the HTTP span the instrumentation made.
+
+The SDK has to load **before** Express so the instrumentation can patch it. Save that as the start script, then start the API:
+
+```bash
+npm pkg set scripts.start="node --require ./instrumentation.js server.js"
+```
+
+```bash
+npm start
+```
+
+Collector on 14318 ([step 4c](/docs/quickstarts/2-tiny-shop-otel/stack/#4c-check-the-ports))? Stop it and start it with `OUO_OTLP_ENDPOINT=http://localhost:14318 npm start` instead.
+
+## What you should see
+
+The API prints:
+
+```text
+[otel] tracing to http://localhost:4318/v1/traces
+```
+
+The shop page still works as before. When you click **Checkout**, the API makes this trace. On its own it starts at the API: the browser span above it comes in the next step.
+
+<SpanTree
+  duration={180}
+  caption="POST /api/checkout as the API traces it. The manual spans are the last three rows."
+  spans={[
+    { service: 'tiny-shop-otel-backend', name: 'POST /api/checkout', depth: 0, from: 0, to: 158 },
+    { name: 'middleware - corsMiddleware', depth: 1, from: 1, to: 2 },
+    { name: 'middleware - jsonParser', depth: 1, from: 2, to: 4 },
+    { name: 'request handler - /api/checkout', depth: 1, from: 4, to: 5 },
+    { name: 'checkout', depth: 1, from: 5, to: 156, note: 'app.cart.items' },
+    { name: 'validate cart', depth: 2, from: 5, to: 35 },
+    { name: 'charge card', depth: 2, from: 35, to: 156, note: 'event: payment accepted' },
+  ]}
+/>
+
+Next: [the browser, by hand](/docs/quickstarts/2-tiny-shop-otel/browser-spans/).

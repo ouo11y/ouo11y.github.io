@@ -1,0 +1,133 @@
+---
+title: The stack, one service at a time
+description: The ouo11y stack for Tiny Shop in six folders, one per service. The collector, Tempo, Loki, Mimir, rum-api and Grafana, each file on this page.
+sidebar: { order: 2, label: 'The stack' }
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import Flow from '../../../../../components/diagrams/Flow.astro';
+import QuickstartFile from '../../../../../components/QuickstartFile.astro';
+
+The ouo11y stack is the same whichever way the browser is instrumented. Nothing in it knows whether the page runs the ouo11y SDK or your own code: it reads OpenTelemetry and rrweb chunks. That is the point of this quickstart.
+
+<Flow
+  caption="Your apps talk only to the collector. Everything behind it is internal, apart from Grafana."
+  columns={[
+    { label: 'Your apps', arrow: ':4318 · :4319', nodes: [
+      { title: 'Browser', sub: 'spans, events, replay' },
+      { title: 'API', sub: 'spans' },
+    ] },
+    { label: '10', nodes: [
+      { title: 'Collector', sub: 'checks the project credential<br>routes each signal', tone: 'accent' },
+    ] },
+    { label: '20 · 30 · 40 · 50', nodes: [
+      { title: 'Tempo', sub: 'traces · 3200' },
+      { title: 'Loki', sub: 'events, logs · 3100' },
+      { title: 'Mimir', sub: 'metrics · 9009' },
+      { title: 'rum-api', sub: 'sessions, replay · 8080 inside' },
+    ] },
+    { label: '60', nodes: [
+      { title: 'Grafana', sub: 'ouo11y RUM app · :3000', tone: 'ok' },
+    ] },
+  ]}
+/>
+
+## 4a. Create the files
+
+Six services, one folder each. Each folder holds that service's compose file and its config, and each file starts with what the service is for, who sends it data and its ports. Open a block, copy all of it, and paste it into the file named in its title. VS Code creates the folders when you save a new file as `stack/10-collector/compose.yaml`.
+
+`compose.yaml` only lists the service folders:
+
+<QuickstartFile qs="tiny-shop-otel" path="result/stack/compose.yaml" open={false} />
+
+**The collector** is the only thing your apps talk to. It checks the project credential (`projects.htpasswd`) and routes traces, logs, metrics and replay chunks.
+
+<QuickstartFile qs="tiny-shop-otel" path="result/stack/10-collector/compose.yaml" open={false} />
+<QuickstartFile qs="tiny-shop-otel" path="result/stack/10-collector/config.yaml" open={false} />
+<QuickstartFile qs="tiny-shop-otel" path="result/stack/10-collector/projects.htpasswd" open={false} />
+
+Two parts of the collector config matter for a browser you instrument yourself. The `cors` blocks let a page on `localhost` call the collector, and they list the headers your code sends: `traceparent` and `baggage` on OTLP, `X-Ouo-Session-Id` and `X-Ouo-Seq` on replay. And `transform/events` copies the OTLP event name into the `event.name` attribute, which Loki turns into a label.
+
+**The three stores**: Tempo for traces, Loki for logs and browser events, Mimir for metrics. This shop sends no metrics yet; Mimir is there so the collector's `/v1/metrics` has somewhere to go.
+
+<QuickstartFile qs="tiny-shop-otel" path="result/stack/20-tempo/compose.yaml" open={false} />
+<QuickstartFile qs="tiny-shop-otel" path="result/stack/20-tempo/config.yaml" open={false} />
+<QuickstartFile qs="tiny-shop-otel" path="result/stack/30-loki/compose.yaml" open={false} />
+<QuickstartFile qs="tiny-shop-otel" path="result/stack/30-loki/config.yaml" open={false} />
+<QuickstartFile qs="tiny-shop-otel" path="result/stack/40-mimir/compose.yaml" open={false} />
+<QuickstartFile qs="tiny-shop-otel" path="result/stack/40-mimir/config.yaml" open={false} />
+
+**rum-api** builds sessions from Loki and Tempo and gives each a status (healthy, errored, crashed); the Grafana plugin reads it. It also stores the replay chunks.
+
+<QuickstartFile qs="tiny-shop-otel" path="result/stack/50-rum-api/compose.yaml" open={false} />
+<QuickstartFile qs="tiny-shop-otel" path="result/stack/50-rum-api/config.yaml" open={false} />
+
+**Grafana** with the ouo11y RUM app and its datasources.
+
+<QuickstartFile qs="tiny-shop-otel" path="result/stack/60-grafana/compose.yaml" open={false} />
+<QuickstartFile qs="tiny-shop-otel" path="result/stack/60-grafana/provisioning/datasources/datasources.yaml" open={false} />
+<QuickstartFile qs="tiny-shop-otel" path="result/stack/60-grafana/provisioning/plugins/ouo11y-rum-app.yaml" open={false} />
+
+<Aside title="Image versions">
+The three ouo11y images use the `latest` tag, which follows every release. The compose files say which version this guide was tested with and its digest: pin `ghcr.io/ouo11y/rum-api:0.5.0`, or the `@sha256:...` digest, to keep a stack on one version. The configs in this guide are written for the tested versions; a much newer rum-api may refuse a config key it no longer knows, and the error in `docker compose logs rum-api` names it.
+</Aside>
+
+<Aside type="note" title="Development credentials">
+The `demo` project token (`pt_dev_demo_0000000000000000`), the Grafana login (`admin` / `testing567`) and the `it_dev_` and `rt_dev_` tokens are public development values. Use them on your own machine only.
+</Aside>
+
+## 4b. Log in to ghcr.io
+
+The ouo11y images are private for now. You need read access to the `ouo11y` packages and a **classic** GitHub token with only the `read:packages` scope. Put the token in your shell (`export GHCR_TOKEN=...`), never in a file, then:
+
+```bash
+echo $GHCR_TOKEN | docker login ghcr.io -u <your-github-user> --password-stdin
+```
+
+It prints `Login Succeeded`.
+
+## 4c. Check the ports
+
+The stack publishes 3000 (Grafana) and the collector's 4318 (OTLP) and 4319 (replay) to your network, and 3100, 3200, 9009 and 13133 on loopback only. This prints nothing when they are all free:
+
+```bash
+lsof -nP -iTCP -sTCP:LISTEN | grep -E ':(3000|3100|3200|4318|4319|9009|13133) '
+```
+
+If something is listed, do not stop it: move this stack instead. From `stack/`:
+
+```bash
+code .env
+```
+
+and set the ports that are taken, for example:
+
+```ini title="stack/.env"
+OUO_GRAFANA_PORT=13000
+OUO_OTLP_HTTP_PORT=14318
+OUO_REPLAY_PORT=14319
+```
+
+Compose reads `.env` on its own. The others are `OUO_LOKI_PORT`, `OUO_TEMPO_PORT`, `OUO_MIMIR_PORT` and `OUO_COLLECTOR_HEALTH_PORT` (the `${OUO_..._PORT:-...}` lines in the compose files). Remember the new collector ports: [step 5](/docs/quickstarts/2-tiny-shop-otel/backend/) and [step 6a](/docs/quickstarts/2-tiny-shop-otel/browser-spans/) tell you where they go.
+
+## 4d. Start it
+
+In the third terminal tab, from `tiny-shop-otel/`:
+
+```bash
+cd stack
+```
+
+```bash
+docker compose up -d
+```
+
+```bash
+docker compose ps
+```
+
+## What you should see
+
+Six services are `Up`, and `rum-api` becomes `healthy`. Open http://localhost:3000 and log in with **admin / testing567**. **More apps → ouo11y RUM** is there and still empty: nothing sends data yet.
+
+Next: [trace the backend](/docs/quickstarts/2-tiny-shop-otel/backend/).
