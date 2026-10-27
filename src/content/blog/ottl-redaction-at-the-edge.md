@@ -14,10 +14,14 @@ processors:
   transform/redact:
     error_mode: ignore
     trace_statements:
-      - replace_pattern(span.attributes["url.full"], "([?&])(email|token)=[^&]*", "$$1$$2=REDACTED")
+      - context: span
+        statements:
+          - replace_pattern(span.attributes["url.full"], "([?&](token|email|password)=)[^&]*", "$${1}REDACTED")
     log_statements:
-      - replace_pattern(log.attributes["url.full"], "([?&])(email|token)=[^&]*", "$$1$$2=REDACTED")
-      - replace_pattern(log.attributes["exception.message"], "[\\w.+-]+@[\\w-]+\\.[\\w.]+", "<email>")
+      - context: log
+        statements:
+          - replace_pattern(log.attributes["url.full"], "([?&](token|email|password)=)[^&]*", "$${1}REDACTED")
+          - replace_pattern(log.attributes["exception.message"], "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+[.][A-Za-z]+", "<email>")
 
 service:
   pipelines:
@@ -29,7 +33,7 @@ service:
 
 Three things to know:
 
-- **`$$` in collector YAML.** The collector expands `$` as an environment variable, so a regex back-reference `$1` is written `$$1`.
+- **Write the back-reference as `$${1}`, not `$$1`.** The collector expands `$` as an environment variable, so `$` is written `$$`. And `$$1REDACTED` silently drops the captured group, because the regex engine reads `$1REDACTED` as one group name. The braces end the name. We found this by running the config and looking in Loki; [Customize](/docs/operate/customize/) has the full, tested version.
 - **Put redaction before `batch`.** Processors run in order; redact first so nothing unredacted is buffered.
 - **Test it with `debug`.** Add the `debug` exporter with `verbosity: detailed` to a pipeline while you write the patterns, and remove it after.
 
