@@ -1,0 +1,68 @@
+---
+title: Benchmarks
+description: What the ouo11y React Native SDK costs on the device next to the Sentry SDK, measured the same way, with the losses reported as plainly as the wins. Simulator numbers.
+sidebar: { order: 10 }
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+One benchmark has been run so far: the cost of the React Native SDK on the end user's device, against the latest stable Sentry React Native SDK. There is no server-side capacity benchmark yet (requests per second per collector, Loki and Tempo sizing); we will publish it here when it is measured, not before.
+
+<Aside type="caution" title="Simulator-only numbers">
+Every number below comes from the iOS Simulator (iPhone 18 Pro, iOS 27.0) on an Apple silicon Mac. CPU and memory on a simulator are not device numbers; use them to compare the two SDKs with each other, not as a budget for a phone.
+</Aside>
+
+## The run
+
+| | |
+|---|---|
+| Date | 2026-10-23 |
+| SDKs | `@ouo11y/react-native` 0.2.0, `@sentry/react-native` 8.32.0 (sentry-cocoa 9.31.0) |
+| App | one React Native (Expo 57, React Native 0.86) shop app, Release build, both SDKs linked, the mix chosen per launch |
+| Journey | the same 19 scripted taps from launch, 75 s, then 15 s idle; every tap checked by its backend request |
+| Rounds | 10 per cell, cells interleaved and rotated each round, every run from a cold, wiped app |
+| Baseline | the same binary with neither SDK started; every number is the paired difference against it |
+| Sampling | 100 % for both: traces, sessions, replays. The worst case, and the same work for both |
+
+## The rules we hold ourselves to
+
+- **Tiers are compared only with each other.** T1 errors only; T2 adds tracing and network spans; T3 adds replay at each SDK's defaults (masking on); T4 matches replay quality: one frame per second, one pixel per point, masking off. ouo11y cannot turn fetch tracing off, so it has no T1.
+- **Sentry is configured as its own docs say**, nothing tuned up or down.
+- **Same network path.** Both SDKs send through the same counting proxy to a real ouo11y stack. Nothing goes to sentry.io.
+- **Runs that did not do the work are left out and counted** (none were, in this run). Three runs had one extra or missing backend request; they are listed, not excluded.
+- **Losses are shown like wins.** There is no "ouo11y wins" summary.
+
+## Results
+
+Median of 10 runs, as the difference against the no-SDK baseline. Lower is better.
+
+| Cell | CPU over the journey | CPU idle | Peak memory | Steady memory | Added start-up | Requests | Uploaded, on the wire |
+|---|---|---|---|---|---|---|---|
+| Sentry T1, errors | +1.0 pp | +0.8 pp | +2.0 MB | +1.9 MB | +158 ms | 9 | 16 KB |
+| Sentry T2, + tracing | +1.5 pp | +0.9 pp | +3.0 MB | +2.8 MB | +149 ms | 22 | 65 KB |
+| **ouo11y T2, + tracing** | **+0.6 pp** | **+0.0 pp** | **+0.8 MB** | **+0.8 MB** | **+10 ms** | 23 | 67 KB |
+| Sentry T3, + replay, defaults | +8.5 pp | +8.0 pp | +51.4 MB | +9.7 MB | +146 ms | 38 | 277 KB |
+| **ouo11y T3, + replay, defaults** | **+4.6 pp** | **+3.0 pp** | **+5.0 MB** | **+1.3 MB** | **+63 ms** | 34 | **726 KB** |
+| Sentry T4, matched replay | +8.2 pp | +7.4 pp | +55.2 MB | +9.3 MB | +180 ms | 38 | 666 KB |
+| **ouo11y T4, matched replay** | **+4.4 pp** | **+3.0 pp** | **+3.4 MB** | **+1.4 MB** | **+37 ms** | 34 | **1,094 KB** |
+
+"pp" is percentage points of one CPU core.
+
+Size added to the app:
+
+| | ouo11y | Sentry |
+|---|---|---|
+| native code, linked | 0.59 MB | 3.10 MB |
+| JavaScript bundle | 106 KB | 851 KB |
+
+## Where ouo11y costs more
+
+- **Bytes uploaded with replay.** ouo11y sends 2.6 times Sentry's bytes at default settings (726 KB against 277 KB over the 75-second journey) and 1.6 times at matched quality. ouo11y uploads JPEG frames; Sentry encodes H.264 video, which compresses changes between frames far better. On metered mobile networks, use replay sampling (`replay.sampleRate`, `replay.onErrorSampleRate`).
+- **Memory over 30 minutes.** In one 30-minute soak per SDK (T3, n = 1), ouo11y's memory grew by about 37 MB per hour, Sentry's did not grow. One run cannot tell a leak from caching that levels off later; it is the next thing we measure, on a device.
+- Without replay (T2), ouo11y makes one more request than Sentry and sends 2 KB more.
+
+## What it does not tell you
+
+- Device CPU, energy and hitches: the phone runs are spot checks with one run per cell, and are not published as results.
+- Browser SDK cost: not measured with this harness.
+- Anything about the server side.

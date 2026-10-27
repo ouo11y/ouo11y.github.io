@@ -1,0 +1,298 @@
+---
+title: Collector configuration
+description: The ouo11y collector distribution, its pipelines, the ouoreplay, ouosentry, ouoratelimit and ouoauth components with every option, its own metrics, and building your own distribution with ocb.
+sidebar: { order: 4 }
+---
+
+import { Aside } from '@astrojs/starlight/components';
+import Flow from '../../../../components/diagrams/Flow.astro';
+
+The ouo11y collector is an OpenTelemetry Collector distribution built with the [OpenTelemetry Collector Builder](https://opentelemetry.io/docs/collector/custom-collector/) (ocb). It is the only ingest: browsers, phones and backends send OTLP and replay chunks to it with a [project credential](/docs/concepts/credentials/). Its configuration is ordinary collector YAML, and you own it.
+
+Image: `ghcr.io/ouo11y/collector:0.4.0`, distroless, binary `/ouo-collector`, config at `/etc/otelcol/config.yaml`, ports 4317, 4318, 4319, 4320 and 13133.
+
+## What is in the distribution
+
+Upstream components are pinned to OpenTelemetry Collector **0.160.0** (stable modules 1.66.0), the same versions as `otel/opentelemetry-collector-contrib:0.160.0`.
+
+| Kind | Upstream | ouo11y |
+|---|---|---|
+| Receivers | `otlp` | **`ouoreplay`**, **`ouosentry`** |
+| Processors | `memory_limiter`, `batch`, `attributes`, `resource`, `transform` | **`ouoratelimit`** |
+| Exporters | `otlp_grpc`, `otlp_http`, `debug` | **`ouoreplay`** |
+| Extensions | `basicauth`, `health_check` | **`ouoauth`**, **`ouoratelimit`** |
+| Connectors | `routing` | |
+| Config providers | `env`, `file`, `yaml` | |
+
+`otlp_grpc` and `otlp_http` are the names of the OTLP exporters since collector 0.150; `otlp` and `otlphttp` still work as deprecated aliases.
+
+## The pipelines
+
+<Flow
+  caption="The reference configuration, as shipped in the one-file stack. Every arrow is a pipeline you can change."
+  columns={[
+    { label: 'Receivers', arrow: '', nodes: [
+      { title: 'otlp :4318 :4317', sub: 'auth ouoauth, rate-limit middleware' },
+      { title: 'ouoreplay :4319', sub: 'auth ouoauth' },
+      { title: 'ouosentry :4320', sub: 'Sentry DSN keys' },
+    ] },
+    { label: 'Processors', arrow: '', nodes: [
+      { title: 'memory_limiter', sub: '512 MiB' },
+      { title: 'ouoratelimit', sub: 'per project, per client', tone: 'accent' },
+      { title: 'resource/project', sub: 'ouo.project.id from the credential', tone: 'accent' },
+      { title: 'transform/events · batch', sub: 'logs: event.name, ouo.platform' },
+    ] },
+    { label: 'Exporters', nodes: [
+      { title: 'otlp_grpc/tempo', sub: 'traces' },
+      { title: 'otlp_http/loki', sub: 'logs, RUM events' },
+      { title: 'otlp_http/mimir', sub: 'metrics' },
+      { title: 'ouoreplay', sub: 'replay chunks → rum-api' },
+    ] },
+  ]}
+/>
+
+```yaml
+service:
+  extensions: [health_check, basicauth/server, ouoauth, ouoratelimit]
+  pipelines:
+    traces:
+      receivers: [otlp, ouosentry]
+      processors: [memory_limiter, ouoratelimit, resource/project, batch]
+      exporters: [otlp_grpc/tempo]
+    logs:
+      receivers: [otlp, routing/sentry]
+      processors: [memory_limiter, ouoratelimit, resource/project, transform/events, batch]
+      exporters: [otlp_http/loki]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, ouoratelimit, resource/project, batch]
+      exporters: [otlp_http/mimir]
+    logs/replay:                     # one log record per chunk; no batch, the receiver answers per chunk
+      receivers: [ouoreplay, routing/sentry]
+      processors: [memory_limiter, ouoratelimit]
+      exporters: [ouoreplay]
+    logs/sentry:                     # the Sentry bridge's output, split by the routing connector
+      receivers: [ouosentry]
+      processors: [memory_limiter]
+      exporters: [routing/sentry]
+```
+
+The whole file is in [Run the stack](/docs/start/quickstart/#the-file), under `configs: collector:`.
+
+Three rules hold the pipelines together:
+
+- **Every receiver has `include_metadata: true`**, so `ouoratelimit` and `resource/project` can read the authenticated project (`auth.username`) from the request context.
+- **`batch` comes last.** It drops the request context, so anything that needs the project runs before it.
+- **`resource/project` deletes, then writes** `ouo.project.id`, so a client can never keep a value of its own:
+
+  ```yaml
+  resource/project:
+    attributes:
+      - key: ouo.project.id
+        action: delete
+      - key: ouo.project.id
+        from_context: auth.username
+        action: upsert
+  ```
+
+## Authentication: `basicauth` and `ouoauth`
+
+```yaml
+extensions:
+  basicauth/server:
+    htpasswd:
+      file: /etc/otelcol/projects.htpasswd
+  ouoauth:
+    authenticator: basicauth/server
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        include_metadata: true
+        auth: { authenticator: ouoauth }
+```
+
+`basicauth` checks the project credential against the htpasswd file and answers `401` before any receiver code runs. `ouoauth` wraps it, so the rejections are counted: `ouo_auth_failures_total{reason}`, with `reason` one of `missing`, `malformed`, `invalid_credentials`, `other`. There is no project label: on a failure the user name is whatever the client sent.
+
+<Aside type="note">
+A comment line in the htpasswd file must not contain a colon: the file parser reads it as a user.
+</Aside>
+
+## `ouoreplay` receiver
+
+`POST /v1/replay/chunks` on its own port. It is built on the collector's standard HTTP server settings, so it takes the same `auth`, `cors`, `tls` and timeout options as the OTLP receiver.
+
+```yaml
+receivers:
+  ouoreplay:
+    endpoint: 0.0.0.0:4319              # default
+    max_request_body_size: 8388608      # default 8 MiB, before and after gzip
+    max_rrweb_chunk_bytes: 4194304      # default 4 MiB; larger bodies only for kind "frames"
+    include_metadata: true
+    auth: { authenticator: ouoauth }
+    cors:
+      allowed_origins: [https://shop.example.com]
+      allowed_headers: [Authorization, Content-Type, Content-Encoding, X-Ouo-Session-Id, X-Ouo-Seq]
+      exposed_headers: [Retry-After]
+```
+
+It validates the chunk ([Replay model](/docs/concepts/replay/)), stamps `ouo.project.id`, and emits one log record per chunk: the body is the chunk, the attributes are `session.id`, `ouo.replay.seq`, `ouo.replay.kind` and `ouo.replay.encoding`.
+
+| Answer | When |
+|---|---|
+| `202` | queued for the exporter |
+| `400` | invalid chunk, bad gzip |
+| `401` | no credential, or a wrong one |
+| `403` | the project id does not match `^[a-z0-9][a-z0-9._-]{0,63}$` |
+| `413` | above `max_request_body_size`, or an rrweb chunk above `max_rrweb_chunk_bytes` |
+| `429` + `Retry-After` | rate limited |
+| `503` + `Retry-After: 1` | another retryable pipeline error (memory limiter, full queue) |
+
+## `ouoreplay` exporter
+
+Posts each chunk to rum-api's internal sink with the project id and the ingest token.
+
+```yaml
+exporters:
+  ouoreplay:
+    endpoint: http://rum-api:8080            # default; /v1/replay/chunks is appended
+    ingest_token: ${env:OUO_INGEST_TOKEN}    # sent as Authorization: Bearer
+    timeout: 30s                             # default
+    compression: gzip                        # default
+    sending_queue: { enabled: true, queue_size: 1000 }
+    retry_on_failure: { enabled: true, max_elapsed_time: 5m }
+```
+
+`2xx` is success; other `4xx` are permanent and dropped (and logged); `429` and `503` are retried, honouring `Retry-After`; other `5xx` and network errors are retried.
+
+## `ouoratelimit`
+
+A token bucket per project and one per client. Both must have a token, or neither is taken.
+
+```yaml
+processors:
+  ouoratelimit:
+    project: { rate: 1000, burst: 5000 }                    # defaults; rate 0 disables
+    client:  { rate: 100, burst: 300, key_from: address }   # defaults; rate 0 disables
+    idle_timeout: 10m                                       # idle buckets are dropped
+extensions:
+  ouoratelimit:
+    processor: ouoratelimit      # the receiver middleware shares the processor's buckets
+receivers:
+  otlp:
+    protocols:
+      http: { middlewares: [{ id: ouoratelimit }] }
+      grpc: { middlewares: [{ id: ouoratelimit }] }
+```
+
+- One token per incoming request, across traces, logs, metrics and replay: all instances with the same id share one set of buckets.
+- Over the limit, OTLP/HTTP answers `429` + `Retry-After` (gRPC `RESOURCE_EXHAUSTED` with `RetryInfo`), as does the replay receiver.
+- **Why also an extension.** The OTLP receiver answers an export with no data `200` without calling the pipeline, so the processor never sees it. The extension is a receiver middleware that charges every request, after authentication, before decoding. A request it charged is not charged again by the processor. The replay and Sentry receivers are charged by the processor.
+- `key_from: x_forwarded_for` keys the client bucket on the first `X-Forwarded-For` hop. Use it **only** behind a proxy that overwrites that header (Caddy, ingress-nginx by default), otherwise each client picks its own key.
+- Buckets live in one process. N collector replicas allow N times the configured rates.
+- Place it after `memory_limiter` and before `batch`.
+
+## `ouosentry` receiver
+
+The Sentry SDK bridge: apps that use Sentry's mobile SDKs change only the host of their DSN. The full setup, and why it must run as one replica, are on [Sentry bridge](/docs/operate/sentry-bridge/).
+
+```yaml
+receivers:
+  ouosentry:
+    endpoint: 0.0.0.0:4320
+    max_request_body_size: 104857600   # raw body
+    upstream_timeout: 30s
+    max_translate_bytes: 20971520      # bigger envelopes are forwarded, not translated
+    translate_queue_size: 10000
+    state: { max_sessions: 200000, ttl: 4h, replay_hold: 10m, log_hold: 1m }
+    projects:
+      - sentry_project_id: "4504"
+        public_keys: ["<DSN public key>"]
+        upstream: https://o123.ingest.sentry.io   # or none: answer locally, forward nothing
+        ouo_project_id: mobile-store
+        service_name: mobile-store-ios
+```
+
+## Its own metrics
+
+The collector pushes its own metrics to Mimir over OTLP every 15 seconds, and serves them for Prometheus on `:8888` inside the network.
+
+| Metric | Labels | Read it as |
+|---|---|---|
+| `otelcol_receiver_accepted_*`, `otelcol_receiver_refused_*` | `receiver`, `transport` | data in, data refused |
+| `otelcol_exporter_sent_*`, `otelcol_exporter_send_failed_*`, `otelcol_exporter_queue_size` | `exporter` | data out, and backlog |
+| `ouo_auth_failures_total` | `reason`, `authenticator` | `401`s |
+| `ouo_ratelimit_rejected_total` | `key_kind` (`project`, `client`) | `429`s |
+| `ouo_replay_chunks_total` | `ouo_project_id`, `ouo_replay_kind`, `outcome`, `reason` | replay chunks by outcome: `accepted`, `rejected`, `throttled`, `failed` |
+| `ouo_sentry_envelopes_total`, `ouo_sentry_upstream_duration_seconds`, `ouo_sentry_items_total`, `ouo_sentry_translate_dropped_total` | | the Sentry bridge |
+
+In Grafana **Explore**, on the Mimir data source:
+
+```text
+sum by (reason) (rate(ouo_auth_failures_total[5m]))
+```
+
+```text
+sum by (key_kind) (rate(ouo_ratelimit_rejected_total[5m]))
+```
+
+```text
+sum by (outcome, reason) (rate(ouo_replay_chunks_total[5m]))
+```
+
+A useful alert: `ouo_auth_failures_total` rising right after a token rotation means clients still on the old token.
+
+## Build your own distribution
+
+You can build a collector of your own with ocb, from the same upstream modules, to add components we do not ship (a `filter` processor, a Kafka exporter, a `tail_sampling` processor). Write a manifest:
+
+```yaml
+dist:
+  name: my-collector
+  description: OpenTelemetry Collector with what our platform needs
+  version: 0.1.0
+  output_path: ./dist
+receivers:
+  - gomod: go.opentelemetry.io/collector/receiver/otlpreceiver v0.160.0
+processors:
+  - gomod: go.opentelemetry.io/collector/processor/batchprocessor v0.160.0
+  - gomod: go.opentelemetry.io/collector/processor/memorylimiterprocessor v0.160.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/filterprocessor v0.160.0
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/processor/transformprocessor v0.160.0
+exporters:
+  - gomod: go.opentelemetry.io/collector/exporter/otlphttpexporter v0.160.0
+extensions:
+  - gomod: github.com/open-telemetry/opentelemetry-collector-contrib/extension/basicauthextension v0.160.0
+providers:
+  - gomod: go.opentelemetry.io/collector/confmap/provider/envprovider v1.66.0
+  - gomod: go.opentelemetry.io/collector/confmap/provider/fileprovider v1.66.0
+```
+
+Build it with the builder of the same version; a newer builder rejects older component versions:
+
+```bash
+go install go.opentelemetry.io/collector/cmd/builder@v0.160.0
+```
+
+```bash
+builder --config builder.yaml
+```
+
+```bash
+./dist/my-collector components
+```
+
+<Aside type="caution" title="Our components are not importable yet">
+The `ouoreplay` receiver and exporter, `ouosentry`, `ouoratelimit` and `ouoauth` are Go modules under `github.com/ouo11y/ouo11y/collector/...`, built against collector 0.160.0. While that repository is private, the Go proxy cannot fetch them, so a manifest of yours cannot list them. Until then, run your collector **behind** ours: keep the ouo11y collector as the edge (credentials, rate limits, replay), and point one of its exporters at your collector instead of at Loki, Tempo and Mimir. Your collector then does the routing, sampling or exporting you need. [Customize](/docs/operate/customize/#send-a-copy-somewhere-else) shows the exporter.
+</Aside>
+
+## Checking a config
+
+The image has no shell. Validate a file with the binary itself before you restart:
+
+```bash
+docker run --rm -v "$PWD/config.yaml:/etc/otelcol/config.yaml:ro" -v "$PWD/projects.htpasswd:/etc/otelcol/projects.htpasswd:ro" -e OUO_INGEST_TOKEN=x ghcr.io/ouo11y/collector:0.4.0 validate --config=/etc/otelcol/config.yaml
+```
+
+No output and exit code `0` means the file is valid.

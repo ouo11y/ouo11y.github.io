@@ -1,0 +1,138 @@
+---
+title: Project tokens and rotation
+description: Make a project, give an app its credential, rotate or revoke a token on Docker Compose and Helm, and rotate the ingest, read and admin secrets.
+sidebar: { order: 6 }
+---
+
+import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
+import Sequence from '../../../../components/diagrams/Sequence.astro';
+
+A project credential is a project id and a public token, sent as HTTP Basic on every request. Why it can be public, and what it allows: [Project credentials](/docs/concepts/credentials/). This page is the procedures.
+
+## Make a token and its registry line
+
+```bash
+echo "pt_$(openssl rand -hex 16)"
+```
+
+The collector reads projects from an htpasswd file, one line per project: `<project id>:{SHA}<base64 of the SHA-1 of the token>`. With `htpasswd` (package `apache2-utils`):
+
+```bash
+htpasswd -nbs web-store pt_9f3c…
+```
+
+Without it, the same line with `openssl`:
+
+```bash
+printf '%s:{SHA}%s\n' web-store "$(printf '%s' pt_9f3c… | openssl dgst -binary -sha1 | openssl base64)"
+```
+
+Use `{SHA}` or `apr1`, never bcrypt: the hash runs on every request. Project ids must match `^[a-z0-9][a-z0-9._-]{0,63}$`.
+
+## Add a project
+
+<Tabs>
+<TabItem label="Docker Compose and VM">
+
+Append the line to `projects.htpasswd` ([Deploy with Docker Compose](/docs/operate/compose/#your-own-projects-and-secrets)), then restart the collector. It reads the file once, at start:
+
+```bash
+docker compose restart otel-collector
+```
+
+</TabItem>
+<TabItem label="Helm">
+
+With your own Secret (`collector.existingProjectsSecret`), add the line to it:
+
+```bash
+kubectl -n ouo create secret generic ouo-projects --from-file=projects.htpasswd=./projects.htpasswd --dry-run=client -o yaml | kubectl apply -f -
+```
+
+Then restart the collector, because a Secret you manage outside the chart does not change the chart's checksum:
+
+```bash
+kubectl -n ouo rollout restart deploy/ouo-collector
+```
+
+With `projects` in your values file instead, add an entry and run `helm upgrade ouo ./ouo -n ouo -f my-values.yaml`: the chart renders the Secret, and its checksum rolls the collector.
+
+</TabItem>
+</Tabs>
+
+Check it: `401` before the restart, `200` after.
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -X POST https://otel.example.com/v1/traces -u "web-store:pt_9f3c…" -H 'Content-Type: application/json' -d '{"resourceSpans":[]}'
+```
+
+## Give an app its credential
+
+```ts
+initRUM({
+  endpoint: "https://otel.example.com",
+  projectId: "web-store",
+  projectToken: "pt_9f3c…",
+  service: { name: "web-store", version: "1.4.2", environment: "production" },
+});
+```
+
+Any OpenTelemetry SDK:
+
+```bash
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic%20$(printf 'web-store:pt_9f3c…' | base64)"
+```
+
+`%20` is how the OTLP environment variables write the space after `Basic`.
+
+## Rotate a token
+
+<Aside type="caution" title="Rotation is a cut-over">
+The collector's `basicauth` authenticator keeps only the **last** line for each project id. Two tokens for one project cannot be valid at the same time. From the moment the collector restarts, clients on the old token get `401` until they ship the new one.
+</Aside>
+
+<Sequence
+  caption="A cut-over. On the web it is a deploy away; on mobile, old app versions stay on the old token until users update."
+  actors={['You', 'Collector', 'Old clients', 'New clients']}
+  steps={[
+    { from: 0, to: 0, label: 'new token, new build' },
+    { from: 0, to: 1, label: 'replace line, restart' },
+    { from: 2, to: 1, label: 'Basic …:pt_old' },
+    { from: 1, to: 2, label: '401', note: 'invalid_credentials', tone: 'bad' },
+    { from: 3, to: 1, label: 'Basic …:pt_new' },
+    { from: 1, to: 3, label: '200', tone: 'ok' },
+  ]}
+/>
+
+<Steps>
+
+1. Make the new token and build your app with it, but do not release it yet.
+
+2. Replace the project's line in the htpasswd file with one for the new token, and restart the collector as in [Add a project](#add-a-project).
+
+3. Release the app. Web apps switch on the next page load. Watch the old token fade out:
+
+   ```text
+   sum by (reason) (rate(ouo_auth_failures_total[5m]))
+   ```
+
+</Steps>
+
+**For mobile apps**, a cut-over cuts off every installed version that has not updated. Rotate to a **new project id** instead: add `mobile-store-2` with its own token next to `mobile-store`, ship the new app version with it, and delete the old line once the old versions are gone. Both ids are valid at once. In Grafana, filter on both projects meanwhile.
+
+## Revoke a token
+
+Delete the project's line and restart the collector. Every request with that credential gets `401` from then on. Data already stored stays; to delete it too, use rum-api's admin API ([rum-api](/docs/operate/rum-api/#the-api)).
+
+## Rotate the server-side secrets
+
+These are never in a client, so rotating them is a restart, not a release.
+
+| Secret | Set the new value on | Then |
+|---|---|---|
+| ingest token | the collector **and** rum-api (`OUO_INGEST_TOKEN`; Helm: `ingest-token` in the rum-api Secret) | restart both. The collector retries chunks that rum-api refused in between for up to 5 minutes |
+| read token | rum-api **and** Grafana (`OUO_READ_TOKEN`, provisioned into the app's secure settings; Helm: `read-token`) | restart both. Or change it on the app's configuration page in Grafana, `/plugins/ouo11y-rum-app`, without a Grafana restart |
+| admin token | rum-api (`OUO_ADMIN_TOKEN`; Helm: `admin-token`) | restart rum-api |
+| `internal` project token | the htpasswd file and rum-api's `OTEL_EXPORTER_OTLP_HEADERS` (`OUO_BACKEND_OTLP_HEADERS`; Helm: `otlp-headers`) | restart both, or rum-api's own telemetry is refused with `401` |
+
+In Docker Compose, `docker compose up -d` after editing `.env` recreates exactly the containers whose variables changed. In Helm, a change to a chart-rendered Secret rolls the pods that use it; for a Secret you manage, run `kubectl rollout restart`.

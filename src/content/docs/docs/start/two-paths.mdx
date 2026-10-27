@@ -1,0 +1,75 @@
+---
+title: Two ways in
+description: Instrument with the ouo11y SDK, or with plain OpenTelemetry. ouo11y reads both the same way, and the backend is always plain OpenTelemetry.
+sidebar: { order: 2 }
+---
+
+import Flow from '../../../../components/diagrams/Flow.astro';
+
+ouo11y does not care who produced the telemetry. It reads OpenTelemetry in the shape described in [the contract](/docs/instrument/bring-your-own-otel/): spans and log records that carry `session.id`, RUM events as log records with an `event.name`, and replay chunks posted next to them. You pick per app, and you can change your mind later without touching the stack.
+
+<Flow
+  caption="Both paths end at the same collector, with the same project credential, and give the same session in Grafana."
+  columns={[
+    { label: 'In the browser', arrow: 'OTLP/HTTP + replay', nodes: [
+      { title: '@ouo11y/browser', sub: 'one package, initRUM()', tone: 'accent' },
+      { title: 'Plain OpenTelemetry', sub: '@opentelemetry/* + rrweb + web-vitals', tone: 'info' },
+    ] },
+    { label: 'Edge', arrow: 'OTLP', nodes: [
+      { title: 'ouo11y collector', sub: ':4318 OTLP · :4319 replay' },
+    ] },
+    { label: 'Result', nodes: [
+      { title: 'One session', sub: 'status · timeline · traces · replay', tone: 'ok' },
+    ] },
+  ]}
+/>
+
+## Side by side
+
+| | ouo11y SDK | Plain OpenTelemetry |
+|---|---|---|
+| Packages in your app | `@ouo11y/browser` (or `@ouo11y/react-native`) | `@opentelemetry/*`, `rrweb`, `web-vitals` |
+| Time to the first session | about 30 minutes, following [quickstart 1](/docs/quickstarts/1-tiny-shop/) | about 45 minutes, following [quickstart 2](/docs/quickstarts/2-tiny-shop-otel/) |
+| Session rules, errors, Web Vitals, fetch and XHR spans | built in | you write them: about 400 lines in the quickstart |
+| Session replay | built in, with sampling, error-triggered replay and masking options | `rrweb`, cut into chunks and posted by your code |
+| Rage clicks, dead clicks, long tasks, one recording tab at a time, offline queue with retry | built in | up to you; quickstart 2 ends with what each one costs to add |
+| Code from ouo11y in your bundle | yes, Apache-2.0 | none |
+| What you see in Grafana | the same | the same |
+
+## Pick the SDK when
+
+- you want RUM working today, with the session rules and attribute names already right;
+- you want the extras (error-triggered replay, rage and dead clicks, an offline queue) without writing them;
+- you instrument a React Native app: `@ouo11y/react-native` also records native iOS replay.
+
+Start with [The ouo11y SDK](/docs/instrument/ouo-sdk/), or build [Tiny Shop](/docs/quickstarts/1-tiny-shop/): an Express API and a React page, traced end to end, in about 30 minutes.
+
+## Pick plain OpenTelemetry when
+
+- your organization allows only upstream OpenTelemetry packages in production bundles;
+- you already run OpenTelemetry in the browser and want ouo11y's sessions and replay on top;
+- you want to know exactly what goes over the wire.
+
+Start with [Bring your own OpenTelemetry](/docs/instrument/bring-your-own-otel/). The worked example is [Tiny Shop with plain OpenTelemetry](/docs/quickstarts/2-tiny-shop-otel/): the same shop, instrumented by hand, file by file, ending with a table of what the SDK would have added and what each piece costs to write.
+
+## Already on Sentry's mobile SDKs
+
+There is a third way in for React Native and iOS apps that use `@sentry/react-native`: keep the SDK and change only the host of its DSN to the ouo11y collector. The collector forwards every envelope to Sentry unchanged and turns a copy into OpenTelemetry sessions, errors, spans and replay. See [Sentry bridge](/docs/operate/sentry-bridge/).
+
+## The backend is always plain OpenTelemetry
+
+There is no ouo11y backend SDK, on purpose. Any service instrumented with an OpenTelemetry SDK continues the browser's trace through W3C Trace Context, and reads `session.id` from the W3C `baggage` header the browser sends. Point its exporter at the same collector with a project credential:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+```
+
+```bash
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic%20$(printf 'demo:pt_dev_demo_0000000000000000' | base64)"
+```
+
+See [Your backend](/docs/instrument/backend/).
+
+## Then what
+
+Once one app sends sessions, the [funnels quickstart](/docs/quickstarts/3-funnels/) turns page views and custom events into a conversion funnel, with the replay of every session that dropped out.
