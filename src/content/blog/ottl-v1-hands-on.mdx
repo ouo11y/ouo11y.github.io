@@ -1,0 +1,300 @@
+---
+title: "OpenTelemetry, hands-on, part 2: OTTL v1, one statement at a time"
+description: The Collector's transformation language is stable as of collector-contrib v0.164.0. We ran real transforms, stepped through what each statement does, leaked a token on the first try, and tested what stays experimental.
+date: 2026-10-30
+tags: [opentelemetry, collector, ottl, hands-on]
+series: "OpenTelemetry, hands-on"
+part: 2
+---
+
+import OtelOttlSteps from '../../components/diagrams/OtelOttlSteps.astro';
+import Stages from '../../components/diagrams/Stages.astro';
+import Note from '../../components/Note.astro';
+
+On 27 October the OpenTelemetry blog announced that the [OpenTelemetry Transformation Language reached v1](https://opentelemetry.io/blog/2026/ottl-v1/). Our [short tip](/blog/ottl-redaction-at-the-edge/) showed one redaction rule. This post goes further: what OTTL is, why it took until now to call it stable, and a set of real transforms you can run, with the record shown after each statement.
+
+## Where OTTL came from
+
+The Collector has always needed to change telemetry on its way through: add an attribute, drop a secret, rename a field. For years each processor had its own small configuration language for that. `attributes`, `resource`, `span`, `metricstransform` and `logstransform` each had different YAML keys for "set this field", and none of them could express a condition such as "only when the status code is 5xx".
+
+OTTL replaced that with one language that every component can embed. A statement is a function call with an optional `where` clause:
+
+```text
+set(span.status.code, STATUS_CODE_ERROR) where span.attributes["http.response.status_code"] >= 500
+```
+
+The `transform` processor runs OTTL statements, and so do the `filter` processor, the routing connector and others. Because many components share it, the language could not be called stable until the components that use it agreed on its shape. The [stability tracking issue](https://github.com/open-telemetry/opentelemetry-collector-contrib/issues/50217) opened in April 2026. The work that followed was mostly cleanup: removing old functions and feature gates (the OTel post lists them) and moving everything not ready for a promise into separate experimental modules.
+
+## What v1 promises, and what it does not
+
+Summarising the [announcement](https://opentelemetry.io/blog/2026/ottl-v1/) and the [function stability rules](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/b21bf1a21be57988b655aa03ff664dbb250d6a99/pkg/ottl/ottlfuncs/README.md#function-stability):
+
+| | Covered by the 1.x promise | Outside it |
+|---|---|---|
+| **Signals** | traces, metrics, logs | profiles (moved to an `xprofile` module) |
+| **Syntax** | paths, literals, operators, function calls, `where` | |
+| **Functions** | every standard editor and converter: none removed, no signature changed incompatibly | new functions in the `xottl` module, behind a feature gate |
+| **Lambdas** | | `Filter`, `MapEach`, `MapKeys`, `Any`, `All`, `Find`, `Reduce`, `When`, behind `ottl.functions.enableLambda` |
+| **Go API** | the API that components build on | experimental APIs such as `SliceGetter` |
+
+There is one thing the table does not show. **The language is v1, but the `transform` processor is not.** At v0.164.0 the processor's README still lists it as beta for traces, metrics and logs, and development for profiles. The announcement says its promotion is next. The statements you write are stable; the processor's own configuration keys can still change.
+
+## How a statement finds its data
+
+Every path in OTTL starts with a *context*: the level of the telemetry it reads. In the `transform` processor, the contexts for each signal are:
+
+<Stages
+  caption="Contexts nest. A statement in an inner context can read the outer ones (a log statement can read resource.attributes); not the other way round."
+  stages={[
+    { who: 'all signals', title: 'resource', body: '<code>resource.attributes</code>: who sent it', carries: 'contains' },
+    { who: 'all signals', title: 'scope', body: '<code>scope.name</code>, <code>scope.version</code>: which library', carries: 'contains' },
+    { who: 'per signal', title: 'span · metric · log', body: '<code>span.*</code>, <code>metric.*</code>, <code>log.*</code>', tone: 'ok', carries: 'contains' },
+    { who: 'inner', title: 'spanevent · datapoint', body: '<code>spanevent.*</code>, <code>datapoint.*</code>', tone: 'info' },
+  ]}
+/>
+
+You do not need to write `context: log` above your statements: at v0.164.0 the processor infers the context from the path prefixes you use. All the configs in this post use that shorter form. If you mix prefixes that no single context supports, the Collector refuses to start and tells you to split the group.
+
+## Hands-on: one log record, step by step
+
+**What we ran it on:** macOS with Docker Desktop 29.3.1 (linuxkit 6.12, arm64), the Collector image `otelcol-contrib` **0.164.0** (which logs its OTTL module as `ottl@v1.3.1`), `curl` for input, and `telemetrygen` v0.164.0 for traces.
+
+The input is a log line many services produce: a JSON string in the body, with a level, a status, a URL that carries a token and an email address, and a free-text field nobody should store.
+
+```json title="log.json"
+{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"checkout"}}]},
+ "scopeLogs":[{"scope":{"name":"handwritten"},"logRecords":[{
+  "timeUnixNano":"1793000000000000000",
+  "body":{"stringValue":"{\"level\":\"error\",\"msg\":\"payment declined\",\"status\":\"402\",\"url\":\"https://shop.example/pay?order=81&token=sk_live_abc123&email=ada@example.com\",\"user.email\":\"ada@example.com\",\"card.note\":\"customer typed a very long note into the card field that nobody needs in telemetry\"}"}
+ }]}]}]}
+```
+
+The goal: an `ERROR` record with the message as its body, OpenTelemetry semantic-convention names (`http.response.status_code`, `url.full`), no secrets, a hash in place of the email, and bounded attribute lengths.
+
+Step through the statements below. Each step shows the record *after* that statement. Changed rows are green, rows about to be deleted are red.
+
+<OtelOttlSteps
+  caption="The log record after each statement in collector.yaml. The final state is exactly what the Collector printed."
+  steps={[
+    { code: '(record as received)', note: 'A body that is a JSON <em>string</em>, no severity, no attributes. Every useful field is trapped inside the string.',
+      record: { Resource: [['service.name', 'checkout']], Record: [['severity', '(unset)'], ['body', '{"level":"error","msg":"payment declined","status":"402","url":"https://shop.example/pay?order=81&token=sk_live_abc123&email=ada@…","user.email":"ada@example.com","card.note":"customer typed a very long note…"}']], Attributes: [] } },
+    { ctx: 'resource', code: 'set(resource.attributes["deployment.environment.name"], "production") where resource.attributes["deployment.environment.name"] == nil', note: 'Fill a resource attribute the app forgot. The <code>where</code> keeps a value the app did set.',
+      record: { Resource: [['service.name', 'checkout'], ['deployment.environment.name', 'production']], Record: [['severity', '(unset)'], ['body', '{"level":"error","msg":"payment declined",…}']], Attributes: [] }, changed: ['deployment.environment.name'] },
+    { ctx: 'log', code: 'merge_maps(log.attributes, ParseJSON(log.body), "upsert") where IsString(log.body) and IsMatch(log.body, "^\\\\{")', note: '<code>ParseJSON</code> is a converter (returns a value); <code>merge_maps</code> is an editor (changes the record). The <code>where</code> skips bodies that are not JSON.',
+      record: { Resource: [['service.name', 'checkout'], ['deployment.environment.name', 'production']], Record: [['severity', '(unset)'], ['body', '{"level":"error","msg":"payment declined",…} (still the full string)']], Attributes: [['level', 'error'], ['msg', 'payment declined'], ['status', '"402"'], ['url', 'https://shop.example/pay?order=81&token=sk_live_abc123&email=ada@example.com'], ['user.email', 'ada@example.com'], ['card.note', 'customer typed a very long note into the card field that nobody needs in telemetry']] }, changed: ['level', 'msg', 'status', 'url', 'user.email', 'card.note'] },
+    { ctx: 'log', code: 'set(log.body, log.attributes["msg"]) where log.attributes["msg"] != nil\ndelete_key(log.attributes, "msg")', note: '<strong>The step we missed the first time.</strong> Without it, every later redaction cleans the attributes while the original string, token included, stays in the body.',
+      record: { Resource: [['service.name', 'checkout'], ['deployment.environment.name', 'production']], Record: [['severity', '(unset)'], ['body', 'payment declined']], Attributes: [['level', 'error'], ['msg', 'payment declined'], ['status', '"402"'], ['url', 'https://shop.example/pay?order=81&token=sk_live_abc123&email=ada@example.com'], ['user.email', 'ada@example.com'], ['card.note', 'customer typed a very long note into the card field that nobody needs in telemetry']] }, changed: ['body'], removed: ['msg'] },
+    { ctx: 'log', code: 'set(log.severity_number, SEVERITY_NUMBER_ERROR) where log.attributes["level"] == "error"\nset(log.severity_text, "ERROR") where log.attributes["level"] == "error"', note: 'Severity is a field of the record, not an attribute. <code>SEVERITY_NUMBER_ERROR</code> is an OTTL enum (17).',
+      record: { Resource: [['service.name', 'checkout'], ['deployment.environment.name', 'production']], Record: [['severity', 'ERROR (17)'], ['body', 'payment declined']], Attributes: [['level', 'error'], ['status', '"402"'], ['url', 'https://shop.example/pay?order=81&token=sk_live_abc123&email=ada@example.com'], ['user.email', 'ada@example.com'], ['card.note', 'customer typed a very long note into the card field that nobody needs in telemetry']] }, changed: ['severity'] },
+    { ctx: 'log', code: 'set(log.attributes["http.response.status_code"], Int(log.attributes["status"])) where log.attributes["status"] != nil\nset(log.attributes["url.full"], log.attributes["url"]) where log.attributes["url"] != nil\ndelete_matching_keys(log.attributes, "^(status|url|level)$")', note: 'Rename to semantic-convention names. <code>Int()</code> turns the string <code>"402"</code> into a number, so range queries work.',
+      record: { Resource: [['service.name', 'checkout'], ['deployment.environment.name', 'production']], Record: [['severity', 'ERROR (17)'], ['body', 'payment declined']], Attributes: [['level', 'error'], ['status', '"402"'], ['url', 'https://shop.example/pay?…'], ['user.email', 'ada@example.com'], ['card.note', 'customer typed a very long note into the card field that nobody needs in telemetry'], ['http.response.status_code', '402 (int)'], ['url.full', 'https://shop.example/pay?order=81&token=sk_live_abc123&email=ada@example.com']] }, changed: ['http.response.status_code', 'url.full'], removed: ['level', 'status', 'url'] },
+    { ctx: 'log', code: 'replace_pattern(log.attributes["url.full"], "([?&](token|email)=)[^&]*", "$${1}REDACTED")', note: 'Write <code>$${1}</code>: <code>$$</code> because the Collector expands <code>$</code> as an environment variable, braces because <code>$1REDACTED</code> would be read as a group named <code>1REDACTED</code>.',
+      record: { Resource: [['service.name', 'checkout'], ['deployment.environment.name', 'production']], Record: [['severity', 'ERROR (17)'], ['body', 'payment declined']], Attributes: [['user.email', 'ada@example.com'], ['card.note', 'customer typed a very long note into the card field that nobody needs in telemetry'], ['http.response.status_code', '402 (int)'], ['url.full', 'https://shop.example/pay?order=81&token=REDACTED&email=REDACTED']] }, changed: ['url.full'] },
+    { ctx: 'log', code: 'set(log.attributes["user.hash"], SHA256(log.attributes["user.email"])) where log.attributes["user.email"] != nil\ndelete_key(log.attributes, "user.email")', note: 'Keep the ability to count distinct users without storing who they are. An unsalted hash of an email can be reversed by guessing; use it for grouping, not as anonymisation.',
+      record: { Resource: [['service.name', 'checkout'], ['deployment.environment.name', 'production']], Record: [['severity', 'ERROR (17)'], ['body', 'payment declined']], Attributes: [['user.email', 'ada@example.com'], ['card.note', 'customer typed a very long note into the card field that nobody needs in telemetry'], ['http.response.status_code', '402 (int)'], ['url.full', 'https://shop.example/pay?order=81&token=REDACTED&email=REDACTED'], ['user.hash', 'b5fc85e55755f9e0…bc41d72']] }, changed: ['user.hash'], removed: ['user.email'] },
+    { ctx: 'log', code: 'truncate_all(log.attributes, 64)', note: 'Cut every string attribute to 64 characters. This is the final record, as the Collector printed it.',
+      record: { Resource: [['service.name', 'checkout'], ['deployment.environment.name', 'production']], Record: [['severity', 'ERROR (17)'], ['body', 'payment declined']], Attributes: [['user.hash', 'b5fc85e55755f9e0d030a10ab4429b6b2944855f9a0d60077fe832becbc41d72'], ['card.note', 'customer typed a very long note into the card field that nobody '], ['http.response.status_code', '402 (int)'], ['url.full', 'https://shop.example/pay?order=81&token=REDACTED&email=REDACTED']] }, changed: ['card.note'] },
+  ]}
+/>
+
+### Run it yourself
+
+Make a folder and download the two files. The config also has two trace statements, used further down.
+
+```bash
+mkdir ottl-v1 && cd ottl-v1 && mkdir out
+```
+
+```bash
+curl -fsSL -O https://ouo11y.com/blog/otel/ottl/collector.yaml -O https://ouo11y.com/blog/otel/ottl/log.json
+```
+
+```yaml title="collector.yaml"
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  transform:
+    error_mode: ignore
+    trace_statements:
+      # The context is inferred from the span. paths, so no context: key is needed.
+      - set(span.status.code, STATUS_CODE_ERROR) where span.attributes["http.response.status_code"] >= 500
+      - set(span.name, Concat([span.attributes["http.request.method"], span.attributes["http.route"]], " ")) where span.attributes["http.route"] != nil
+    log_statements:
+      # 1. Fill a missing resource attribute (resource context).
+      - set(resource.attributes["deployment.environment.name"], "production") where resource.attributes["deployment.environment.name"] == nil
+      # 2. Parse a JSON body into attributes (log context).
+      - merge_maps(log.attributes, ParseJSON(log.body), "upsert") where IsString(log.body) and IsMatch(log.body, "^\\{")
+      # The parsed copy is in attributes now; keep only the message as the body.
+      - set(log.body, log.attributes["msg"]) where log.attributes["msg"] != nil
+      - delete_key(log.attributes, "msg")
+      # 3. Severity from the parsed level.
+      - set(log.severity_number, SEVERITY_NUMBER_ERROR) where log.attributes["level"] == "error"
+      - set(log.severity_text, "ERROR") where log.attributes["level"] == "error"
+      # 4. Rename to semantic-convention names.
+      - set(log.attributes["http.response.status_code"], Int(log.attributes["status"])) where log.attributes["status"] != nil
+      - set(log.attributes["url.full"], log.attributes["url"]) where log.attributes["url"] != nil
+      - delete_matching_keys(log.attributes, "^(status|url|level)$")
+      # 5. Redact and pseudonymise.
+      - replace_pattern(log.attributes["url.full"], "([?&](token|email)=)[^&]*", "$${1}REDACTED")
+      - set(log.attributes["user.hash"], SHA256(log.attributes["user.email"])) where log.attributes["user.email"] != nil
+      - delete_key(log.attributes, "user.email")
+      # 6. Keep payloads bounded.
+      - truncate_all(log.attributes, 64)
+
+exporters:
+  debug:
+    verbosity: detailed
+  file:
+    path: /out/out.json
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [transform]
+      exporters: [debug]
+    logs:
+      receivers: [otlp]
+      processors: [transform]
+      exporters: [debug, file]
+```
+
+Start the Collector. It writes the transformed records to `out/out.json` as OTLP JSON, as well as to its log.
+
+```bash
+docker run -d --name ottl-v1 -p 4318:4318 -v "$PWD/collector.yaml:/etc/otelcol-contrib/config.yaml" -v "$PWD/out:/out" ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.164.0
+```
+
+Send the log record:
+
+```bash
+curl -s -H 'Content-Type: application/json' --data @log.json http://localhost:4318/v1/logs
+```
+
+The Collector answers `{"partialSuccess":{}}`. Look at what it printed:
+
+```bash
+docker logs ottl-v1 2>&1 | sed -n '/LogRecord #0/,/^Flags/p'
+```
+
+```text
+LogRecord #0
+ObservedTimestamp: 1970-01-01 00:00:00 +0000 UTC
+Timestamp: 2026-10-26 07:33:20 +0000 UTC
+SeverityText: ERROR
+SeverityNumber: Error(17)
+Body: Str(payment declined)
+Attributes:
+     -> user.hash: Str(b5fc85e55755f9e0d030a10ab4429b6b2944855f9a0d60077fe832becbc41d72)
+     -> card.note: Str(customer typed a very long note into the card field that nobody )
+     -> http.response.status_code: Int(402)
+     -> url.full: Str(https://shop.example/pay?order=81&token=REDACTED&email=REDACTED)
+Trace ID:
+Span ID:
+Flags: 0
+```
+
+`out/out.json` has the same record, with `deployment.environment.name: production` on the resource.
+
+<Note type="danger" title="Our first attempt leaked the token">
+The first version of this config had no `set(log.body, …)` step. The attributes came out clean, and the debug output still showed the whole original JSON string as the body, `sk_live_abc123` token and email address included. Parsing a body *copies* it into attributes; it does not move it. Whenever you redact parsed fields, also replace or redact the body, and check the body in the output, not only the attributes.
+</Note>
+
+### The same language on spans
+
+The two trace statements mark server errors and give spans a readable name. `telemetrygen` sends one span with the attributes we give it:
+
+```bash
+docker run --rm ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:v0.164.0 traces --otlp-http --otlp-endpoint host.docker.internal:4318 --otlp-insecure --traces 1 --child-spans 0 --telemetry-attributes 'http.request.method="POST"' --telemetry-attributes 'http.route="/api/pay"' --telemetry-attributes 'http.response.status_code=503'
+```
+
+On Linux, add `--add-host=host.docker.internal:host-gateway` after `docker run --rm`. Then:
+
+```bash
+docker logs ottl-v1 2>&1 | grep -E '^ *(Name|Status code) *:'
+```
+
+```text
+    Name           : POST /api/pay
+    Status code    : Error
+```
+
+The second statement replaced `telemetrygen`'s default span name with the method and route, and the 503 set the status to `Error`.
+
+## What `error_mode` really does
+
+A statement can fail at runtime: `ParseJSON` on a body that is not JSON, for example. `error_mode` decides what happens next. We removed the `where` guard from the `merge_maps` statement, sent a record whose body was the plain string `request`, and ran it once with each mode:
+
+| `error_mode` | Collector log | What the sender got | The record |
+|---|---|---|---|
+| `ignore` (default) | `warn … failed to execute statement … invalid character 'r' looking for beginning of value` | `200 {"partialSuccess":{}}` | kept, unchanged by that statement |
+| `propagate` | `error … failed processing logs` | `503` with gRPC code 14 (`UNAVAILABLE`) | **dropped** |
+
+Look at that 503. To an OTLP exporter, 503 means "try again later", so with `propagate` a record that can never be parsed is sent again and again, and then dropped anyway. Keep `ignore` (or `silent` once you trust the statements) and guard statements with `where` clauses, as the config above does.
+
+## What stays experimental: lambdas
+
+The newest OTTL feature, [lambda-style functions](https://opentelemetry.io/blog/2026/lambda-powered-function-land-in-ottl/), is not covered by v1. We tried one to drop credential headers from a header map:
+
+```yaml title="lambda.yaml (excerpt)"
+processors:
+  transform:
+    log_statements:
+      - set(log.attributes["http.headers"], Filter(log.attributes["http.headers"], (k, _) => not IsMatch(k, "(?i)^(authorization|cookie)$")))
+```
+
+Download the full config and an input record with four headers:
+
+```bash
+curl -fsSL -O https://ouo11y.com/blog/otel/ottl/lambda.yaml -O https://ouo11y.com/blog/otel/ottl/hdr.json
+```
+
+Without the feature gate, the Collector refuses to start:
+
+```text
+function "Filter" is experimental and requires the `ottl.functions.enableLambda` feature gate to be enabled
+```
+
+With the gate turned on, it works. Overriding the image's command means passing `--config` too:
+
+```bash
+docker run -d --name ottl-lambda -p 4319:4318 -v "$PWD/lambda.yaml:/etc/otelcol-contrib/config.yaml" ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.164.0 --config /etc/otelcol-contrib/config.yaml --feature-gates=ottl.functions.enableLambda
+```
+
+```bash
+curl -s -H 'Content-Type: application/json' --data @hdr.json http://localhost:4319/v1/logs
+```
+
+`docker logs ottl-lambda` then shows the header map without the two credentials:
+
+```text
+     -> http.headers: Map({"Accept":"application/json","User-Agent":"curl/8.7.1"})
+```
+
+For this job you do not need the gate: the stable editor below gave the same output with no gate set. Reach for lambdas only when no standard function fits, and pin your Collector version when you do.
+
+```text
+delete_matching_keys(log.attributes["http.headers"], "(?i)^(authorization|cookie)$")
+```
+
+### Clean up
+
+```bash
+docker rm -f ottl-v1 ottl-lambda
+```
+
+## What this means for you
+
+- **Write new rules in OTTL.** The language now has a compatibility promise, and the same statements work in the `transform` and `filter` processors.
+- **Pin the Collector version anyway.** The language is v1; the `transform` processor is still beta. Read release notes for processor config changes, and note that [stable components may now change behaviour for security fixes](https://opentelemetry.io/blog/2026/security-versioning-policy/) in minor releases.
+- **Guard with `where`, keep `error_mode: ignore`.** `propagate` turns bad data into retries and then drops it.
+- **Check the body when you redact.** Parsing copies; it does not move.
+- **Treat lambdas and profiles statements as experimental.** They work, behind gates, and can change in any release.
+
+In ouo11y these rules go into the Collector config you already run, before `batch`, and apply to every app that sends to it, with or without our SDK.
+
+**Next in this series:** part 3 tries [declarative configuration](https://opentelemetry.io/blog/2026/stable-declarative-config/), which went stable in March: one YAML file instead of a page of environment variables, on the Java agent.

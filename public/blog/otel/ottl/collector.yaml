@@ -1,0 +1,51 @@
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  transform:
+    error_mode: ignore
+    trace_statements:
+      # The context is inferred from the span. paths, so no context: key is needed.
+      - set(span.status.code, STATUS_CODE_ERROR) where span.attributes["http.response.status_code"] >= 500
+      - set(span.name, Concat([span.attributes["http.request.method"], span.attributes["http.route"]], " ")) where span.attributes["http.route"] != nil
+    log_statements:
+      # 1. Fill a missing resource attribute (resource context).
+      - set(resource.attributes["deployment.environment.name"], "production") where resource.attributes["deployment.environment.name"] == nil
+      # 2. Parse a JSON body into attributes (log context).
+      - merge_maps(log.attributes, ParseJSON(log.body), "upsert") where IsString(log.body) and IsMatch(log.body, "^\\{")
+      # The parsed copy is in attributes now; keep only the message as the body.
+      - set(log.body, log.attributes["msg"]) where log.attributes["msg"] != nil
+      - delete_key(log.attributes, "msg")
+      # 3. Severity from the parsed level.
+      - set(log.severity_number, SEVERITY_NUMBER_ERROR) where log.attributes["level"] == "error"
+      - set(log.severity_text, "ERROR") where log.attributes["level"] == "error"
+      # 4. Rename to semantic-convention names.
+      - set(log.attributes["http.response.status_code"], Int(log.attributes["status"])) where log.attributes["status"] != nil
+      - set(log.attributes["url.full"], log.attributes["url"]) where log.attributes["url"] != nil
+      - delete_matching_keys(log.attributes, "^(status|url|level)$")
+      # 5. Redact and pseudonymise.
+      - replace_pattern(log.attributes["url.full"], "([?&](token|email)=)[^&]*", "$${1}REDACTED")
+      - set(log.attributes["user.hash"], SHA256(log.attributes["user.email"])) where log.attributes["user.email"] != nil
+      - delete_key(log.attributes, "user.email")
+      # 6. Keep payloads bounded.
+      - truncate_all(log.attributes, 64)
+
+exporters:
+  debug:
+    verbosity: detailed
+  file:
+    path: /out/out.json
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [transform]
+      exporters: [debug]
+    logs:
+      receivers: [otlp]
+      processors: [transform]
+      exporters: [debug, file]

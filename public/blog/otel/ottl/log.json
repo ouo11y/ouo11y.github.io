@@ -1,0 +1,5 @@
+{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"checkout"}}]},
+ "scopeLogs":[{"scope":{"name":"handwritten"},"logRecords":[{
+  "timeUnixNano":"1793000000000000000",
+  "body":{"stringValue":"{\"level\":\"error\",\"msg\":\"payment declined\",\"status\":\"402\",\"url\":\"https://shop.example/pay?order=81&token=sk_live_abc123&email=ada@example.com\",\"user.email\":\"ada@example.com\",\"card.note\":\"customer typed a very long note into the card field that nobody needs in telemetry\"}"}
+ }]}]}]}

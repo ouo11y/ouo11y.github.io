@@ -1,0 +1,6 @@
+opentelemetry-sdk==1.45.1
+opentelemetry-exporter-otlp-proto-http==1.45.1
+opentelemetry-opentracing-shim==0.66b1
+opentelemetry-opencensus-shim==0.66b1
+opentracing==2.4.0
+opencensus==0.11.4

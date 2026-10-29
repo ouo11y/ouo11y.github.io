@@ -1,0 +1,6 @@
+{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"checkout"}}]},
+ "scopeLogs":[{"logRecords":[{"body":{"stringValue":"request"},"attributes":[{"key":"http.headers","value":{"kvlistValue":{"values":[
+  {"key":"Authorization","value":{"stringValue":"Bearer eyJhbGciOi..."}},
+  {"key":"Cookie","value":{"stringValue":"sid=9f2c"}},
+  {"key":"Accept","value":{"stringValue":"application/json"}},
+  {"key":"User-Agent","value":{"stringValue":"curl/8.7.1"}}]}}}]}]}]}]}
