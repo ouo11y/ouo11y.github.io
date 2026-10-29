@@ -1,0 +1,232 @@
+---
+title: "OpenTelemetry, hands-on, part 3: declarative configuration on the Java agent"
+description: One YAML file instead of a page of environment variables. We ran the same Java service both ways on agent 2.33.1, dropped health-check spans with a rule, and found a view that made our metrics worse.
+date: 2026-10-31
+tags: [opentelemetry, java, configuration, hands-on]
+series: "OpenTelemetry, hands-on"
+part: 3
+---
+
+import OtelConfigDiff from '../../components/diagrams/OtelConfigDiff.astro';
+import Note from '../../components/Note.astro';
+
+In March the OpenTelemetry blog announced that [declarative configuration is stable](https://opentelemetry.io/blog/2026/stable-declarative-config/). In short: an SDK can now be configured from one YAML file, named by one environment variable, `OTEL_CONFIG_FILE`, instead of dozens of `OTEL_*` variables. This post explains why that was needed, runs one Java service both ways, and shows the two things the YAML file did for us that environment variables cannot, plus one way it went wrong.
+
+## Why environment variables were not enough
+
+The first SDKs were configured with environment variables: `OTEL_SERVICE_NAME`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_TRACES_SAMPLER`, and so on. They are easy to set in a container and they are the same in every language. That is why they won.
+
+They are also flat. A variable holds one string, so anything with structure does not fit:
+
+- **Lists of things with settings.** Two span exporters with different endpoints, or a batch processor in front of one and not the other.
+- **Rules.** "Never sample `/healthz`, sample everything else" is a list of conditions, each with its own sampler.
+- **Metric views.** "For this one histogram, keep only these attributes" has a selector and a stream definition.
+
+Each language added its own escape hatch for these: code, system properties, vendor-specific variables. So the same intent was written differently in Java, Go and JavaScript. The [opentelemetry-configuration](https://github.com/open-telemetry/opentelemetry-configuration) project set out to define one data model, written as a JSON schema, that every SDK reads the same way. Its schema reached [1.0.0 on 27 February 2026](https://github.com/open-telemetry/opentelemetry-configuration/releases/tag/v1.0.0). The current release is [1.2.0](https://github.com/open-telemetry/opentelemetry-configuration/releases/tag/v1.2.0), from September.
+
+What the March announcement declared stable, in summary: the schema, its YAML form, the in-memory model, the SDK operations that parse and apply it, and the `OTEL_CONFIG_FILE` variable. Implementations exist for C++, Go, Java, JavaScript and PHP; .NET and Python are in development. Two caveats matter in practice:
+
+- **Anything whose key ends in `/development` is experimental**, even inside a stable file. The rule-based sampler we use below is one of them.
+- **Support in a given SDK can still be experimental.** The [Java agent's docs](https://opentelemetry.io/docs/zero-code/java/agent/declarative-configuration/) say so for the agent, which needs version 2.26.0 or later and reads the file from the `otel.config.file` system property.
+
+## The two ways, side by side
+
+The service is a tiny shop API in plain Java: `/api/orders` calls `/api/stock` over HTTP, and a load balancer polls `/healthz`. Here is what we configured each way. Use the buttons to see one column at a time.
+
+<OtelConfigDiff
+  caption="The configuration we ran, one concern per row. Green badges mark what environment variables cannot express."
+  rows={[
+    { topic: 'Service name and environment', env: 'OTEL_SERVICE_NAME=orders\nOTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=dev', yaml: 'resource:\n  attributes:\n    - name: service.name\n      value: orders\n    - name: deployment.environment.name\n      value: ${DEPLOY_ENV:-dev}', note: 'YAML can still read the environment: <code>${DEPLOY_ENV:-dev}</code> takes a variable with a default.' },
+    { topic: 'Where to send traces and metrics', env: 'OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318', yaml: 'tracer_provider:\n  processors:\n    - batch:\n        exporter:\n          otlp_http:\n            endpoint: ${OTLP_ENDPOINT}/v1/traces' },
+    { topic: 'Export timing', env: 'OTEL_BSP_SCHEDULE_DELAY=1000\nOTEL_METRIC_EXPORT_INTERVAL=2000', yaml: '    - batch:\n        schedule_delay: 1000\n…\n    - periodic:\n        interval: 2000', note: 'Durations are milliseconds; the Java agent rejects values such as <code>5s</code>.' },
+    { topic: 'No logs exporter', env: 'OTEL_LOGS_EXPORTER=none', yaml: 'logger_provider:\n  processors: []' },
+    { topic: 'Never trace health checks', yaml: 'sampler:\n  composite/development:\n    rule_based:\n      rules:\n        - attribute_values:\n            key: url.path\n            values: [/healthz]\n          sampler:\n            always_off:\n        - sampler:\n            parent_threshold:\n              root:\n                always_on:', note: 'Experimental (<code>/development</code>). Rules are checked in order; a span that matches none is not sampled, so the last rule is a catch-all.' },
+    { topic: 'Fewer metric attributes', yaml: 'meter_provider:\n  views:\n    - selector:\n        instrument_name: http.server.request.duration\n      stream:\n        attribute_keys:\n          included: [http.request.method,\n                     http.response.status_code, http.route]', note: 'Stable. Read the gotcha below before you write <code>excluded</code>.' },
+  ]}
+/>
+
+## Hands-on
+
+**What we ran it on:** macOS with Docker Desktop 29.3.1 (linuxkit 6.12, arm64), Amazon Corretto 21.0.13 (the `amazoncorretto:21` image from the AWS public registry), the OpenTelemetry Java agent **2.33.1** (SDK 1.67.0), and the Collector `otelcol-contrib` **0.164.0** with the `debug` exporter.
+
+### 1. Get the files
+
+```bash
+mkdir declarative-config && cd declarative-config
+```
+
+```bash
+curl -fsSL -O https://ouo11y.com/blog/otel/declarative-config/App.java -O https://ouo11y.com/blog/otel/declarative-config/otel-config.yaml -O https://ouo11y.com/blog/otel/declarative-config/collector.yaml
+```
+
+The Java agent comes from the OpenTelemetry release page on GitHub (about 26 MB). The SHA-256 of the file we used:
+
+```text
+e43a270df53c6f423e0ab157be9c27ccc01d5dc3232e162fe54777573db2f149
+```
+
+```bash
+curl -fsSL -O https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/download/v2.33.1/opentelemetry-javaagent.jar
+```
+
+The app, with no OpenTelemetry code in it:
+
+```java title="App.java"
+import com.sun.net.httpserver.HttpServer;
+import java.net.InetSocketAddress;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.util.concurrent.Executors;
+
+// A tiny shop API: /api/orders calls /api/stock; /healthz is what a load balancer polls.
+public class App {
+  static final HttpClient client = HttpClient.newHttpClient();
+
+  static String get(String path) throws Exception {
+    var req = HttpRequest.newBuilder(URI.create("http://localhost:8080" + path)).build();
+    return client.send(req, HttpResponse.BodyHandlers.ofString()).body();
+  }
+
+  public static void main(String[] args) throws Exception {
+    var server = HttpServer.create(new InetSocketAddress(8080), 0);
+    server.createContext("/healthz", ex -> { ex.sendResponseHeaders(200, 2); ex.getResponseBody().write("ok".getBytes()); ex.close(); });
+    server.createContext("/api/stock", ex -> { ex.sendResponseHeaders(200, 2); ex.getResponseBody().write("42".getBytes()); ex.close(); });
+    server.createContext("/api/orders", ex -> {
+      try {
+        var stock = get("/api/stock").getBytes();
+        ex.sendResponseHeaders(200, stock.length); ex.getResponseBody().write(stock);
+      } catch (Exception e) { ex.sendResponseHeaders(500, -1); }
+      ex.close();
+    });
+    server.setExecutor(Executors.newCachedThreadPool()); // /api/orders calls back into this server
+    server.start();
+    for (int i = 0; i < 10; i++) get("/healthz");
+    for (int i = 0; i < 3; i++) get("/api/orders");
+    Thread.sleep(4000); // let the batch processor and the metric reader export
+    System.exit(0);
+  }
+}
+```
+
+It plays its own load balancer: ten health checks, then three orders, then it waits for the exports and exits. The configuration file is the right-hand column above, put together; you can [read the whole file](/blog/otel/declarative-config/otel-config.yaml). The Collector config is the same print-everything one as in [part 1](/blog/how-opentelemetry-came-to-be/), with a metrics pipeline added.
+
+### 2. Compile the app
+
+```bash
+docker run --rm -v "$PWD:/app" -w /app public.ecr.aws/amazoncorretto/amazoncorretto:21 javac -d classes App.java
+```
+
+<Note type="caution" title="Compile first">
+Our first try ran `java -javaagent:… App.java` (source-file mode, no `javac`). The agent printed `JDK tool detected, enable agent debug for details, agent will not be started` and the app ran with no telemetry at all. The agent treats the source launcher as a JDK tool. Compile, then run the class.
+</Note>
+
+### 3. Start the Collector
+
+```bash
+docker run -d --name decl-collector -p 4318:4318 -v "$PWD/collector.yaml:/etc/otelcol-contrib/config.yaml" ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.164.0
+```
+
+We used host port 47338; change both sides of the next commands if 4318 is busy for you. On Linux, add `--add-host=host.docker.internal:host-gateway` to the `docker run` commands that start the app.
+
+### 4. Run A: environment variables
+
+```bash
+docker run --rm -v "$PWD:/app" -w /app -e OTEL_SERVICE_NAME=orders -e OTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=dev -e OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:4318 -e OTEL_LOGS_EXPORTER=none -e OTEL_METRIC_EXPORT_INTERVAL=2000 -e OTEL_BSP_SCHEDULE_DELAY=1000 public.ecr.aws/amazoncorretto/amazoncorretto:21 java -javaagent:/app/opentelemetry-javaagent.jar -cp classes App
+```
+
+Count the spans by name:
+
+```bash
+docker logs decl-collector 2>&1 | grep -E '^ *Name *:' | sort | uniq -c
+```
+
+```text
+  16     Name           : GET
+   3     Name           : GET /api/orders
+   3     Name           : GET /api/stock
+  10     Name           : GET /healthz
+```
+
+32 spans. The 16 named `GET` are the client side of each call: ten health checks, three orders and three stock lookups. Thirty-two spans to record thirteen requests, and twenty of them are health checks.
+
+### 5. Run B: one YAML file
+
+Recreate the Collector so its log starts empty:
+
+```bash
+docker rm -f decl-collector && docker run -d --name decl-collector -p 4318:4318 -v "$PWD/collector.yaml:/etc/otelcol-contrib/config.yaml" ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.164.0
+```
+
+Run the same app with the file instead of the variables. Only the two variables the file reads are left:
+
+```bash
+docker run --rm -v "$PWD:/app" -w /app -e OTLP_ENDPOINT=http://host.docker.internal:4318 -e DEPLOY_ENV=staging public.ecr.aws/amazoncorretto/amazoncorretto:21 java -javaagent:/app/opentelemetry-javaagent.jar -Dotel.config.file=/app/otel-config.yaml -cp classes App
+```
+
+```bash
+docker logs decl-collector 2>&1 | grep -E '^ *Name *:' | sort | uniq -c
+```
+
+```text
+   6     Name           : GET
+   3     Name           : GET /api/orders
+   3     Name           : GET /api/stock
+```
+
+12 spans, and none of them is a health check. Our file has two rules for that: one on `url.path` for the server spans, and one on `url.full` with the pattern `*/healthz` for the client spans, which exist only because this app polls itself.
+
+| Spans exported for the same 13 requests | Run A: environment variables | Run B: YAML file |
+|---|---|---|
+| server spans for `/healthz` | 10 | 0 |
+| client spans for `/healthz` | 10 | 0 |
+| server and client spans for orders and stock | 12 | 12 |
+| **total** | **32** | **12** |
+
+Three more things we saw in run B:
+
+- **Metrics still count health checks.** The `http.server.request.duration` histogram had a `/healthz` series in both runs. Sampling decides which *spans* are recorded; metrics are recorded for every request. That is what you want: your request rate stays correct.
+- **The resource is smaller.** Run A's resource had `host.name`, `container.id`, `os.*` and `process.*` from the agent's resource detectors. Run B had only `service.name`, `deployment.environment.name` and the `telemetry.sdk.*` and `telemetry.distro.*` attributes. With a config file, only what you list is there. The schema's [getting-started example](https://github.com/open-telemetry/opentelemetry-configuration/blob/v1.2.0/examples/otel-getting-started.yaml) turns detectors on with a `detection/development` block; we did not run that.
+- **The version of the file format matters.** With `file_format: "1.0"` the agent warned: `Configuration file_format '1.0' does not exactly match expected version '1.2'. This may result in unexpected behavior for experimental properties.` Agent 2.33.1 expects 1.2, so our file says `"1.2"`.
+
+### 6. The view that made things worse
+
+Our first view tried to *remove* two attributes we never group by:
+
+```yaml
+    - selector:
+        instrument_name: http.server.request.duration
+      stream:
+        attribute_keys:
+          excluded: [network.protocol.version, url.scheme]
+```
+
+We expected three attributes per data point. We got ten:
+
+| Data point attributes on `http.server.request.duration` | Count | Source |
+|---|---|---|
+| no view (run A) | 5: `http.request.method`, `http.response.status_code`, `http.route`, `network.protocol.version`, `url.scheme` | the instrumentation's own attribute advice |
+| `excluded: [network.protocol.version, url.scheme]` | **10**: the three above plus `client.address`, `network.peer.address`, `network.peer.port`, `server.address`, `server.port`, `url.path`, `user_agent.original` | every attribute recorded, minus two |
+| `included: [http.request.method, http.response.status_code, http.route]` | 3 | exactly what we listed |
+
+The instrumentation records more attributes than it keeps, and passes *advice* to the SDK about which ones belong on the metric. A view with only `excluded` replaced that advice with "everything except these". `network.peer.port` is a client's ephemeral port, so it adds a new series for almost every connection: the opposite of what we wanted. Use `included` to say what to keep.
+
+### 7. Clean up
+
+```bash
+docker rm -f decl-collector
+```
+
+## What this means for you
+
+- **Start with the parts environment variables cannot do.** Rule-based sampling and metric views are where the file pays for itself. For a service name and an endpoint, environment variables are fine.
+- **You do not lose environment variables.** `${VAR:-default}` substitution means one file for every environment, with the differences passed in as variables. The OTel post also notes that some `OTEL_*` variables are being deprecated, not deleted.
+- **Treat `/development` keys as experimental.** The rule-based sampler worked well for us on 2.33.1, but its shape can change. Pin the agent version.
+- **Check what you lost.** A config file starts from nothing: resource detectors and anything else you do not list are off.
+- **Use `included` in views, not `excluded`.** And check the data points after the change, as we did here.
+- **Java agent 3.0 is close.** The [3.0 preview post](https://opentelemetry.io/blog/2026/java-agent-3.0-preview/) shows its settings in both forms, environment variables and YAML, under `instrumentation/development`. If you are moving to 3.0, it is a good time to move to the file too.
+
+ouo11y accepts whatever these SDKs send over OTLP. Dropping health-check spans in the SDK means they are never sent, so there is less to transfer and less to store.
+
+That is the end of this first run of the series. The parts so far: [where OpenTelemetry came from](/blog/how-opentelemetry-came-to-be/), [OTTL v1](/blog/ottl-v1-hands-on/), and this one.

@@ -1,0 +1,64 @@
+---
+// Before and after, one concern per row: the environment variables on the left, the same thing in a
+// declarative-config YAML file on the right. Rows that only YAML can express are marked.
+// Tabs switch between "side by side" and one column at a time on narrow screens.
+// <OtelConfigDiff rows={[{ topic: 'Service name', env: 'OTEL_SERVICE_NAME=orders', yaml: 'resource:\n  attributes:\n    - name: service.name\n      value: orders' }]} />
+import '../../styles/diagram.css';
+
+interface Row { topic: string; env?: string; yaml: string; note?: string; }
+interface Props { rows: Row[]; caption?: string; envTitle?: string; yamlTitle?: string; }
+const { rows, caption, envTitle = 'Environment variables', yamlTitle = 'otel-config.yaml' } = Astro.props;
+---
+<figure class="dg ocd not-content" data-ocd data-view="both">
+  <div class="tabs" role="group" aria-label="Show">
+    <button type="button" data-v="env" aria-pressed="false">{envTitle}</button>
+    <button type="button" data-v="both" aria-pressed="true" class="on">Side by side</button>
+    <button type="button" data-v="yaml" aria-pressed="false">{yamlTitle}</button>
+  </div>
+  <div class="grid">
+    <div class="hd env">{envTitle}</div><div class="hd yaml">{yamlTitle}</div>
+    {rows.map((r) => (
+      <div class:list={['row', { only: !r.env }]}>
+        <div class="topic">{r.topic}{!r.env && <span class="badge">YAML only</span>}</div>
+        <pre class="env">{r.env ?? 'not possible with environment variables'}</pre>
+        <pre class="yaml">{r.yaml}</pre>
+        {r.note && <p class="note" set:html={r.note} />}
+      </div>
+    ))}
+  </div>
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+  for (const fig of document.querySelectorAll<HTMLElement>('[data-ocd]')) {
+    const buttons = fig.querySelectorAll<HTMLButtonElement>('.tabs button');
+    buttons.forEach((b) => b.addEventListener('click', () => {
+      fig.dataset.view = b.dataset.v;
+      buttons.forEach((x) => { x.classList.toggle('on', x === b); x.setAttribute('aria-pressed', String(x === b)); });
+    }));
+  }
+</script>
+
+<style>
+  .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+  .tabs button { font: inherit; font-size: 13px; padding: 5px 12px; border-radius: 999px; border: 1px solid var(--dg-line); background: var(--dg-node); color: var(--dg-ink-2); cursor: pointer; }
+  .tabs button.on { border-color: var(--dg-accent); background: var(--dg-accent-soft); color: var(--dg-ink); font-weight: 600; }
+  .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 12px; }
+  .hd { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--dg-ink-3); padding: 0 2px 6px; }
+  .row { grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; row-gap: 6px; padding: 12px 0; border-top: 1px solid var(--dg-line); }
+  .topic { grid-column: 1 / -1; font-weight: 700; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .badge { font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 999px; background: color-mix(in srgb, var(--dg-ok) 18%, transparent); color: var(--dg-ok); }
+  pre { margin: 0; padding: 8px 10px; border-radius: 8px; font-size: 12px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--dg-line); background: var(--dg-node); color: var(--dg-ink); }
+  pre.yaml { border-color: color-mix(in srgb, var(--dg-accent) 45%, var(--dg-line)); }
+  .row.only pre.env { color: var(--dg-ink-3); font-style: italic; font-family: inherit; }
+  .note { grid-column: 1 / -1; margin: 0; font-size: 13px; color: var(--dg-ink-2); }
+  [data-view="env"] .yaml, [data-view="yaml"] .env { display: none; }
+  [data-view="env"] .grid, [data-view="yaml"] .grid { grid-template-columns: minmax(0, 1fr); }
+  .ocd { container-type: inline-size; }
+  @container (max-width: 560px) {
+    .grid { grid-template-columns: minmax(0, 1fr); }
+    .hd { display: none; }
+    pre.env::before { content: "env  "; color: var(--dg-ink-3); font-style: normal; }
+    pre.yaml::before { content: "yaml\A"; white-space: pre; color: var(--dg-ink-3); }
+  }
+</style>

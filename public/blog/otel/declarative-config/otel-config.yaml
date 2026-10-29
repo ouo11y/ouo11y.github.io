@@ -1,0 +1,60 @@
+file_format: "1.2"
+
+resource:
+  attributes:
+    - name: service.name
+      value: orders
+    - name: deployment.environment.name
+      value: ${DEPLOY_ENV:-dev}
+
+propagator:
+  composite:
+    - tracecontext:
+    - baggage:
+
+tracer_provider:
+  sampler:
+    composite/development:
+      rule_based:
+        rules:
+          # Health checks: never sampled.
+          - attribute_values:
+              key: url.path
+              values: [/healthz]
+            sampler:
+              always_off:
+          # The same checks, seen from the client side (here the app polls itself).
+          - attribute_patterns:
+              key: url.full
+              included: ["*/healthz"]
+            sampler:
+              always_off:
+          # Everything else: follow the parent, sample all roots.
+          - sampler:
+              parent_threshold:
+                root:
+                  always_on:
+  processors:
+    - batch:
+        schedule_delay: 1000
+        exporter:
+          otlp_http:
+            endpoint: ${OTLP_ENDPOINT:-http://localhost:4318}/v1/traces
+
+meter_provider:
+  readers:
+    - periodic:
+        interval: 2000
+        exporter:
+          otlp_http:
+            endpoint: ${OTLP_ENDPOINT:-http://localhost:4318}/v1/metrics
+  views:
+    # Keep only the attributes we group by.
+    - selector:
+        instrument_name: http.server.request.duration
+      stream:
+        attribute_keys:
+          included: [http.request.method, http.response.status_code, http.route]
+
+logger_provider:
+  processors: []

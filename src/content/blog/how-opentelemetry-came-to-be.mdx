@@ -1,0 +1,234 @@
+---
+title: "OpenTelemetry, hands-on, part 1: how it came to be, and one trace through three APIs"
+description: OpenTracing and OpenCensus merged in 2019, and in 2026 the spec started retiring both compatibility layers. We ran one trace through all three APIs to show what the merger meant in code.
+date: 2026-10-29
+tags: [opentelemetry, history, hands-on]
+series: "OpenTelemetry, hands-on"
+part: 1
+---
+
+import OtelHistoryTimeline from '../../components/diagrams/OtelHistoryTimeline.astro';
+import SpanTree from '../../components/diagrams/SpanTree.astro';
+import Note from '../../components/Note.astro';
+
+The [OpenTelemetry blog](https://opentelemetry.io/blog/) announces changes. This series takes the announcements that matter most if you run OpenTelemetry today, explains where each came from, and has you try it. We ran every command ourselves before writing it down, and each post says which versions we used.
+
+This first part is about how the project began. In 2026 OpenTelemetry [graduated from the CNCF](https://opentelemetry.io/blog/2026/otel-graduates/). In the same year the specification started retiring the compatibility layers for the two projects it replaced: [OpenTracing in March](https://opentelemetry.io/blog/2026/deprecating-opentracing-compatibility/) and [OpenCensus in June](https://opentelemetry.io/blog/2026/deprecating-opencensus-compatibility/). To see why those layers existed, it helps to see where OpenTelemetry came from. Then you can watch them work.
+
+## Two answers to the same question
+
+Distributed tracing grew out of [Dapper](https://research.google/pubs/dapper-a-large-scale-distributed-systems-tracing-infrastructure/), the Google paper from 2010 that described tracing requests across services by passing a small context along with each call. Zipkin and Jaeger followed as open-source backends. Each backend came with its own client libraries, so every library author who wanted their code traced had to pick a vendor.
+
+Two projects set out to fix that, from different directions:
+
+- **OpenTracing** (CNCF, October 2016) was an *API only*. Library authors could write against it, and a vendor supplied the implementation behind it. It did not send any data on its own, and it said nothing about metrics.
+- **OpenCensus** (Google, January 2018) was *API plus implementation*. You got tracing *and* metrics, and exporters to Prometheus, Zipkin and Stackdriver in the box.
+
+Both were good ideas, and having both was a problem. A library maintainer now had to choose between two "vendor-neutral" standards, which is the problem both projects had set out to remove. In 2019 the two communities agreed to merge. The result was OpenTelemetry: one API, one SDK per language, one protocol (OTLP), and a promise of compatibility bridges so nobody had to rewrite their code on day one.
+
+## The timeline
+
+Click a dot or a row to open it, and use the chips to see one kind of event. The dates come from the CNCF, the Google Open Source blog and the OpenTelemetry blog and specification. Each row links its source.
+
+<OtelHistoryTimeline
+  caption="From a 2010 paper to a graduated project. Open a row for its details and source."
+  events={[
+    { date: '2010-04', label: 'Apr 2010', kind: 'project', title: 'Google publishes the Dapper paper', body: 'Request tracing across services with a propagated context, at low overhead. Most later tracers, Zipkin and Jaeger included, borrow its ideas.', href: 'https://research.google/pubs/dapper-a-large-scale-distributed-systems-tracing-infrastructure/', source: 'Google Research' },
+    { date: '2016-10-11', label: 'Oct 2016', kind: 'governance', title: 'OpenTracing joins the CNCF', body: 'Accepted as the third CNCF project, after Kubernetes and Prometheus. A vendor-neutral tracing <em>API</em>; vendors provide the implementation.', href: 'https://www.cncf.io/news/blogs/2016/10/opentracing-joins-cloud-native-computing-foundation', source: 'CNCF' },
+    { date: '2018-01-17', label: 'Jan 2018', kind: 'project', title: 'Google open-sources OpenCensus', body: 'Based on Google\'s internal Census library: an API <em>and</em> an implementation for traces and metrics, with exporters built in.', href: 'https://opensource.googleblog.com/2018/01/opencensus.html', source: 'Google Open Source blog' },
+    { date: '2019-03', label: 'Mar 2019', kind: 'project', title: 'The two projects announce a merger', body: 'OpenTracing and OpenCensus agree to build one set of libraries and specifications, with backward compatibility for both.', href: 'https://www.cncf.io/blog/2019/05/21/a-brief-history-of-opentelemetry-so-far/', source: 'CNCF blog' },
+    { date: '2019-05-21', label: 'May 2019', kind: 'governance', title: 'OpenTelemetry enters the CNCF sandbox', body: 'Announced at KubeCon EU in Barcelona, with a governance committee seeded from Google, LightStep, Microsoft and Uber.', href: 'https://www.cncf.io/blog/2019/05/21/a-brief-history-of-opentelemetry-so-far/', source: 'CNCF blog' },
+    { date: '2021-02', label: 'Feb 2021', kind: 'signal', title: 'Specification 1.0: tracing is stable', body: 'The first stable signal. The tracing API and SDK specifications get long-term compatibility guarantees.', href: 'https://www.infoq.com/news/2021/03/opentelemetry-spec-1-0/', source: 'InfoQ' },
+    { date: '2021-08-26', label: 'Aug 2021', kind: 'governance', title: 'CNCF incubating project', body: 'The CNCF Technical Oversight Committee moves OpenTelemetry from sandbox to incubation.', href: 'https://www.cncf.io/blog/2021/08/26/opentelemetry-becomes-a-cncf-incubating-project/', source: 'CNCF blog' },
+    { date: '2022-01-31', label: 'Jan 2022', kind: 'deprecation', title: 'OpenTracing is archived', body: 'The CNCF archives OpenTracing, as its maintainers had planned since the merger. Only the second CNCF project ever archived.', href: 'https://www.cncf.io/blog/2022/01/31/cncf-archives-the-opentracing-project/', source: 'CNCF blog' },
+    { date: '2022-05', label: '2022', kind: 'signal', title: 'Metrics API and SDK specification stable', body: 'Metrics, the second signal, reaches a stable specification around KubeCon EU 2022. Language SDKs follow over the next months.', href: 'https://www.cncf.io/blog/2022/07/07/opentelemetry-roadmap-and-latest-updates/', source: 'CNCF blog' },
+    { date: '2023-07-31', label: 'Jul 2023', kind: 'deprecation', title: 'OpenCensus is archived', body: 'The OpenCensus repositories are archived after a sunset period announced in May 2023.', href: 'https://opentelemetry.io/blog/2023/sunsetting-opencensus/', source: 'OpenTelemetry blog' },
+    { date: '2023-11', label: 'Nov 2023', kind: 'signal', title: 'Logs reach 1.0', body: 'Announced at KubeCon NA 2023: the logs data model, bridge API and SDK are stable, completing the three original signals.', href: 'https://www.infoq.com/news/2023/11/otel-logging-stable/', source: 'InfoQ' },
+    { date: '2024-06-07', label: 'Jun 2024', kind: 'signal', title: 'Elastic donates its eBPF profiling agent', body: 'The basis of the OpenTelemetry eBPF profiler, three months after the project announced profiling as a fourth signal.', href: 'https://opentelemetry.io/blog/2024/elastic-contributes-continuous-profiling-agent/', source: 'OpenTelemetry blog' },
+    { date: '2026-02-27', label: 'Feb 2026', kind: 'signal', title: 'Declarative configuration schema 1.0.0', body: 'One YAML file to configure an SDK, read from <code>OTEL_CONFIG_FILE</code>. Declared stable on the blog on 5 March. Part 3 of this series tries it.', href: 'https://opentelemetry.io/blog/2026/stable-declarative-config/', source: 'OpenTelemetry blog' },
+    { date: '2026-03-19', label: 'Mar 2026', kind: 'deprecation', title: 'Spec deprecates OpenTracing compatibility', body: 'New SDKs no longer have to ship an OpenTracing shim. Removal from the spec no earlier than March 2027.', href: 'https://github.com/open-telemetry/opentelemetry-specification/pull/4938', source: 'Spec PR #4938' },
+    { date: '2026-03-26', label: 'Mar 2026', kind: 'signal', title: 'Profiles enters public alpha', body: 'The fourth signal is open for wider use, with an OTLP profiles format and Collector support. Not for critical production yet.', href: 'https://opentelemetry.io/blog/2026/profiles-alpha/', source: 'OpenTelemetry blog' },
+    { date: '2026-05-21', label: 'May 2026', kind: 'governance', title: 'OpenTelemetry graduates', body: 'The CNCF\'s highest maturity level, seven years after the sandbox.', href: 'https://www.cncf.io/announcements/2026/05/21/cloud-native-computing-foundation-announces-opentelemetrys-graduation-solidifying-status-as-the-de-facto-observability-standard/', source: 'CNCF announcement' },
+    { date: '2026-06-12', label: 'Jun 2026', kind: 'deprecation', title: 'Spec deprecates OpenCensus compatibility', body: 'Same treatment as OpenTracing: existing shims keep at least a year of support, and removal from the spec comes no earlier than June 2027.', href: 'https://github.com/open-telemetry/opentelemetry-specification/pull/5138', source: 'Spec PR #5138' },
+    { date: '2026-10-26', label: 'Oct 2026', kind: 'signal', title: 'OTTL reaches v1', body: 'The Collector\'s transformation language becomes stable in collector-contrib v0.164.0. Part 2 of this series goes through it hands-on.', href: 'https://opentelemetry.io/blog/2026/ottl-v1/', source: 'OpenTelemetry blog' },
+  ]}
+/>
+
+Two patterns stand out. Signals reached stability one at a time, about a year apart: traces in 2021, metrics in 2022, logs in 2023, with profiles still in alpha. And the project retired its parents in two steps. First the old projects were archived (2022 and 2023). Then, once OpenTelemetry had graduated, the specification stopped *requiring* the bridges to them (2026).
+
+## What a shim actually does
+
+The merger promised that code written against OpenTracing or OpenCensus would keep working. That promise is the *shim*: a small library that implements the old API on top of the OpenTelemetry SDK. Your old code calls the old API, the shim turns each call into an OpenTelemetry span, and the spans share the same context as native ones. So a request can start in OpenCensus code, pass through a library that still uses OpenTracing, and end in new OpenTelemetry code, and it is still **one trace**.
+
+That is a claim we can test, so we did.
+
+## Hands-on: one trace, three APIs
+
+We wrote a Python program in which each nested span comes from a different API: the outer span from OpenCensus, the middle one from OpenTracing, the inner one from OpenTelemetry. A Collector prints what arrives.
+
+**What we ran it on:** macOS with Docker Desktop 29.3.1 (linuxkit 6.12, arm64), `python:3.13-slim`, the Collector `otelcol-contrib` 0.164.0, and these packages:
+
+```text title="requirements.txt"
+opentelemetry-sdk==1.45.1
+opentelemetry-exporter-otlp-proto-http==1.45.1
+opentelemetry-opentracing-shim==0.66b1
+opentelemetry-opencensus-shim==0.66b1
+opentracing==2.4.0
+opencensus==0.11.4
+```
+
+### 1. Get the files
+
+Make a folder and download the three files. They are the exact files we ran.
+
+```bash
+mkdir three-apis && cd three-apis
+```
+
+```bash
+curl -fsSL -O https://ouo11y.com/blog/otel/history/requirements.txt -O https://ouo11y.com/blog/otel/history/three_apis.py -O https://ouo11y.com/blog/otel/history/collector.yaml
+```
+
+The program:
+
+```python title="three_apis.py"
+# One trace, three APIs: OpenCensus (2018), OpenTracing (2016) and OpenTelemetry.
+from opentelemetry import trace
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+
+provider = TracerProvider(resource=Resource.create({"service.name": "three-apis"}))
+provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
+trace.set_tracer_provider(provider)
+
+# OpenCensus: the shim swaps OpenCensus's tracer for one that writes OTel spans.
+from opentelemetry.shim.opencensus import install_shim
+install_shim()
+from opencensus.trace.tracer import Tracer as CensusTracer
+
+# OpenTracing: the shim is an OpenTracing tracer backed by the OTel tracer provider.
+from opentelemetry.shim.opentracing_shim import create_tracer
+ot_tracer = create_tracer(provider)
+
+otel_tracer = trace.get_tracer("native")
+
+with CensusTracer().span(name="opencensus: handle order") as oc_span:
+    oc_span.add_attribute("order.id", "81")
+    with ot_tracer.start_active_span("opentracing: charge card") as scope:
+        scope.span.set_tag("payment.provider", "example-pay")
+        with otel_tracer.start_as_current_span("opentelemetry: write ledger") as span:
+            span.set_attribute("db.system.name", "postgresql")
+
+provider.shutdown()
+print("sent")
+```
+
+The Collector receives OTLP over HTTP and prints every span with the `debug` exporter:
+
+```yaml title="collector.yaml"
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+exporters:
+  debug:
+    verbosity: detailed
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [debug]
+```
+
+### 2. Start the Collector
+
+```bash
+docker run -d --name three-apis-collector -p 4318:4318 -v "$PWD/collector.yaml:/etc/otelcol-contrib/config.yaml" ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.164.0
+```
+
+`docker logs three-apis-collector` should end with `Everything is ready. Begin running and processing data.`
+
+<Note type="tip" title="Ports and image registry">
+We used a different host port (47328) because 4318 was taken on our machine. If yours is too, change the left side of `-p` and the port in the next command. We pulled the Collector image from GHCR because Docker Hub kept timing out for us; `otel/opentelemetry-collector-contrib:0.164.0` is the same image.
+</Note>
+
+### 3. Run the program
+
+```bash
+docker run --rm -v "$PWD:/app" -w /app -e OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:4318 python:3.13-slim sh -c "pip install -q --root-user-action=ignore -r requirements.txt && python three_apis.py"
+```
+
+It prints `sent`. On Linux, add `--add-host=host.docker.internal:host-gateway` so the container can reach the Collector on your host.
+
+### 4. Look at what arrived
+
+```bash
+docker logs three-apis-collector 2>&1 | grep -E 'InstrumentationScope|Trace ID|Parent ID|    ID|Name  '
+```
+
+This is what we got (we added the blank lines):
+
+```text
+InstrumentationScope native
+    Trace ID       : af4b49ae04870a266e8e94028de167b7
+    Parent ID      : 68ea1083ef7741f4
+    ID             : 44c8bbd0cac5b574
+    Name           : opentelemetry: write ledger
+
+InstrumentationScope opentelemetry.shim.opentracing_shim 0.66b1
+    Trace ID       : af4b49ae04870a266e8e94028de167b7
+    Parent ID      : e0b58b5ac953ca91
+    ID             : 68ea1083ef7741f4
+    Name           : opentracing: charge card
+
+InstrumentationScope opentelemetry-opencensus-shim 0.66b1
+    Trace ID       : af4b49ae04870a266e8e94028de167b7
+    Parent ID      :
+    ID             : e0b58b5ac953ca91
+    Name           : opencensus: handle order
+```
+
+All three spans have the same trace ID. Each `Parent ID` is the `ID` of the span above it in the code. The instrumentation scope still shows which API wrote each span, which is how you find the old code later. Rebuilt as a tree:
+
+<SpanTree
+  duration={470}
+  unit="µs"
+  caption="A root from OpenCensus, a child from OpenTracing, a grandchild from OpenTelemetry. Timings are from a second run of the same program (trace eb74d9e9…), in microseconds."
+  spans={[
+    { name: 'opencensus: handle order', service: 'opentelemetry-opencensus-shim', depth: 0, from: 0, to: 462, tone: 'info' },
+    { name: 'opentracing: charge card', service: 'opentelemetry.shim.opentracing_shim', depth: 1, from: 65, to: 452, tone: 'warn' },
+    { name: 'opentelemetry: write ledger', service: 'native', depth: 2, from: 117, to: 426, tone: 'ok' },
+  ]}
+/>
+
+The span attributes came through too: `order.id` set through OpenCensus's `add_attribute`, and `payment.provider` set through OpenTracing's `set_tag`, both arrive as ordinary OpenTelemetry attributes.
+
+### 5. Clean up
+
+```bash
+docker rm -f three-apis-collector
+```
+
+## What the 2026 deprecations change
+
+Reading the two spec changes ([#4938](https://github.com/open-telemetry/opentelemetry-specification/pull/4938), [#5138](https://github.com/open-telemetry/opentelemetry-specification/pull/5138)) and their blog posts, the scope is narrower than "the shims are going away":
+
+- **New SDKs do not have to ship a shim.** A language that joins OpenTelemetry in 2027 may have no OpenTracing or OpenCensus bridge at all.
+- **Existing shims are not deleted.** Maintainers may keep supporting them, and the OpenCensus post promises at least a year of support under the SDK stability rules.
+- **The compatibility sections leave the spec no earlier than March 2027 (OpenTracing) and June 2027 (OpenCensus).**
+
+Our run confirms the other half: as of October 2026 both Python shims still install from PyPI (0.66b1, published 6 October 2026) and work with the current SDK. Neither printed a deprecation warning.
+
+## What this means for you
+
+- **If you still have OpenTracing or OpenCensus calls, you have time, not forever.** The shims work today, as shown above. Plan the move to the native API before your language's maintainers drop them. The OpenTelemetry docs have an [OpenTracing migration guide](https://opentelemetry.io/docs/compatibility/migration/opentracing/) and the [OpenCensus migration path](https://opentelemetry.io/docs/specs/otel/compatibility/opencensus/#migration-path).
+- **Find the old code from your telemetry.** Group spans by instrumentation scope. The two shims' scope names end in `opentracing_shim` and `opencensus-shim`, and every span with one of them is a call site to migrate.
+- **Migrate inside out.** The shims share one context, so you can move one function at a time and the trace stays whole while you do. That is what the merger promised in 2019, and our run shows it still holds.
+- **Do not add new dependencies on either API.** Both projects were archived years ago; new instrumentation should use the OpenTelemetry API and export OTLP.
+
+ouo11y reads OTLP and does not care which API produced a span, so a half-migrated service shows up as one trace in ouo11y the same way it did in the Collector output above.
+
+**Next in this series:** OpenTelemetry's [transformation language reached v1](https://opentelemetry.io/blog/2026/ottl-v1/). Part 2 goes through it hands-on, including the mistake that leaked a token in our first attempt.
