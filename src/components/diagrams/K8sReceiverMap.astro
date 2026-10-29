@@ -1,0 +1,130 @@
+---
+// Where each collector component of the Kubernetes blueprint runs, what it reads and what it emits.
+// Pick a component: the cluster sketch lights up where it runs and the panel shows the details.
+// Works without JS (the first component stays selected).
+// <K8sReceiverMap nodes={3} parts={[{ id: 'kubelet', name: 'kubelet_stats', kind: 'receiver', preset: 'kubeletMetrics',
+//   where: 'agent', reads: 'kubelet', readsLabel: '...', emits: ['k8s.pod.cpu.usage'], replaces: 'cAdvisor', note: '...' }]} />
+import '../../styles/diagram.css';
+
+type Where = 'agent' | 'cluster' | 'both';
+type Source = 'app' | 'kubelet' | 'host' | 'logs' | 'scrape' | 'api';
+interface Part {
+  id: string; name: string; kind: 'receiver' | 'processor'; preset?: string; where: Where;
+  reads: Source[]; readsLabel: string; emits: string[]; replaces?: string; note?: string;
+}
+interface Props { parts: Part[]; nodes?: number; caption?: string; }
+const { parts, nodes = 3, caption } = Astro.props;
+const first = parts[0];
+const on = (p: Part, w: 'agent' | 'cluster') => p.where === w || p.where === 'both';
+const sources: { id: Source; label: string }[] = [
+  { id: 'app', label: 'app pods (OTLP)' },
+  { id: 'scrape', label: '/metrics endpoints' },
+  { id: 'kubelet', label: 'kubelet :10250' },
+  { id: 'host', label: '/proc, /sys' },
+  { id: 'logs', label: '/var/log/pods' },
+];
+---
+<figure class="dg krm not-content" data-krm>
+  <div class="picker" role="group" aria-label="Collector component">
+    {parts.map((p) => (
+      <button type="button" data-part={p.id} aria-pressed={String(p === first)} class={p.kind}>
+        <code>{p.name}</code>
+      </button>
+    ))}
+  </div>
+
+  <div class="stage">
+    <div class="cluster" aria-hidden="true">
+      <div class="api" data-src="api">
+        <b>API server</b><small>objects, events, metadata</small>
+      </div>
+      <div class="cc" data-where="cluster">
+        <b>cluster collector</b><small>Deployment, 1 replica</small>
+      </div>
+      <div class="nodes" style={`--rest: ${Math.max(nodes - 1, 1)}`}>
+        {Array.from({ length: nodes }, (_, i) => (
+          <div class="node">
+            <span class="node-name">node {i + 1}</span>
+            <div class="agent" data-where="agent"><b>agent</b><small>DaemonSet pod</small></div>
+            {i === 0 && (
+              <ul class="srcs">
+                {sources.map((s) => <li data-src={s.id}>{s.label}</li>)}
+              </ul>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+
+    <div class="detail">
+      {parts.map((p) => (
+        <div data-detail={p.id} hidden={p !== first} data-where-is={p.where} data-reads={p.reads.join(' ')}>
+          <h4><code>{p.name}</code> <span class="kind">{p.kind}</span></h4>
+          <dl>
+            <dt>Runs in</dt>
+            <dd>{p.where === 'agent' ? 'the agent on every node' : p.where === 'cluster' ? 'the cluster collector, once' : 'both collectors'}</dd>
+            {p.preset && <><dt>Chart preset</dt><dd><code>{p.preset}</code></dd></>}
+            <dt>Reads</dt><dd set:html={p.readsLabel} />
+            <dt>Emits</dt><dd>{p.emits.map((e, i) => <>{i > 0 && ', '}<code>{e}</code></>)}</dd>
+            {p.replaces && <><dt>Replaces</dt><dd set:html={p.replaces} /></>}
+          </dl>
+          {p.note && <p class="note" set:html={p.note} />}
+        </div>
+      ))}
+    </div>
+  </div>
+  <figcaption>{caption ? `${caption} ` : ''}Node 1 lists what every agent can read on its node.</figcaption>
+</figure>
+
+<script>
+  for (const root of document.querySelectorAll<HTMLElement>('[data-krm]')) {
+    const buttons = root.querySelectorAll<HTMLButtonElement>('[data-part]');
+    const show = (id: string) => {
+      let where = '', reads: string[] = [];
+      root.querySelectorAll<HTMLElement>('[data-detail]').forEach((s) => {
+        s.hidden = s.dataset.detail !== id;
+        if (!s.hidden) { where = s.dataset.whereIs ?? ''; reads = (s.dataset.reads ?? '').split(' '); }
+      });
+      buttons.forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.part === id)));
+      root.querySelectorAll<HTMLElement>('[data-where]').forEach((el) =>
+        el.classList.toggle('lit', where === 'both' || el.dataset.where === where));
+      root.querySelectorAll<HTMLElement>('[data-src]').forEach((el) =>
+        el.classList.toggle('lit', reads.includes(el.dataset.src ?? '')));
+    };
+    buttons.forEach((b) => b.addEventListener('click', () => show(b.dataset.part!)));
+    show(buttons[0]?.dataset.part ?? '');
+  }
+</script>
+
+<style>
+  .picker { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
+  .picker button { padding: 5px 10px; border: 1px solid var(--dg-line); border-radius: 999px; background: var(--dg-node); color: var(--dg-ink-2); font: inherit; cursor: pointer; }
+  .picker button code { font-size: 12px; background: none; padding: 0; color: inherit; }
+  .picker button.processor { border-style: dashed; }
+  .picker button[aria-pressed='true'] { border-color: var(--dg-accent); background: var(--dg-accent-soft); color: var(--dg-ink); }
+  .stage { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+  .cluster { display: grid; gap: 10px; padding: 12px; border: 1.5px dashed var(--dg-line); border-radius: 12px; }
+  .api, .cc, .agent { padding: 8px 10px; border: 1.5px solid var(--dg-line); border-radius: 10px; background: var(--dg-node); display: flex; flex-direction: column; gap: 1px; transition: border-color .2s, background .2s; }
+  .api small, .cc small, .agent small { font-size: 11px; color: var(--dg-ink-3); }
+  .api b, .cc b, .agent b { font-size: 13px; }
+  .nodes { display: grid; grid-template-columns: minmax(0, 1.4fr) repeat(var(--rest), minmax(0, 1fr)); gap: 8px; }
+  .node { border: 1px solid var(--dg-line); border-radius: 10px; padding: 8px; display: grid; gap: 6px; align-content: start; }
+  .node-name { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--dg-ink-3); }
+  .srcs { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+  .srcs li { font-size: 11px; padding: 3px 6px; border-radius: 6px; border: 1px solid var(--dg-line); color: var(--dg-ink-3); transition: all .2s; }
+  .lit { border-color: var(--dg-accent) !important; background: color-mix(in srgb, var(--dg-accent) 14%, var(--dg-node)) !important; color: var(--dg-ink) !important; }
+  .detail h4 { margin: 0 0 8px; font-size: 15px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .detail h4 code { font-size: 14px; }
+  .kind { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--dg-ink-3); }
+  dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 12px; margin: 0; }
+  dt { color: var(--dg-ink-3); font-size: 12px; padding-top: 1px; }
+  dd { margin: 0; overflow-wrap: anywhere; color: var(--dg-ink-2); }
+  dd :global(code) { overflow-wrap: anywhere; }
+  .note { margin: 10px 0 0; padding-top: 10px; border-top: 1px solid var(--dg-line); color: var(--dg-ink-2); }
+  .krm { container-type: inline-size; }
+  @container (max-width: 620px) {
+    .stage { grid-template-columns: minmax(0, 1fr); }
+    dl { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+    dd { margin-bottom: 6px; }
+  }
+</style>

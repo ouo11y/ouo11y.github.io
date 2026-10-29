@@ -1,0 +1,139 @@
+# opentelemetry-kube-stack 0.26.0: the OpenTelemetry Operator plus two collectors.
+clusterName: blog-k8s
+resourceAttributes:
+  k8s.cluster.name: blog-k8s
+
+# The operator's webhook needs a TLS certificate. Let the chart make one
+# instead of installing cert-manager.
+opentelemetry-operator:
+  admissionWebhooks:
+    certManager:
+      enabled: false
+    autoGenerateCert:
+      enabled: true
+
+# Every collector inherits these exporters: OTLP to the three stores.
+defaultCRConfig:
+  config:
+    exporters:
+      otlp_http/prometheus:
+        endpoint: http://prometheus-server.observability.svc/api/v1/otlp
+      otlp_http/loki:
+        endpoint: http://loki.observability.svc:3100/otlp
+      otlp_grpc/tempo:
+        endpoint: tempo.observability.svc:4317
+        tls:
+          insecure: true
+
+collectors:
+  # The agent: one per node. Reads its own node's kubelet, host, pod logs and
+  # annotated Prometheus endpoints, and receives OTLP from the pods on its node.
+  daemon:
+    scrape_configs_file: ""
+    tolerations:
+      - operator: Exists
+    presets:
+      logsCollection:
+        enabled: true
+      kubeletMetrics:
+        enabled: true
+      hostMetrics:
+        enabled: true
+      kubernetesAttributes:
+        enabled: true
+      prometheus:
+        podAnnotations:
+          enabled: true
+      # Cluster-wide receivers run in the "cluster" collector below.
+      clusterMetrics:
+        enabled: false
+      kubernetesEvents:
+        enabled: false
+      # Resource detection describes the collector itself: its pod, namespace
+      # and node. On an agent that reports on other things it fills gaps with
+      # the wrong values. Every receiver here already says where its data is from.
+      resourceDetection:
+        env:
+          enabled: false
+        k8s_api:
+          enabled: false
+    config:
+      processors:
+        # host_metrics and pod-annotation scrapes do not say which node they
+        # came from. This agent only reads its own node, so name it. insert
+        # never overwrites a k8s.node.name a receiver already set.
+        resource/node:
+          attributes:
+            - key: k8s.node.name
+              value: ${env:OTEL_K8S_NODE_NAME}
+              action: insert
+        # The sample app writes JSON lines with trace_id and span_id. Copy them
+        # into the log record's own trace context so Loki and Grafana see them.
+        transform/trace_ids:
+          error_mode: ignore
+          log_statements:
+            - conditions:
+                - IsMatch(log.body, "^\\{.*\"trace_id\"")
+              statements:
+                - set(log.cache, ParseJSON(log.body))
+                - set(log.trace_id.string, log.cache["trace_id"]) where log.cache["trace_id"] != nil
+                - set(log.span_id.string, log.cache["span_id"]) where log.cache["span_id"] != nil
+      service:
+        pipelines:
+          # Listing processors replaces the chart's list; the presets still
+          # put k8s_attributes first and resource/global last.
+          metrics:
+            processors: [resource/node, resource/hostname, batch]
+            exporters: [otlp_http/prometheus]
+          logs:
+            processors: [resource/node, resource/hostname, transform/trace_ids, batch]
+            exporters: [otlp_http/loki]
+          traces:
+            processors: [resource/node, resource/hostname, batch]
+            exporters: [otlp_grpc/tempo]
+
+  # The cluster collector: one replica. Watches the API server for object state
+  # (k8s_cluster) and events (k8s_objects). Its k8s_attributes sees every pod,
+  # so pod metrics get their deployment, statefulset or daemonset name.
+  cluster:
+    enabled: true
+    suffix: cluster
+    mode: deployment
+    replicas: 1
+    presets:
+      clusterMetrics:
+        enabled: true
+      kubernetesEvents:
+        enabled: true
+      kubernetesAttributes:
+        enabled: true
+    config:
+      receivers:
+        # Merged into the preset's k8s_cluster receiver. Why a container last
+        # stopped (OOMKilled, Error...) and what it is waiting on now.
+        k8s_cluster:
+          metrics:
+            k8s.container.status.reason:
+              enabled: true
+          resource_attributes:
+            k8s.container.status.last_terminated_reason:
+              enabled: true
+      processors:
+        batch: {}
+        # Events have no service. Name them so Loki indexes them under one
+        # service_name instead of "unknown_service".
+        resource/events:
+          attributes:
+            - key: service.name
+              value: k8s-events
+              action: insert
+      service:
+        pipelines:
+          metrics:
+            receivers: []
+            processors: [batch]
+            exporters: [otlp_http/prometheus]
+          logs:
+            receivers: []
+            processors: [resource/events, batch]
+            exporters: [otlp_http/loki]

@@ -1,0 +1,165 @@
+---
+title: "Kubernetes observability without a vendor, part 3: the dashboards and the drill-down"
+description: Five Grafana dashboards that go from the cluster to one container, with logs, events and traces at every level, built on OpenTelemetry metric names. Then we use them to find why a pod keeps restarting.
+date: 2026-10-31
+tags: [kubernetes, grafana, opentelemetry, hands-on]
+series: "Kubernetes observability without a vendor"
+part: 3
+---
+import Note from '../../components/Note.astro';
+import Chart from '../../components/diagrams/Chart.astro';
+import K8sDrilldown from '../../components/diagrams/K8sDrilldown.astro';
+
+[Part 2](/blog/k8s-without-a-vendor-2-collectors/) left us with a kind cluster whose metrics, logs, events and traces land in Prometheus, Loki and Tempo under OpenTelemetry names. This part puts five dashboards on top: cluster, node, namespace, workload and pod. Each level links to the next, and each has the logs, Kubernetes events and traces for what you are looking at. Then we use them on a real problem, the app that keeps restarting.
+
+Most Kubernetes dashboards you can download are written against kube-state-metrics and cAdvisor. None of these use either. Every query reads metrics from `kubelet_stats`, `k8s_cluster` and `host_metrics`, and the app's own `http.server.request.duration`.
+
+## Install the dashboards
+
+Download the five dashboard files into a `dashboards/` folder next to the values files from part 2:
+
+- [k8s-cluster.json](/blog/k8s/dashboards/k8s-cluster.json)
+- [k8s-node.json](/blog/k8s/dashboards/k8s-node.json)
+- [k8s-namespace.json](/blog/k8s/dashboards/k8s-namespace.json)
+- [k8s-workload.json](/blog/k8s/dashboards/k8s-workload.json)
+- [k8s-pod.json](/blog/k8s/dashboards/k8s-pod.json)
+
+They are also in the [zip with all the files of this series](/blog/k8s/k8s-without-a-vendor.zip). Put them in one ConfigMap:
+
+```bash
+kubectl -n observability create configmap k8s-dashboards --from-file=dashboards/
+```
+
+Label it, so Grafana's sidecar picks it up:
+
+```bash
+kubectl -n observability label configmap k8s-dashboards grafana_dashboard=1
+```
+
+Within a few seconds the sidecar writes the files into Grafana. Open [localhost:3300/d/k8s-cluster](http://localhost:3300/d/k8s-cluster). The dashboards also work if you import the JSON by hand (Dashboards → New → Import); they expect data sources with the UIDs `prometheus`, `loki` and `tempo`, as provisioned by `grafana.yaml` in part 2.
+
+## The levels
+
+Click through the levels to see what each dashboard shows and the query behind its most important panel.
+
+<K8sDrilldown
+  caption="Every table row and node name links one level down. Time range and cluster are kept."
+  levels={[
+    { id: 'cluster', label: 'Cluster', uid: 'k8s-cluster', vars: 'cluster',
+      shows: ['Nodes ready, pods running, pods pending or failed, restarts in the time range, Deployments short of replicas',
+              'CPU and memory: used, requested and allocatable, for the whole cluster',
+              'A table of nodes and a table of namespaces',
+              'Warning events from <code>k8s_objects</code>'],
+      query: 'sum(k8s_node_cpu_usage{k8s_cluster_name="$cluster"})\nsum(k8s_container_cpu_request{k8s_cluster_name="$cluster"})\nsum(k8s_node_allocatable_cpu{k8s_cluster_name="$cluster"})',
+      from: ['kubelet_stats', 'k8s_cluster', 'k8s_objects'],
+      next: 'Click a node name or a namespace name.' },
+    { id: 'node', label: 'Node', uid: 'k8s-node', vars: 'cluster, node',
+      shows: ['Ready, allocatable CPU and memory, pods running, memory pressure, uptime',
+              'CPU and memory against requests and allocatable; network; node filesystem',
+              'Host load from <code>host_metrics</code>, against the number of CPUs',
+              'Every pod on the node with its CPU and memory; events about the node'],
+      query: 'sum by (k8s_pod_name, k8s_namespace_name) (k8s_pod_cpu_usage{k8s_node_name="$node"})',
+      from: ['kubelet_stats', 'host_metrics', 'k8s_cluster'],
+      next: 'Click a pod to open it.' },
+    { id: 'namespace', label: 'Namespace', uid: 'k8s-namespace', vars: 'cluster, namespace',
+      shows: ['CPU and memory stacked by workload',
+              'Tables of Deployments, StatefulSets and DaemonSets: desired, ready, CPU, memory, restarts',
+              'Events and logs for the namespace'],
+      query: 'sum by (workload) (label_join(k8s_pod_cpu_usage{k8s_namespace_name="$namespace"},\n  "workload", "", "k8s_deployment_name", "k8s_statefulset_name",\n  "k8s_daemonset_name", "k8s_job_name"))',
+      from: ['kubelet_stats', 'k8s_cluster', 'file_log', 'k8s_objects'],
+      next: 'Click a workload name.' },
+    { id: 'workload', label: 'Workload', uid: 'k8s-workload', vars: 'cluster, namespace, kind, workload',
+      shows: ['Desired pods, pods running, restarts; requests per second, error rate and p95 latency from the app\'s own metric',
+              'CPU and memory per pod, with the request and limit as dashed lines',
+              'A table of pods with phase, node and restarts; traces and logs for the workload'],
+      query: 'histogram_quantile(0.95, sum by (le) (rate(\n  http_server_request_duration_seconds_bucket{\n    k8s_namespace_name="$namespace", k8s_${kind}_name="$workload"}[$__rate_interval])))',
+      from: ['kubelet_stats', 'k8s_cluster', 'app OTLP', 'file_log', 'Tempo'],
+      next: 'Click a pod, or its node.' },
+    { id: 'pod', label: 'Pod and container', uid: 'k8s-pod', vars: 'cluster, namespace, pod, container',
+      shows: ['Phase, containers ready, restarts, why a container is waiting, why it last stopped, uptime',
+              'CPU and memory per container against its request and limit',
+              'Restarts per container, network, requests by status code',
+              'Logs (with a link to each line\'s trace), traces through the pod, events for the pod'],
+      query: 'max by (k8s_container_status_last_terminated_reason) (\n  target_info{k8s_pod_name="$pod",\n    k8s_container_status_last_terminated_reason!=""})',
+      from: ['kubelet_stats', 'k8s_cluster', 'file_log', 'k8s_objects', 'Tempo'] },
+  ]}
+/>
+
+## Following one problem down
+
+The sample app has a bug on purpose: `shop-api` keeps a copy of every response in memory and never frees it. Here is how the dashboards found it, in the order we clicked.
+
+**Cluster.** "Container restarts" is red: 5 in the last hour, four of them in `shop-api`. The fifth was `kube-controller-manager`, which restarted once on our busy laptop. "Deployments short of replicas" stays at 0: the container restarts in place within seconds, and the Deployment never reports a missing pod. In the Namespaces table, `shop` is the one with restarts.
+
+**Namespace `shop`.** The Deployments table shows `shop-api` with all its restarts and `shop-web` with none. The memory-by-workload panel shows `shop-api` climbing and dropping back.
+
+**Workload `shop-api`.** The memory-per-pod panel tells the story without any other help. Each pod climbs to the dashed limit line, drops back to the size of an empty Node.js process, and climbs again. Here is the same data for the first 55 minutes of our run:
+
+<Chart
+  title="Working set of the api container in each shop-api pod (MiB)"
+  caption="container.memory.working_set, one point per minute, for the first 55 minutes after the pods started, and the container's memory limit. Each drop is an OOM kill. Real data from our run, read from Prometheus."
+  x={{ label: 'minutes after the app started', values: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55] }}
+  y={{ label: 'MiB', min: 0, max: 210, format: 'int' }}
+  lines={[{ at: 192, label: 'limit 192 MiB', tone: 'bad' }]}
+  series={[{"name": "shop-api-6dc679f974-8b4qv", "values": [0, 0, 35.3, 43.4, 49.9, 58.2, 65.9, 74.0, 81.6, 88.1, 94.1, 101.6, 107.0, 108.2, 111.8, 117.7, 124.4, 131.0, 137.6, 144.6, 149.8, 156.5, 156.7, 155.3, 162.6, 175.7, 188.9, 34.1, 35.4, 34.6, 35.6, 35.4, 35.9, 39.1, 46.1, 52.6, 62.4, 68.9, 75.4, 84.4, 95.6, 110.2, 122.6, 135.6, 147.4, 158.1, 172.9, 185.5, 36.6, 43.1, 51.0, 57.8, 65.3, 74.0, 83.3, 96.2], "tone": "accent"}, {"name": "shop-api-6dc679f974-lv8qb", "values": [0, 32.9, 43.6, 51.1, 56.6, 65.2, 72.4, 77.6, 83.7, 89.6, 96.2, 100.7, 107.4, 110.4, 114.0, 120.7, 127.7, 133.8, 140.2, 147.2, 154.2, 162.3, 174.9, 187.8, 34.8, 35.5, 35.1, 46.0, 58.7, 74.6, 88.3, 102.3, 114.6, 122.0, 128.7, 135.6, 140.6, 147.3, 152.9, 157.9, 155.5, 156.0, 156.3, 156.3, 156.3, 156.3, 156.3, 156.3, 160.9, 167.7, 174.3, 181.1, 185.8, 189.8, 32.4, 33.8], "tone": "info"}]}
+/>
+
+The error-rate and p95 stats are worth a look too. The errors stay near the 5 % the app fails on purpose. They do not jump at each restart, because the other pod takes the traffic.
+
+**Pod.** "Last terminated" reads **OOMKilled**. That is the <code style={{overflowWrap: 'anywhere'}}>k8s.container.status.last_terminated_reason</code> resource attribute we turned on in part 2. Prometheus did not promote it to a label, so it lives on `target_info`, the series where Prometheus keeps every resource attribute, and the panel reads it from there. Without it you would see that the container restarted, not why. "Waiting" stays empty here; it would read `CrashLoopBackOff` if the restarts came faster than the kubelet's back-off. The memory-per-container panel shows the working set reaching the 192 MiB limit. The events panel shows the kubelet's `Pulled`, `Created` and `Started` for the container again at each restart. They are Normal events, so the cluster dashboard's Warning panel says nothing about `shop-api`. In our run it showed only a few `Unhealthy` probe timeouts on Loki, Prometheus and Grafana, from a laptop that was busy with other containers.
+
+**Logs and traces.** In the pod's log panel, expand any `price lookup` line. Its `trace_id` field has an **Open trace** link that opens the request in Tempo: `shop-web` calling `shop-api`, with both pods named on the spans. From the trace, **Logs for this trace** goes back to Loki: the root span's pod, filtered to lines with that trace id. At the restart the log stops. In our run the last line before the kill was at 19:36:07, and three seconds later the new container wrote `shop-api listening on 8080`. Its lines carry `k8s_container_restart_count` = 1, so you can filter one container's life from the next.
+
+The fix is in the code, not the cluster: the cache needs a bound. The point is that every step above used OpenTelemetry data, and the names never changed between the metric, the log and the span.
+
+## How the queries are built
+
+A few patterns repeat across the five dashboards. They are the parts worth understanding if you change them.
+
+**Filter on resource attributes, not on job or instance.** Every query filters on `k8s_cluster_name`, `k8s_namespace_name`, `k8s_pod_name` and so on: the attributes Prometheus promoted to labels in part 2. They mean the same in Loki (`{k8s_pod_name="..."}`) and in Tempo (`resource.k8s.pod.name`), so a variable from one panel works in the others.
+
+**One "workload" out of four labels.** A pod has at most one of `k8s_deployment_name`, `k8s_statefulset_name`, `k8s_daemonset_name` or `k8s_job_name`. `label_join` with an empty separator glues the four into a new `workload` label, which comes out as the one that is set. That is how the namespace dashboard stacks CPU by workload without knowing each pod's kind.
+
+**The kind is a variable.** The workload dashboard has a `kind` variable (deployment, statefulset, daemonset), and queries use `k8s_${kind}_name="$workload"`. The namespace tables pass the right kind in their links.
+
+**Requests and limits are drawn dashed.** They come from `k8s_cluster`, usage comes from `kubelet_stats`. Both carry the same `k8s.pod.name`, so they sit on the same panel without any join.
+
+**Events are logs.** `k8s_objects` sends each Kubernetes event as a log record whose body is the event as JSON. The panels parse it with LogQL:
+
+```text
+{k8s_cluster_name="$cluster", service_name="k8s-events"}
+  | json type="object.type", reason="object.reason", note="object.note",
+         kind="object.regarding.kind", name="object.regarding.name"
+  | type="Warning"
+  | line_format "{{.type}} {{.kind}}/{{.name}} {{.reason}}: {{.note}}"
+```
+
+**Pod phase is a number.** `k8s.pod.phase` is 1 for Pending, 2 Running, 3 Succeeded, 4 Failed, 5 Unknown. The tables map the numbers back to words with value mappings. Because a new pod can briefly have two series (part 2 explains why), the counts first take the newest value of each series and then the highest per pod:
+
+```text
+count(max by (k8s_pod_uid) (last_over_time(k8s_pod_phase{k8s_cluster_name="$cluster"}[1m])) == 2)
+```
+
+Without that, every freshly started instrumented pod counted as Pending for five minutes in our first version of the cluster dashboard.
+
+**`rate()` needs two points.** Grafana's `$__rate_interval` on a 15-second scrape is one minute. App metrics pushed every 60 seconds (the SDK default) have one point per minute, and the request panels stay empty. Part 2 sets the export interval to 15 seconds for that reason.
+
+## What we checked
+
+We ran every query in the five dashboards against the live Prometheus, Loki and Tempo with `cluster=blog-k8s`, `namespace=shop`, `workload=shop-api` and one of its pods, and opened every dashboard in Grafana 13.3.0. Panels that were empty for a good reason: the StatefulSets and DaemonSets tables in `shop` (it has none), and the request panels on workloads without OpenTelemetry (`loki`, `grafana`).
+
+<Note type="caution" title="What these dashboards do not do">
+No alert rules. The Grafana Cloud app ships a set of them; here the queries are ready to become alerts, but writing and routing them is yours. No cost view. No predictions. The host panels on the node dashboard read the kind VM, so the load includes every other container on it, and uptime is the VM's. Static pods (etcd, the API server) have no owner, so they appear on the node and pod levels but in no workload table. 
+</Note>
+
+## Clean up
+
+```bash
+kind delete cluster --name blog-k8s
+```
+
+That removes everything: the cluster, the collectors, the stores and the data. The files you downloaded are all you need to build it again.
+
+## Where this leaves you
+
+You now have, on a laptop, the collection layout OpenTelemetry recommends for Kubernetes, the open-source stores Grafana Cloud runs for you, and dashboards that go from the cluster down to a container with logs, events and traces on the way. You can keep all of it, move it to a real cluster by changing the exporter endpoints, or send the same OTLP somewhere else without touching the agents. No part of it depends on one vendor, which is the point.

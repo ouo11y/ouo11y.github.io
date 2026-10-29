@@ -1,0 +1,93 @@
+---
+// OpenTelemetry metric name -> the name Prometheus stores -> the closest Prometheus-world metric.
+// Type to filter, or pick a receiver. Works without JS (shows everything).
+// <K8sMetricMap rows={[{ otel: 'k8s.pod.cpu.usage', unit: '{cpu}', type: 'gauge', from: 'kubelet_stats',
+//   prom: 'k8s_pod_cpu_usage', old: 'rate(container_cpu_usage_seconds_total[5m])' }]} />
+import '../../styles/diagram.css';
+
+interface Row { otel: string; unit: string; type: string; from: string; prom: string; old?: string; }
+interface Props { rows: Row[]; caption?: string; }
+const { rows, caption } = Astro.props;
+const receivers = [...new Set(rows.map((r) => r.from))];
+---
+<figure class="dg kmm not-content" data-kmm>
+  <div class="bar">
+    <input type="search" placeholder="Filter, e.g. memory or kube_pod" aria-label="Filter metrics" data-q />
+    <div class="chips" role="group" aria-label="Receiver">
+      <button type="button" data-r="" aria-pressed="true">all</button>
+      {receivers.map((r) => <button type="button" data-r={r} aria-pressed="false"><code>{r}</code></button>)}
+    </div>
+  </div>
+  <div class="scroll">
+    <table>
+      <thead>
+        <tr><th>OpenTelemetry name</th><th>Unit, type</th><th>Stored in Prometheus as</th><th>Closest kube-state-metrics, cAdvisor or node-exporter series</th></tr>
+      </thead>
+      <tbody>
+        {rows.map((r) => (
+          <tr data-from={r.from} data-text={`${r.otel} ${r.prom} ${r.old ?? ''} ${r.from}`.toLowerCase()}>
+            <td><code>{r.otel}</code><small>{r.from}</small></td>
+            <td><code>{r.unit}</code> {r.type}</td>
+            <td><code>{r.prom}</code></td>
+            <td>{r.old ? <code>{r.old}</code> : <span class="none">none</span>}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  </div>
+  <p class="empty" hidden data-empty>No metric matches.</p>
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+  for (const root of document.querySelectorAll<HTMLElement>('[data-kmm]')) {
+    const q = root.querySelector<HTMLInputElement>('[data-q]')!;
+    const chips = root.querySelectorAll<HTMLButtonElement>('[data-r]');
+    const rows = root.querySelectorAll<HTMLElement>('tbody tr');
+    const empty = root.querySelector<HTMLElement>('[data-empty]')!;
+    let rec = '';
+    const apply = () => {
+      const t = q.value.trim().toLowerCase();
+      let n = 0;
+      rows.forEach((r) => {
+        r.hidden = !((!rec || r.dataset.from === rec) && (!t || r.dataset.text!.includes(t)));
+        if (!r.hidden) n++;
+      });
+      empty.hidden = n > 0;
+    };
+    q.addEventListener('input', apply);
+    chips.forEach((c) => c.addEventListener('click', () => {
+      rec = c.dataset.r ?? '';
+      chips.forEach((x) => x.setAttribute('aria-pressed', String(x === c)));
+      apply();
+    }));
+  }
+</script>
+
+<style>
+  .bar { display: grid; gap: 8px; margin-bottom: 12px; }
+  input { width: 100%; padding: 7px 10px; border: 1px solid var(--dg-line); border-radius: 8px; background: var(--dg-node); color: var(--dg-ink); font: inherit; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chips button { padding: 4px 10px; border: 1px solid var(--dg-line); border-radius: 999px; background: var(--dg-node); color: var(--dg-ink-2); font: inherit; font-size: 12px; cursor: pointer; }
+  .chips button code { font-size: 11px; background: none; padding: 0; color: inherit; }
+  .chips button[aria-pressed='true'] { border-color: var(--dg-accent); background: var(--dg-accent-soft); color: var(--dg-ink); }
+  .scroll { overflow-x: auto; max-height: 460px; overflow-y: auto; border: 1px solid var(--dg-line); border-radius: 10px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th { position: sticky; top: 0; background: var(--dg-bg); text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--dg-ink-3); padding: 8px 10px; border-bottom: 1px solid var(--dg-line); }
+  td { padding: 7px 10px; border-bottom: 1px solid var(--dg-line); vertical-align: top; color: var(--dg-ink-2); }
+  tr[hidden] { display: none; }
+  td code { background: none; padding: 0; overflow-wrap: anywhere; color: var(--dg-ink); }
+  td small { display: block; color: var(--dg-ink-3); font-size: 11px; }
+  .none { color: var(--dg-ink-3); }
+  .empty { color: var(--dg-ink-3); margin: 8px 0 0; }
+  .kmm { container-type: inline-size; }
+  @container (max-width: 640px) {
+    thead { display: none; }
+    tr { display: grid; grid-template-columns: minmax(0, 1fr); padding: 8px 10px; border-bottom: 1px solid var(--dg-line); }
+    td { border: 0; padding: 1px 0; }
+    td:nth-child(2) { font-size: 12px; color: var(--dg-ink-3); }
+    td:nth-child(3)::before { content: 'Prometheus: '; color: var(--dg-ink-3); font-size: 12px; }
+    td:nth-child(4)::before { content: 'Before: '; color: var(--dg-ink-3); font-size: 12px; }
+    .scroll { max-height: 520px; }
+  }
+</style>

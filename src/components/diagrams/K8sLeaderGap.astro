@@ -1,0 +1,81 @@
+---
+// Which pods' k8s.pod.phase series got a workload name, with k8s_cluster in the elected agent
+// (whose k8s_attributes only watches its own node) versus in a separate cluster collector.
+// <K8sLeaderGap leader="worker2" nodes={[{ name: 'worker', pods: [{ name: 'shop-api-6dc6', workload: 'shop-api' }] }]} />
+import '../../styles/diagram.css';
+
+interface Pod { name: string; workload?: string; }
+interface Node { name: string; pods: Pod[]; }
+interface Props { nodes: Node[]; leader: string; caption?: string; }
+const { nodes, leader, caption } = Astro.props;
+const total = nodes.reduce((n, x) => n + x.pods.filter((p) => p.workload).length, 0);
+const leaderOnly = nodes.find((n) => n.name === leader)?.pods.filter((p) => p.workload).length ?? 0;
+---
+<figure class="dg klg not-content" data-klg data-mode="leader">
+  <div class="modes" role="group" aria-label="Where k8s_cluster runs">
+    <button type="button" data-set="leader" aria-pressed="true">In the agent, with leader election</button>
+    <button type="button" data-set="cluster" aria-pressed="false">In a separate cluster collector</button>
+  </div>
+  <p class="score">
+    <span class="m-leader"><b>{leaderOnly}</b> of {total} pods that have an owner got its name on <code>k8s.pod.phase</code>.</span>
+    <span class="m-cluster"><b>{total}</b> of {total} pods that have an owner got its name on <code>k8s.pod.phase</code>.</span>
+  </p>
+  <div class="nodes">
+    {nodes.map((n) => (
+      <div class:list={['node', { leader: n.name === leader }]}>
+        <div class="head">
+          <b>{n.name}</b>
+          {n.name === leader && <span class="badge m-leader">leader: runs k8s_cluster</span>}
+        </div>
+        <ul>
+          {n.pods.map((p) => (
+            <li class:list={{ owned: !!p.workload, here: n.name === leader }}>
+              <span class="pod" title={p.name}>{p.name}</span>
+              {p.workload
+                ? <span class="wl"><span class="named">{p.workload}</span><span class="missing">missing</span></span>
+                : <span class="wl static">no owner</span>}
+            </li>
+          ))}
+        </ul>
+      </div>
+    ))}
+  </div>
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+  for (const root of document.querySelectorAll<HTMLElement>('[data-klg]')) {
+    const buttons = root.querySelectorAll<HTMLButtonElement>('[data-set]');
+    buttons.forEach((b) => b.addEventListener('click', () => {
+      root.dataset.mode = b.dataset.set;
+      buttons.forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+    }));
+  }
+</script>
+
+<style>
+  .modes { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+  .modes button { padding: 6px 12px; border: 1px solid var(--dg-line); border-radius: 999px; background: var(--dg-node); color: var(--dg-ink-2); font: inherit; cursor: pointer; }
+  .modes button[aria-pressed='true'] { border-color: var(--dg-accent); background: var(--dg-accent-soft); color: var(--dg-ink); }
+  .score { margin: 0 0 12px; color: var(--dg-ink-2); }
+  .score code { font-size: 12px; }
+  .nodes { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; }
+  .node { border: 1.5px solid var(--dg-line); border-radius: 12px; padding: 10px; background: var(--dg-node); min-width: 0; }
+  .head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 8px; }
+  .head b { font-size: 13px; }
+  .badge { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--dg-accent); }
+  ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+  li { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--dg-line); min-width: 0; }
+  .pod { color: var(--dg-ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; font-family: var(--sl-font-mono, ui-monospace, monospace); font-size: 11px; }
+  .wl { flex: none; font-weight: 600; }
+  .wl.static { color: var(--dg-ink-3); font-weight: 400; }
+  .named { color: var(--dg-ok); }
+  .missing { color: var(--dg-bad); }
+  li.owned { border-color: color-mix(in srgb, var(--dg-ok) 45%, var(--dg-line)); }
+  /* leader mode: only pods on the leader's node are named */
+  [data-mode='leader'] .m-cluster, [data-mode='cluster'] .m-leader { display: none; }
+  [data-mode='leader'] li.owned:not(.here) { border-color: color-mix(in srgb, var(--dg-bad) 45%, var(--dg-line)); }
+  [data-mode='leader'] li.owned:not(.here) .named { display: none; }
+  [data-mode='leader'] li.owned.here .missing, [data-mode='cluster'] .missing { display: none; }
+  [data-mode='leader'] .node.leader { border-color: var(--dg-accent); }
+</style>

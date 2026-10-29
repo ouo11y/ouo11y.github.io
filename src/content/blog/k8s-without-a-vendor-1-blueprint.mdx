@@ -1,0 +1,150 @@
+---
+title: "Kubernetes observability without a vendor, part 1: the blueprint"
+description: OpenTelemetry now publishes a blueprint for watching a Kubernetes cluster. What each piece does, where it came from, and which parts of Grafana Cloud's Kubernetes Monitoring it can replace on your own laptop.
+date: 2026-10-29
+tags: [kubernetes, opentelemetry, collector, grafana]
+series: "Kubernetes observability without a vendor"
+part: 1
+---
+import Note from '../../components/Note.astro';
+import Flow from '../../components/diagrams/Flow.astro';
+import K8sReceiverMap from '../../components/diagrams/K8sReceiverMap.astro';
+
+On 21 October 2026 the OpenTelemetry website published the [Kubernetes Cluster Observability blueprint](https://opentelemetry.io/docs/guidance/blueprints/k8s-observability-blueprint/) ([PR #9741](https://github.com/open-telemetry/opentelemetry.io/pull/9741), opened in April by Alexandre Ferreira). It is short: four common problems, three guidelines and six steps. It names the collector components to run and the Helm chart to run them with, and it says how they should be laid out on the cluster.
+
+Paying vendors have sold that same layout for years. This series builds it on a laptop with open-source parts only, then builds the dashboards on top, so you can see what you would be paying for.
+
+- **Part 1 (this post):** what the blueprint asks for, where each piece came from, and what Grafana Cloud's Kubernetes Monitoring gives you that open source does not.
+- **[Part 2](/blog/k8s-without-a-vendor-2-collectors/):** a three-node kind cluster, the `opentelemetry-kube-stack` chart, Prometheus, Loki, Tempo and Grafana, and a small app with OpenTelemetry. Every file and command, and the three things we had to fix.
+- **[Part 3](/blog/k8s-without-a-vendor-3-dashboards/):** five Grafana dashboards that go from the cluster down to one container, with links to logs and traces, built on OpenTelemetry metric names.
+
+## What the blueprint is for
+
+The blueprints are a project of the OpenTelemetry [End-User SIG](https://github.com/open-telemetry/community/pull/3094): short documents that say "for this kind of system, run these components, in this shape". This one is aimed at platform and SRE teams. It starts from four problems that people running clusters will recognise:
+
+1. **Workload signals that your code does not emit.** An app does not tell you that it was OOM-killed, throttled or stuck in `Pending`. Only the cluster knows that.
+2. **Inconsistent metadata.** One scraper says `pod`, another `pod_name`. An alert written against one silently matches nothing from the other.
+3. **Critical components nobody watches.** CoreDNS, the CNI, ingress controllers and autoscalers expose Prometheus metrics, but nothing finds them for you.
+4. **No monitoring of the monitoring.** This one the blueprint hands to a sister document on managed telemetry platforms.
+
+Its answer has three parts. Use OpenTelemetry's own receivers instead of a mix of exporters. Put the same `k8s.*` attributes on every signal. Let the [OpenTelemetry Operator](https://opentelemetry.io/docs/platforms/kubernetes/operator/) run the collectors, with one collector per node scraping only what is on that node.
+
+## The pieces
+
+The blueprint maps each job to a collector component and a preset in the `opentelemetry-kube-stack` Helm chart. A preset is a switch in the chart's values that adds a component, its configuration and the RBAC it needs. Pick one below to see where it runs and what it reads.
+
+<K8sReceiverMap
+  caption="The layout we run in part 2: one agent per node and one cluster collector. Dashed buttons are processors."
+  parts={[
+    { id: 'kubelet', name: 'kubelet_stats', kind: 'receiver', preset: 'kubeletMetrics', where: 'agent', reads: ['kubelet'],
+      readsLabel: 'The kubelet on its own node, over HTTPS on port 10250 (the Summary API).',
+      emits: ['k8s.node.cpu.usage', 'k8s.pod.memory.working_set', 'container.cpu.usage', 'k8s.volume.available'],
+      replaces: 'cAdvisor and kubelet resource metrics (<code>container_cpu_usage_seconds_total</code>, <code>container_memory_working_set_bytes</code>)',
+      note: 'The blueprint calls this the preferred source of CPU and memory for nodes, pods and containers.' },
+    { id: 'host', name: 'host_metrics', kind: 'receiver', preset: 'hostMetrics', where: 'agent', reads: ['host'],
+      readsLabel: 'The node\'s <code>/proc</code> and <code>/sys</code>, mounted into the agent at <code>/hostfs</code>.',
+      emits: ['system.cpu.load_average.1m', 'system.filesystem.usage', 'system.network.io', 'system.paging.usage'],
+      replaces: 'node-exporter, in part',
+      note: 'The blueprint suggests turning off its <code>cpu</code> and <code>memory</code> scrapers when <code>kubelet_stats</code> runs, because they overlap.' },
+    { id: 'filelog', name: 'file_log', kind: 'receiver', preset: 'logsCollection', where: 'agent', reads: ['logs'],
+      readsLabel: 'Container stdout and stderr from <code>/var/log/pods/*/*/*.log</code> on its node.',
+      emits: ['log records with k8s.pod.name, k8s.container.name, log.iostream'],
+      replaces: 'Fluent Bit, Fluentd, Promtail' },
+    { id: 'otlp', name: 'otlp', kind: 'receiver', where: 'agent', reads: ['app'],
+      readsLabel: 'OTLP from app pods on the same node. The agent\'s Service has <code>internalTrafficPolicy: Local</code>.',
+      emits: ['your traces, metrics and logs'],
+      note: 'The blueprint puts an optional gateway after this for central processing. We do not need one on a laptop.' },
+    { id: 'prom', name: 'prometheus', kind: 'receiver', preset: 'prometheus.podAnnotations', where: 'agent', reads: ['scrape'],
+      readsLabel: 'Pods on its own node with the annotation <code>prometheus.io/scrape: "true"</code>.',
+      emits: ['whatever the pod exposes, under its own names'],
+      replaces: 'Prometheus\'s <code>kubernetes-pods</code> scrape job',
+      note: 'Each agent scrapes only its own node, so there is no Target Allocator and nothing is scraped twice.' },
+    { id: 'cluster', name: 'k8s_cluster', kind: 'receiver', preset: 'clusterMetrics', where: 'cluster', reads: ['api'],
+      readsLabel: 'The API server: pods, nodes, deployments, statefulsets, daemonsets, jobs, quotas.',
+      emits: ['k8s.pod.phase', 'k8s.deployment.available', 'k8s.container.restarts', 'k8s.container.memory_limit', 'k8s.node.condition_ready'],
+      replaces: 'kube-state-metrics',
+      note: 'Must run once per cluster. The blueprint runs it in the agent with leader election; part 2 shows why we moved it to its own collector.' },
+    { id: 'objects', name: 'k8s_objects', kind: 'receiver', preset: 'kubernetesEvents', where: 'cluster', reads: ['api'],
+      readsLabel: 'The API server\'s <code>events.k8s.io</code> resource, watched.',
+      emits: ['one log record per Kubernetes event'],
+      replaces: 'kubernetes-event-exporter, or nothing (events expire after an hour by default)' },
+    { id: 'attrs', name: 'k8s_attributes', kind: 'processor', preset: 'kubernetesAttributes', where: 'both', reads: ['api'],
+      readsLabel: 'Pod metadata from the API server. On the agent, only pods on its own node.',
+      emits: ['k8s.namespace.name, k8s.deployment.name, k8s.node.name, ... on every signal that passes through'],
+      note: 'This is the blueprint\'s answer to problem 2: every signal gets the same attribute names, from the same source.' },
+  ]}
+/>
+
+### `k8s_cluster` or kube-state-metrics?
+
+They answer the same question, "what does the API server say about my objects", in two different shapes. [kube-state-metrics](https://github.com/kubernetes/kube-state-metrics) (started in May 2016) is a Prometheus exporter: one process, one `/metrics` page, names like <code style={{overflowWrap: 'anywhere'}}>kube_pod_status_phase&#123;phase="Running"&#125;</code> and <code style={{overflowWrap: 'anywhere'}}>kube_deployment_status_replicas_available</code>. Its labels are Prometheus labels (`namespace`, `pod`). It is mature and very complete, and most Kubernetes dashboards on the internet are written against it.
+
+The [`k8s_cluster` receiver](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/receiver/k8sclusterreceiver) emits OTLP. Its names follow the OpenTelemetry [Kubernetes semantic conventions](https://opentelemetry.io/docs/specs/semconv/system/k8s-metrics/): `k8s.pod.phase`, `k8s.deployment.available`, with the object named by resource attributes (`k8s.namespace.name`, `k8s.pod.name`) that are spelled exactly like the ones on your traces and logs. It covers less: no labels-as-metrics, fewer object kinds. Some of its metrics are off by default; we turn two of them on in part 2.
+
+The blueprint picks `k8s_cluster`, and so do we, because of problem 2: the same `k8s.pod.name` on the CPU metric, the log line and the span is what makes the drill-down in part 3 possible without any relabelling. If your team already lives in kube-state-metrics dashboards, the chart can install it too (`kubeStateMetrics.enabled`), and the collector scrapes it like any other Prometheus target.
+
+### Leader election, and the optional gateway
+
+Two receivers must not run on every node: `k8s_cluster` and `k8s_objects` would report the whole cluster once per node. The blueprint keeps everything in one DaemonSet and uses the collector's `k8s_leader_elector` extension: all agents run the receiver, but only the one holding a Kubernetes Lease actually collects. If that pod dies, another takes the lease within seconds. The chart wires this up for you. For clusters that cannot use leader election, the chart has a separate cluster collector instead. We ran both ways. Part 2 explains why we ended with the second.
+
+The **gateway** is a collector Deployment that sits between the agents and your backends, for tail sampling, routing, or holding credentials in one place. The blueprint marks it optional and leaves it to another document. We leave it out.
+
+## Where these pieces came from
+
+None of this is new code. Most of it was contributed by vendors who had built the same thing for their own agents, and then gave it to OpenTelemetry.
+
+- **January 2020:** Owais Lone ports the Kubernetes metadata processor from the Omnition distribution into the collector ([#92](https://github.com/open-telemetry/opentelemetry-collector-contrib/pull/92)). It is called `k8s_tagger` until September 2021, when it becomes `k8sattributes` ([#5384](https://github.com/open-telemetry/opentelemetry-collector-contrib/pull/5384)).
+- **April 2020:** the `k8s_cluster` receiver arrives from SignalFx (now Splunk) ([#175](https://github.com/open-telemetry/opentelemetry-collector-contrib/pull/175)).
+- **May 2020:** the `kubeletstats` receiver, also from Splunk ([#237](https://github.com/open-telemetry/opentelemetry-collector-contrib/pull/237)). It reads the kubelet's Summary API, the same data cAdvisor (open-sourced by Google in [June 2014](https://github.com/google/cadvisor)) gathers inside the kubelet.
+- **January 2021:** observIQ [gives its Stanza log agent to OpenTelemetry](https://www.businesswire.com/news/home/20210128005370/en/observIQ%E2%80%99s-Stanza-Log-Agent-Now-a-Part-of-OpenTelemetry-Project). The `filelog` receiver built on it lands in February ([#2306](https://github.com/open-telemetry/opentelemetry-collector-contrib/pull/2306)).
+- **October 2021 and October 2022:** Splunk adds `k8s_events` ([#5841](https://github.com/open-telemetry/opentelemetry-collector-contrib/pull/5841)), then the more general `k8s_objects` ([#14699](https://github.com/open-telemetry/opentelemetry-collector-contrib/pull/14699)), which the blueprint and the chart use for events.
+- **March 2024:** Jacob Aronoff creates the `opentelemetry-kube-stack` chart ([#1074](https://github.com/open-telemetry/opentelemetry-helm-charts/pull/1074)): the Operator plus collectors as custom resources. Its values even carry a section meant as a drop-in for the scrapes of `kube-prometheus-stack`.
+- **August 2024:** the first CPU metrics land in the Kubernetes semantic conventions ([#1320](https://github.com/open-telemetry/semantic-conventions/pull/1320)). The page is still marked Development today, with some metrics at Release Candidate.
+- **October 2026:** the blueprint itself.
+
+The Prometheus side has its own history. [Heapster](https://github.com/kubernetes-retired/heapster/blob/master/docs/deprecation.md), the first cluster metrics collector, was retired in Kubernetes 1.13 in favour of metrics-server. For dashboards, the community settled on kube-state-metrics for object state and cAdvisor for usage. Most cluster dashboards are still built on that pair, and so is Grafana Cloud's.
+
+## What you are replacing: Grafana Cloud Kubernetes Monitoring
+
+Grafana Labs [launched Kubernetes Monitoring in July 2022](https://grafana.com/blog/2022/07/13/introducing-kubernetes-monitoring-in-grafana-cloud/), on the free tier too. It has two halves, and they are licensed differently.
+
+<Flow
+  caption="Grafana Cloud Kubernetes Monitoring: the collection half is open source, the app is not."
+  columns={[
+    { label: 'In your cluster', arrow: 'remote write, OTLP', nodes: [
+      { title: 'k8s-monitoring Helm chart', sub: 'Apache-2.0. Alloy, kube-state-metrics, node-exporter, optional OpenCost', tone: 'ok' },
+    ] },
+    { label: 'In Grafana Cloud', arrow: 'queries', nodes: [
+      { title: 'Mimir, Loki, Tempo', sub: 'hosted; the same projects are open source', tone: 'accent' },
+    ] },
+    { label: 'The app', nodes: [
+      { title: 'Kubernetes Monitoring app', sub: 'cluster navigation, cost, predictions, alert pack. Grafana Cloud only', tone: 'warn' },
+    ] },
+  ]}
+/>
+
+**The collection half is open source.** The [`grafana/k8s-monitoring-helm`](https://github.com/grafana/k8s-monitoring-helm) chart (first release June 2023) is Apache-2.0. It deploys Grafana Alloy plus kube-state-metrics, node-exporter and, when enabled, OpenCost, and it scrapes the kubelet and cAdvisor. Its README says it can send to any Prometheus-, Loki- or OTLP-compatible backend, not only Grafana Cloud.
+
+**The app is not.** The [Kubernetes Monitoring docs](https://grafana.com/docs/grafana-cloud/observe-and-act/monitor-infrastructure/kubernetes-monitoring/intro-kubernetes-monitoring/) describe an app inside Grafana Cloud. We could not find it in the public plugin catalog (the catalog API answers `plugin not found` for `grafana-k8s-app`, the app's ID in Grafana Cloud URLs) or in any public repository. The old open-source [Grafana Kubernetes app](https://github.com/grafana/kubernetes-app) was archived in June 2026. So we treat the app as Grafana Cloud only.
+
+This is what the docs list for the app, and what part 3 rebuilds:
+
+| Grafana Cloud Kubernetes Monitoring | In this series |
+|---|---|
+| Cluster, node, namespace, workload, pod and container views with drill-down | Yes: five linked dashboards |
+| Logs and events next to the metrics | Yes: Loki panels on every level, and Kubernetes events from `k8s_objects` |
+| Jump to traces and application observability | Yes: Tempo panels, and log lines link to their trace |
+| Resource usage against requests and limits, restarts, OOM kills | Yes |
+| Built-in alert rules with runbooks | No. You write your own alert rules in Grafana or Prometheus |
+| Cost per node, namespace and workload ([OpenCost](https://www.opencost.io/) plus cloud prices) | No. OpenCost is open source and could be added; we did not run it |
+| Machine-learning predictions of CPU and memory | No |
+| Energy use (Kepler) | No |
+| Hosted storage, upgrades, support | No: you run Prometheus, Loki and Tempo yourself |
+
+If cost views, predictions and a ready alert pack are what you need, the app earns its price. If you need to see what is running, what it uses, why it restarted and which requests it served, all of that is open source. You can also keep it on OpenTelemetry names from the agent to the dashboard. That is what we build next.
+
+<Note title="What we ran, and when">
+Everything in this series ran on 29 October 2026 on a MacBook (Apple silicon), Docker 29.3.1 with 10 CPUs and 19.5 GiB for containers, kind 0.33.0 (Kubernetes 1.37.0), Helm 4.3.0, `opentelemetry-kube-stack` 0.26.0 (collector 0.162.0), Prometheus 3.15.1, Loki 3.7.9, Tempo 3.1.1 and Grafana 13.3.0. Part 2 lists every chart version.
+</Note>
+
+Next: [part 2, the collectors](/blog/k8s-without-a-vendor-2-collectors/).

@@ -1,0 +1,202 @@
+# A two-service sample: shop-web calls shop-api. No image to build: the code is in a
+# ConfigMap and runs on the stock node image. The OpenTelemetry Operator injects the
+# Node.js auto-instrumentation into both pods.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shop
+---
+apiVersion: opentelemetry.io/v1alpha1
+kind: Instrumentation
+metadata:
+  name: nodejs
+  namespace: shop
+spec:
+  # The node-local agent. Its Service has internalTrafficPolicy: Local,
+  # so a pod always talks to the collector on its own node.
+  exporter:
+    endpoint: http://kube-stack-daemon-collector.otel.svc:4318
+  propagators: [tracecontext, baggage]
+  sampler:
+    type: parentbased_always_on
+  nodejs:
+    env:
+      # Logs go to stdout and the agent reads them from the node, so no OTLP logs here.
+      - name: OTEL_LOGS_EXPORTER
+        value: none
+      - name: OTEL_METRICS_EXPORTER
+        value: otlp
+      # Export every 15 s, not the default 60 s, so a 1-minute rate() has points.
+      - name: OTEL_METRIC_EXPORT_INTERVAL
+        value: "15000"
+      # Skip the cloud detectors: on a laptop they only time out and warn.
+      - name: OTEL_NODE_RESOURCE_DETECTORS
+        value: env,host,os,serviceinstance
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shop-code
+  namespace: shop
+data:
+  log.js: |
+    // One JSON line per request, with the active trace id, so logs and traces join.
+    let api;
+    try { api = require('/otel-auto-instrumentation-nodejs/node_modules/@opentelemetry/api'); } catch {}
+    module.exports = (level, msg, extra = {}) => {
+      const ctx = api && api.trace.getActiveSpan()?.spanContext();
+      console.log(JSON.stringify({
+        time: new Date().toISOString(), level, msg, ...extra,
+        trace_id: ctx?.traceId, span_id: ctx?.spanId,
+      }));
+    };
+  web.js: |
+    const http = require('http');
+    const log = require('./log');
+    const API = process.env.API_URL;
+    http.createServer(async (req, res) => {
+      if (req.url !== '/') { res.writeHead(404).end(); return; }
+      try {
+        const r = await fetch(`${API}/price?sku=${1 + Math.floor(Math.random() * 20)}`);
+        const body = await r.text();
+        log(r.ok ? 'info' : 'error', 'rendered home', { status: r.status });
+        res.writeHead(r.ok ? 200 : 502, { 'content-type': 'application/json' }).end(body);
+      } catch (e) {
+        log('error', 'api unreachable', { error: String(e) });
+        res.writeHead(502).end();
+      }
+    }).listen(8080, () => log('info', 'shop-web listening on 8080'));
+  api.js: |
+    const http = require('http');
+    const log = require('./log');
+    // A cache that never shrinks: memory climbs until the container limit stops it.
+    const cache = [];
+    http.createServer((req, res) => {
+      const url = new URL(req.url, 'http://x');
+      if (url.pathname !== '/price') { res.writeHead(404).end(); return; }
+      const sku = url.searchParams.get('sku');
+      cache.push(Buffer.alloc(64 * 1024, 1));
+      const delay = 20 + Math.random() * 80 + (sku === '13' ? 400 : 0);
+      setTimeout(() => {
+        if (Math.random() < 0.05) {
+          log('error', 'price lookup failed', { sku });
+          res.writeHead(500).end();
+          return;
+        }
+        log('info', 'price lookup', { sku, ms: Math.round(delay) });
+        res.writeHead(200, { 'content-type': 'application/json' })
+          .end(JSON.stringify({ sku, price: (Number(sku) * 3.5).toFixed(2) }));
+      }, delay);
+    }).listen(8080, () => log('info', 'shop-api listening on 8080'));
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shop-api
+  namespace: shop
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: shop-api}
+  template:
+    metadata:
+      labels: {app: shop-api}
+      annotations:
+        instrumentation.opentelemetry.io/inject-nodejs: "nodejs"
+    spec:
+      containers:
+        - name: api
+          image: node:24-slim
+          command: ["node", "/app/api.js"]
+          env:
+            - name: OTEL_SERVICE_NAME
+              value: shop-api
+          ports:
+            - containerPort: 8080
+          resources:
+            requests: {cpu: 50m, memory: 96Mi}
+            limits: {cpu: 250m, memory: 192Mi}
+          volumeMounts:
+            - {name: code, mountPath: /app}
+      volumes:
+        - name: code
+          configMap: {name: shop-code}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shop-api
+  namespace: shop
+spec:
+  selector: {app: shop-api}
+  ports:
+    - port: 80
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shop-web
+  namespace: shop
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: shop-web}
+  template:
+    metadata:
+      labels: {app: shop-web}
+      annotations:
+        instrumentation.opentelemetry.io/inject-nodejs: "nodejs"
+    spec:
+      containers:
+        - name: web
+          image: node:24-slim
+          command: ["node", "/app/web.js"]
+          env:
+            - name: OTEL_SERVICE_NAME
+              value: shop-web
+            - name: API_URL
+              value: http://shop-api
+          ports:
+            - containerPort: 8080
+          resources:
+            requests: {cpu: 50m, memory: 96Mi}
+            limits: {cpu: 250m, memory: 256Mi}
+          volumeMounts:
+            - {name: code, mountPath: /app}
+      volumes:
+        - name: code
+          configMap: {name: shop-code}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shop-web
+  namespace: shop
+spec:
+  selector: {app: shop-web}
+  ports:
+    - port: 80
+      targetPort: 8080
+---
+# One request about every 0.3 s, forever.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadgen
+  namespace: shop
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: loadgen}
+  template:
+    metadata:
+      labels: {app: loadgen}
+    spec:
+      containers:
+        - name: curl
+          image: curlimages/curl:8.17.0
+          command: ["sh", "-c", "while true; do curl -s -o /dev/null http://shop-web/; sleep 0.2; done"]
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {cpu: 100m, memory: 32Mi}
