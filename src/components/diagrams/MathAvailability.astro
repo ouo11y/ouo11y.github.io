@@ -1,0 +1,83 @@
+---
+// A request path as a chain of hard dependencies. Each link has an availability and a replica count;
+// replicas combine in parallel, links in series. Edit the numbers (a little JS); without JS the
+// table shows the defaults, computed at build time.
+// <MathAvailability />
+import '../../styles/diagram.css';
+import { fmtDuration, parallel, series } from './MathLib';
+
+interface Link { name: string; a: number; n: number; on?: boolean; }
+interface Props { links?: Link[]; caption?: string; }
+const { caption, links = [
+  { name: 'Load balancer', a: 99.99, n: 1 },
+  { name: 'API servers', a: 99.9, n: 2 },
+  { name: 'Database', a: 99.95, n: 1 },
+  { name: 'Payment provider', a: 99.9, n: 1 },
+] } = Astro.props;
+const eff = (l: Link) => parallel(Array(l.n).fill(l.a / 100));
+const used = links.filter((l) => l.on !== false);
+const total = series(used.map(eff));
+const pct = (x: number) => `${(x * 100).toFixed(4).replace(/0+$/, '').replace(/\.$/, '')}%`;
+---
+<figure class="dg mavail not-content" data-mavail>
+  <div class="chain">
+    {links.map((l, i) => (
+      <fieldset class="link" data-link>
+        <legend><label><input type="checkbox" checked={l.on !== false} data-on /> {l.name}</label></legend>
+        <label class="f">availability <span><input type="number" min="0" max="100" step="any" value={l.a} data-a aria-label={`${l.name} availability, percent`} />%</span></label>
+        <label class="f">replicas
+          <select data-n aria-label={`${l.name} replicas`}>{[1, 2, 3].map((k) => <option value={k} selected={k === l.n}>{k}</option>)}</select>
+        </label>
+        <p class="eff">together: <b data-eff>{pct(eff(l))}</b></p>
+      </fieldset>
+    ))}
+  </div>
+  <div class="result" aria-live="polite">
+    <p>End to end: <b class="big" data-total>{pct(total)}</b></p>
+    <p>That is <b data-down>{fmtDuration((1 - total) * 43200)}</b> of expected downtime per 30 days. The weakest link: <b data-weak>{used.reduce((w, l) => (eff(l) < eff(w) ? l : w), used[0])?.name}</b>.</p>
+  </div>
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+  import { fmtDuration, parallel, series } from './MathLib';
+  const pct = (x: number) => `${(x * 100).toFixed(4).replace(/0+$/, '').replace(/\.$/, '')}%`;
+  for (const fig of document.querySelectorAll<HTMLElement>('[data-mavail]')) {
+    const links = [...fig.querySelectorAll<HTMLElement>('[data-link]')];
+    const update = () => {
+      const rows = links.map((el) => {
+        const a = Math.min(100, Math.max(0, Number(el.querySelector<HTMLInputElement>('[data-a]')!.value) || 0)) / 100;
+        const n = Number(el.querySelector<HTMLSelectElement>('[data-n]')!.value);
+        const on = el.querySelector<HTMLInputElement>('[data-on]')!.checked;
+        const e = parallel(Array(n).fill(a));
+        el.querySelector('[data-eff]')!.textContent = pct(e);
+        el.classList.toggle('off', !on);
+        return { name: el.querySelector('legend')!.textContent!.trim(), e, on };
+      }).filter((r) => r.on);
+      const total = series(rows.map((r) => r.e));
+      fig.querySelector('[data-total]')!.textContent = pct(total);
+      fig.querySelector('[data-down]')!.textContent = fmtDuration((1 - total) * 43200);
+      fig.querySelector('[data-weak]')!.textContent = rows.length ? rows.reduce((w, r) => (r.e < w.e ? r : w)).name : 'none';
+    };
+    fig.addEventListener('input', update);
+    fig.addEventListener('change', update);
+  }
+</script>
+
+<style>
+  .chain { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; counter-reset: link; }
+  .link { position: relative; margin: 0; padding: 10px 12px; border: 1px solid var(--dg-line); border-radius: 10px; background: var(--dg-node); display: grid; gap: 6px; min-width: 0; }
+  .link.off { opacity: .5; }
+  legend { padding: 0 4px; font-weight: 700; }
+  legend label { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+  .f { display: flex; justify-content: space-between; align-items: center; gap: 6px; font-size: 13px; color: var(--dg-ink-2); }
+  .f span { display: inline-flex; align-items: center; gap: 2px; }
+  .f input, .f select { font: inherit; width: 5.5em; min-width: 0; padding: 3px 6px; border: 1px solid var(--dg-line); border-radius: 6px; background: var(--dg-bg); color: var(--dg-ink); font-variant-numeric: tabular-nums; }
+  .f select { width: auto; }
+  .eff { margin: 0; font-size: 13px; color: var(--dg-ink-3); }
+  .eff b { color: var(--dg-ink); font-variant-numeric: tabular-nums; }
+  .result { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--dg-line); }
+  .result p { margin: 4px 0; }
+  .big { font-size: 22px; color: var(--dg-accent); font-variant-numeric: tabular-nums; }
+  input:focus-visible, select:focus-visible { outline: 2px solid var(--dg-accent); outline-offset: 1px; }
+</style>

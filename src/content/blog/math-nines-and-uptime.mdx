@@ -1,0 +1,148 @@
+---
+title: "The math of observability, part 1: nines, dependencies and MTTR"
+description: What 99.9% buys you in minutes, why your uptime is capped by the things you call, and why a better MTTR can look worse on the dashboard. With a calculator and a simulator.
+date: 2026-10-29
+tags: [math, reliability, uptime, sre]
+series: "The math of observability"
+part: 1
+---
+import MathNines from '../../components/diagrams/MathNines.astro';
+import MathAvailability from '../../components/diagrams/MathAvailability.astro';
+import MathMttr from '../../components/diagrams/MathMttr.astro';
+import MathFormula from '../../components/diagrams/MathFormula.astro';
+import Note from '../../components/Note.astro';
+
+Every on-call engineer uses a handful of formulas: how much downtime a target allows, how dependencies combine, how fast a queue blows up, why the average latency lies, what a 1% sample can and cannot tell you. Few of us were taught them. This series works through them one at a time, each with a widget you can play with and each tied to a decision you make with real telemetry.
+
+Part 1 is about availability: the nines, how availability composes across dependencies, and the two numbers every postmortem template asks for, MTBF and MTTR.
+
+## Where the nines come from
+
+Counting nines is older than the web. The Bell System designed its telephone switches for availability measured in hours per decades: the No. 1 ESS, the first electronic switch, put in service in 1965, had a design goal of no more than two hours of downtime in 40 years ([Downing, Nowak and Tuomenoksa, Bell System Technical Journal, 1964](https://archive.org/details/bstj43-5-1961)). That is about 99.9994%, and it is where "five nines" got its reputation as the gold standard.
+
+The vocabulary for failure and repair came from reliability engineering in the 1950s, when the US military found its electronics failing faster than it could repair them. Mean time between failures (MTBF) became a contract requirement, and handbooks such as MIL-HDBK-217 standardised how to predict it. Software operations borrowed both words. Google's SRE book turned them into a practice: pick a target, measure against it, and spend what is left as an error budget ([Site Reliability Engineering, chapter 3](https://sre.google/sre-book/embracing-risk/)).
+
+## Nines into minutes
+
+An availability target is a fraction of time (or of requests) that must be good. What is left over is the downtime you are allowed in a window:
+
+<MathFormula label="Allowed downtime equals one minus A, times the length of the window">allowed downtime = (1 − <var>A</var>) × window</MathFormula>
+
+The window matters as much as the target. 99.9% allows 43 minutes over 30 days, but only 1 minute 26 seconds over a day. A 40-minute outage keeps a monthly 99.9% and breaks a daily one. Type your own target:
+
+<MathNines value={99.9} caption="Allowed downtime for an availability target. A 30-day window and a 365-day year; a calendar month (28 to 31 days) moves the monthly numbers by up to 7%." />
+
+Two things to read from the table:
+
+- **Each nine gives you ten times less room.** At 99.99% a 30-day window allows 4 minutes 19 seconds. Your paging, someone opening a laptop and a rollback together take longer than that. A fourth nine is a decision to automate detection and rollback, not a goal you can reach by trying harder.
+- **The number is only as good as the definition of "down".** Time-based availability (minutes the service was up) and request-based availability (good requests / all requests) give different answers for a partial outage. Which one to use, and how to turn it into an error budget and burn-rate alerts, is the subject of our [SLOs from first principles](/blog/series/slos-from-first-principles/) series. Here we stay with the arithmetic.
+
+## Dependencies multiply
+
+If a request needs component A **and** component B to work, and they fail independently, the request works with probability:
+
+<MathFormula label="A of the system equals the product of the availabilities of its components in series">
+  <var>A</var><sub>series</sub> = <var>A</var><sub>1</sub> × <var>A</var><sub>2</sub> × … × <var>A</var><sub>n</sub>
+</MathFormula>
+
+Products of numbers below 1 only go down. Five hard dependencies at 99.9% each give 0.999<sup>5</sup> = 99.50%: 3 hours 36 minutes of expected downtime per 30 days instead of 43 minutes. Your availability is capped by your dependencies, and it is capped by their **product**, which is worse than the worst of them.
+
+Redundancy works the other way. If a request needs **any one of** n replicas, it fails only when all of them are down at once:
+
+<MathFormula label="A parallel equals one minus the product of one minus each A">
+  <var>A</var><sub>parallel</sub> = 1 − (1 − <var>A</var><sub>1</sub>) × (1 − <var>A</var><sub>2</sub>) × … × (1 − <var>A</var><sub>n</sub>)
+</MathFormula>
+
+Two replicas at 99% give 1 − 0.01² = 99.99%. That looks like magic, and it rests on one word in the derivation: **independently**. Below, a typical request path: try turning on the third API replica, and then look at which link is left holding you back.
+
+<MathAvailability caption="Links in series multiply; replicas inside a link combine in parallel. Expected downtime uses a 30-day window. Assumes independent failures, which real systems rarely have." />
+
+With the defaults, the path is at 99.84%, about 69 minutes of downtime per 30 days, and the payment provider is the weakest link: a second API replica moved the API from 99.9% to 99.9999%, and that is no longer where your minutes go.
+
+<Note type="caution" title="Where the formulas lie">
+Replicas behind the same load balancer, in the same region, running the same build with the same config fail together. A bad deploy takes down every replica at once; the parallel formula assumes it takes down one. Treat the parallel number as an upper bound, and spend redundancy where failures really are independent (different zones, different versions rolled out in stages). Failover also takes time: the seconds it takes a health check to notice are downtime the formula does not count.
+</Note>
+
+The series formula gives a rule of thumb that Google wrote down in [The Calculus of Service Availability](https://queue.acm.org/detail.cfm?id=3096459) (Treynor Sloss, Dahlin, Rau and Beyer, ACM Queue, 2017): a service should expect its critical dependencies to be about one nine more available than itself, because it shares its error budget with all of them. Ten dependencies at 99.99% use up 99.9% on their own (0.9999<sup>10</sup> = 99.90%), leaving nothing for your own bugs. The other option the paper describes is to make a dependency not critical: cache, degrade, or fail open, so its outage does not become yours.
+
+This is also where observability earns its keep: you cannot compose availability you do not measure. Measure each dependency from the caller's side (client spans and their error status), not from the dependency's own status page.
+
+## MTBF, MTTR and steady-state availability
+
+If a component fails on average every MTBF hours and takes MTTR hours to repair, the long-run share of time it is up is:
+
+<MathFormula label="A equals MTBF divided by MTBF plus MTTR" note="Strictly, MTTF (mean time to failure, up time only); in operations MTBF is usually used for the same thing.">
+  <var>A</var> = MTBF / (MTBF + MTTR)
+</MathFormula>
+
+A one-hour outage every 30 days gives 720 / 721 = 99.861%. Look at the shape of the formula: when MTTR is small compared with MTBF, the unavailability is close to MTTR / MTBF. **Halving MTTR buys exactly as much availability as doubling MTBF**: an outage every 60 days lasting an hour and an outage every 30 days lasting 30 minutes both give 99.931%.
+
+So why do SRE teams obsess over MTTR? Not because the formula favours it, but because of what each side is made of. MTBF is the time until something you did not foresee goes wrong; you can push it up with testing and staged rollouts, but you cannot schedule it. MTTR is a sum of steps you own: time to detect, time to find the cause, time to mitigate. Good alerts shrink the first, traces and logs that connect a symptom to a cause shrink the second, and a one-click rollback shrinks the third. Most of an observability platform's value is in that sum.
+
+## Did it improve? The statistics of few incidents
+
+Here is the trap. You invest in faster detection, and next quarter you want to show it worked. Two numbers come to mind: the incident count and the MTTR. Both are noisy, and a quarter has few incidents.
+
+**Incident counts.** If incidents arrive at random at a steady rate, the count per quarter is a Poisson variable. Say you had 9 incidents last quarter and 5 this quarter. If nothing changed, each of the 14 incidents was equally likely to land in either quarter, so the chance of 5 or fewer landing in the second is a binomial tail:
+
+<MathFormula label="P of X at most 5 for X binomial with n 14 and p one half equals 0.21">
+  P(<var>X</var> ≤ 5), <var>X</var> ~ Binomial(14, ½) = 0.21
+</MathFormula>
+
+A 21% chance of a drop at least this big by luck alone. 10 against 3 gets you to 4.6%. A real improvement needs either a large effect or many quarters.
+
+**MTTR.** Incident durations are skewed: most are resolved in under an hour, a few take a day. Means of skewed data move a lot with one long incident. Štěpán Davidovič showed with real incident data and simulations that MTTR changes are mostly noise at the incident counts most teams have ([Incident Metrics in SRE, Google/O'Reilly, 2021](https://sre.google/resources/practices-and-processes/incident-metrics-in-sre/)). Our own simulation below makes the same point: the team truly got 20% faster, durations follow a lognormal distribution, and we count how often the second quarter's MTTR still comes out higher than the first.
+
+<MathMttr n={10} improvement={0.2} sigma={1} caption="With 10 incidents a quarter and a realistic spread, a real 20% improvement shows up as a worse MTTR in about a third of quarters. σ = 1 means the slowest 10% of incidents take at least 3.6 times the median." />
+
+With σ = 1 and 10 incidents per quarter, a true 20% improvement looks like a regression 34% of the time. At 50 incidents it is still 19%; you need about 200 per quarter to get it under 5%. Drag the spread down to 0.5 (durations that are all alike) and the noise shrinks; drag it to 1.5 and MTTR becomes close to a coin toss.
+
+What to do instead:
+
+- **Measure the steps, not the sum.** Time to detect (alert fired minus impact started) has a much smaller spread than time to resolve, so it shows real changes sooner. Your alerting and your SLO burn-rate rules control it directly.
+- **Look at distributions.** Median and p90 of incident durations, per severity, over a rolling year, tell you more than one mean per quarter.
+- **Use the error budget as the outcome.** Minutes of user-visible badness per window already combine frequency and duration, weighted by impact. That is the number the [SLO series](/blog/series/slos-from-first-principles/) builds.
+
+## Check the numbers yourself
+
+Every number in this post comes from the formulas above. This Node script (Node 24, no packages) prints them; the simulation uses the same seeded generator as the widget, so you get the same 34%.
+
+```js
+// nines.mjs: run with `node nines.mjs`
+const month = 30 * 24 * 60; // minutes
+const series = (as) => as.reduce((p, a) => p * a, 1);
+const parallel = (as) => 1 - as.reduce((p, a) => p * (1 - a), 1);
+console.log('99.9% per 30 days, min:', ((1 - 0.999) * month).toFixed(1));     // 43.2
+console.log('5 deps at 99.9%:', series(Array(5).fill(0.999)));                  // 0.99501
+console.log('2 replicas at 99%:', parallel([0.99, 0.99]));                       // 0.9999
+console.log('10 deps at 99.99%:', series(Array(10).fill(0.9999)));               // 0.99900
+console.log('example path:', series([0.9999, parallel([0.999, 0.999]), 0.9995, 0.999])); // 0.99840
+console.log('1 h every 30 d:', 720 / 721);                                       // 0.99861
+
+// P(X <= 5) for X ~ Binomial(14, 1/2)
+let p = 0, c = 1;
+for (let i = 0; i <= 5; i++) { p += c / 2 ** 14; c = (c * (14 - i)) / (i + 1); }
+console.log('9 then 5 incidents, p =', p.toFixed(3));                           // 0.212
+
+// How often does a true 20% MTTR improvement look worse? (lognormal, sigma 1, 10 incidents)
+function rng(s) { return () => { s = (s + 0x6d2b79f5) | 0; let t = Math.imul(s ^ (s >>> 15), 1 | s); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+const r = rng(7), normal = () => Math.sqrt(-2 * Math.log(1 - r())) * Math.cos(2 * Math.PI * r());
+const sigma = 1, n = 10, trials = 4000, mu = (m) => Math.log(m) - sigma ** 2 / 2;
+let worse = 0;
+for (let t = 0; t < trials; t++) {
+  let a = 0, b = 0;
+  for (let i = 0; i < n; i++) { a += Math.exp(mu(60) + sigma * normal()); b += Math.exp(mu(48) + sigma * normal()); }
+  if (b > a) worse++;
+}
+console.log('looks worse:', worse / trials);                                     // 0.34
+```
+
+In [part 2](/blog/math-percentiles-and-histograms/) we leave availability for latency: why the average lies, why you cannot average a p99, and how histograms, including OpenTelemetry's exponential ones, make percentiles add up.
+
+## Sources
+
+- R. W. Downing, J. S. Nowak, L. S. Tuomenoksa, "No. 1 ESS Maintenance Plan", *Bell System Technical Journal* 43(5), 1964, which states the two-hours-in-40-years objective.
+- B. Treynor Sloss, M. Dahlin, V. Rau, B. Beyer, "[The Calculus of Service Availability](https://queue.acm.org/detail.cfm?id=3096459)", *ACM Queue* 15(2), 2017.
+- B. Beyer, C. Jones, J. Petoff, N. R. Murphy (eds.), *[Site Reliability Engineering](https://sre.google/sre-book/table-of-contents/)*, O'Reilly, 2016, chapters 3 and 4.
+- Š. Davidovič, *[Incident Metrics in SRE: Critically Evaluating MTTR and Friends](https://sre.google/resources/practices-and-processes/incident-metrics-in-sre/)*, O'Reilly, 2021.
+- MIL-HDBK-217, *Reliability Prediction of Electronic Equipment*, US Department of Defense, first published in the early 1960s.

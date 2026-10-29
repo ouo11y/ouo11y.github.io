@@ -1,0 +1,19 @@
+---
+// A displayed formula in plain HTML (use <var>, <sub>, <sup> in the slot), with an optional
+// plain-words reading for screen readers and an optional note under it.
+// <MathFormula label="Downtime equals one minus availability, times the window">downtime = (1 − <var>A</var>) × window</MathFormula>
+interface Props { label?: string; note?: string; }
+const { label, note } = Astro.props;
+---
+<div class="mformula not-content" role={label ? 'math' : undefined} aria-label={label}>
+  <p class="f"><slot /></p>
+  {note && <p class="n">{note}</p>}
+</div>
+
+<style>
+  .mformula { margin: 1.25rem 0; padding: 14px 18px; border-radius: 12px; background: var(--bg-2, transparent); border: 1px solid var(--line, #e2e8f0); text-align: center; overflow-x: auto; }
+  .f { margin: 0; font-family: 'Cambria Math', 'STIX Two Math', 'Latin Modern Math', Georgia, serif; font-size: 20px; line-height: 1.6; white-space: nowrap; }
+  .f :global(var) { font-style: italic; }
+  .f :global(sub), .f :global(sup) { font-size: .7em; }
+  .n { margin: 6px 0 0; font-size: 13px; color: var(--ink-3, #64748b); }
+</style>

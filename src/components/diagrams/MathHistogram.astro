@@ -1,0 +1,131 @@
+---
+// The same 2,000 latencies stored two ways: OpenTelemetry's default explicit buckets, and a base-2
+// exponential histogram at a chosen scale. Shows the bucket edges on a log axis and how far each
+// estimate of p50/p95/p99 lands from the truth. Sliders (a little JS); without JS, the props.
+// <MathHistogram tailMs={1200} scale={3} />
+import '../../styles/diagram.css';
+import { OTEL_DEFAULT_BOUNDS, autoScale, expBase, expIndex, expQuantile, expRelError, explicitQuantile, fmtMs, latencySample, quantile } from './MathLib';
+
+interface Props { tailMs?: number; scale?: number; caption?: string; }
+const { tailMs = 1200, scale = 3, caption } = Astro.props;
+const qs = [0.5, 0.95, 0.99];
+
+function model(tailMs: number, scale: number) {
+  const xs = latencySample(0.02, tailMs);
+  const rows = qs.map((q) => {
+    const t = quantile(xs, q), e = explicitQuantile(xs, OTEL_DEFAULT_BOUNDS, q), x = expQuantile(xs, scale, q);
+    return { q, t, e, x };
+  });
+  return { xs, rows, buckets: expIndex(xs[xs.length - 1], scale) - expIndex(xs[0], scale) + 1, auto: autoScale(xs[0], xs[xs.length - 1]) };
+}
+const err = (est: number, t: number) => `${est >= t ? '+' : '−'}${Math.abs((est / t - 1) * 100).toFixed(1)}%`;
+const m = model(tailMs, scale);
+
+// axis strip, 10 ms .. 10 s
+const W = 720, L = 16, R = 16;
+const x = (v: number) => L + ((Math.log10(v) - 1) / 3) * (W - L - R);
+const strip = (tailMs: number, scale: number, rows: typeof m.rows) => {
+  let s = '';
+  for (const t of [10, 100, 1000, 10000]) s += `<text class="xt" x="${x(t)}" y="96" text-anchor="middle">${t >= 1000 ? `${t / 1000} s` : `${t} ms`}</text>`;
+  s += `<text class="lab" x="${L}" y="12">explicit (OTel default)</text><text class="lab" x="${L}" y="58">exponential, scale ${scale}</text>`;
+  for (const b of OTEL_DEFAULT_BOUNDS) if (b >= 10) s += `<line class="e" x1="${x(b)}" x2="${x(b)}" y1="18" y2="38"/>`;
+  const base = expBase(scale);
+  for (let i = Math.ceil(Math.log(10) / Math.log(base)); base ** i <= 10000; i++) s += `<line class="x" x1="${x(base ** i).toFixed(1)}" x2="${x(base ** i).toFixed(1)}" y1="64" y2="80"/>`;
+  rows.forEach((r, k) => { s += `<g class="q q${k}"><line x1="${x(r.t)}" x2="${x(r.t)}" y1="16" y2="82"/></g>`; });
+  return s;
+};
+---
+<figure class="dg mhist not-content" data-mhist data-tail={tailMs} data-scale={scale}>
+  <div class="ctl">
+    <label>Exponential scale <output data-out="s">{scale}</output>
+      <input type="range" min="0" max="6" step="1" value={scale} data-in="s" /></label>
+    <label>Slow 2% of requests at <output data-out="m">{fmtMs(tailMs)}</output>
+      <input type="range" min="200" max="5000" step="100" value={tailMs} data-in="m" /></label>
+  </div>
+  <svg viewBox="0 0 720 104" role="img" aria-label="Bucket edges of both histograms on a log axis, with the true percentiles marked" set:html={strip(tailMs, scale, m.rows)} data-strip />
+  <p class="info" aria-live="polite">Scale <b data-v="scale">{scale}</b>: base 2<sup>2<sup>−<span data-v="scale2">{scale}</span></sup></sup> = <b data-v="base">{expBase(scale).toFixed(4)}</b>, every estimate within <b data-v="rel">±{(expRelError(scale) * 100).toFixed(2)}%</b>, <b data-v="buckets">{m.buckets}</b> buckets used for this data (an SDK with the default 160 buckets would pick scale <b data-v="auto">{m.auto}</b>).</p>
+  <div class="tbl">
+    <table>
+      <thead><tr><th scope="col"></th><th scope="col">true</th><th scope="col">explicit buckets</th><th scope="col">exponential</th></tr></thead>
+      <tbody>
+        {m.rows.map((r, k) => (
+          <tr data-row={k}>
+            <th scope="row"><i class={`q${k}`} />p{Math.round(r.q * 100)}</th>
+            <td data-c="t">{fmtMs(r.t)}</td>
+            <td><span data-c="e">{fmtMs(r.e.est)}</span> <small data-c="ee">{err(r.e.est, r.t)}</small></td>
+            <td><span data-c="x">{fmtMs(r.x.est)}</span> <small data-c="xe">{err(r.x.est, r.t)}</small></td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  </div>
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+  import { OTEL_DEFAULT_BOUNDS, autoScale, expBase, expIndex, expQuantile, expRelError, explicitQuantile, fmtMs, latencySample, quantile } from './MathLib';
+  const err = (est: number, t: number) => `${est >= t ? '+' : '−'}${Math.abs((est / t - 1) * 100).toFixed(1)}%`;
+  const W = 720, L = 16, R = 16;
+  const x = (v: number) => L + ((Math.log10(v) - 1) / 3) * (W - L - R);
+  for (const fig of document.querySelectorAll<HTMLElement>('[data-mhist]')) {
+    const sIn = fig.querySelector<HTMLInputElement>('[data-in="s"]')!;
+    const mIn = fig.querySelector<HTMLInputElement>('[data-in="m"]')!;
+    const svg = fig.querySelector<SVGElement>('[data-strip]')!;
+    const set = (sel: string, text: string) => { for (const el of fig.querySelectorAll(sel)) el.textContent = text; };
+    const update = () => {
+      const scale = +sIn.value, tailMs = +mIn.value;
+      const xs = latencySample(0.02, tailMs);
+      const rows = [0.5, 0.95, 0.99].map((q) => ({ t: quantile(xs, q), e: explicitQuantile(xs, OTEL_DEFAULT_BOUNDS, q), x: expQuantile(xs, scale, q) }));
+      rows.forEach((r, k) => {
+        const row = fig.querySelector(`[data-row="${k}"]`)!;
+        row.querySelector('[data-c="t"]')!.textContent = fmtMs(r.t);
+        row.querySelector('[data-c="e"]')!.textContent = fmtMs(r.e.est);
+        row.querySelector('[data-c="ee"]')!.textContent = err(r.e.est, r.t);
+        row.querySelector('[data-c="x"]')!.textContent = fmtMs(r.x.est);
+        row.querySelector('[data-c="xe"]')!.textContent = err(r.x.est, r.t);
+      });
+      set('[data-out="s"]', String(scale)); set('[data-out="m"]', fmtMs(tailMs));
+      set('[data-v="scale"]', String(scale)); set('[data-v="scale2"]', String(scale));
+      set('[data-v="base"]', expBase(scale).toFixed(4)); set('[data-v="rel"]', `±${(expRelError(scale) * 100).toFixed(2)}%`);
+      set('[data-v="buckets"]', String(expIndex(xs[xs.length - 1], scale) - expIndex(xs[0], scale) + 1));
+      set('[data-v="auto"]', String(autoScale(xs[0], xs[xs.length - 1])));
+      let s = '';
+      for (const t of [10, 100, 1000, 10000]) s += `<text class="xt" x="${x(t)}" y="96" text-anchor="middle">${t >= 1000 ? `${t / 1000} s` : `${t} ms`}</text>`;
+      s += `<text class="lab" x="${L}" y="12">explicit (OTel default)</text><text class="lab" x="${L}" y="58">exponential, scale ${scale}</text>`;
+      for (const b of OTEL_DEFAULT_BOUNDS) if (b >= 10) s += `<line class="e" x1="${x(b)}" x2="${x(b)}" y1="18" y2="38"/>`;
+      const base = expBase(scale);
+      for (let i = Math.ceil(Math.log(10) / Math.log(base)); base ** i <= 10000; i++) s += `<line class="x" x1="${x(base ** i).toFixed(1)}" x2="${x(base ** i).toFixed(1)}" y1="64" y2="80"/>`;
+      rows.forEach((r, k) => { s += `<g class="q q${k}"><line x1="${x(r.t)}" x2="${x(r.t)}" y1="16" y2="82"/></g>`; });
+      svg.innerHTML = s;
+    };
+    sIn.addEventListener('input', update);
+    mIn.addEventListener('input', update);
+  }
+</script>
+
+<style>
+  .ctl { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px 20px; margin-bottom: 10px; }
+  .ctl label { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; font-size: 13px; }
+  .ctl input { grid-column: 1 / -1; width: 100%; accent-color: var(--dg-accent); }
+  .ctl output { font-weight: 700; font-variant-numeric: tabular-nums; }
+  svg { width: 100%; height: auto; display: block; }
+  svg :global(text) { font-size: 12px; fill: var(--dg-ink-3); }
+  svg :global(.lab) { fill: var(--dg-ink-2); font-weight: 600; }
+  svg :global(.e) { stroke: var(--dg-ink-2); stroke-width: 2; }
+  svg :global(.x) { stroke: var(--dg-accent); stroke-width: 1; }
+  svg :global(.q line) { stroke-width: 2; stroke-dasharray: 3 3; }
+  .mhist :global(.q0) { --q: var(--dg-ok); } .mhist :global(.q1) { --q: var(--dg-warn); } .mhist :global(.q2) { --q: var(--dg-bad); }
+  svg :global(.q line) { stroke: var(--q); }
+  .info { font-size: 13px; color: var(--dg-ink-2); margin: 10px 0; }
+  .info b { color: var(--dg-ink); font-variant-numeric: tabular-nums; }
+  .tbl { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 13px; }
+  th, td { text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--dg-line); white-space: nowrap; }
+  th:first-child { text-align: left; }
+  thead th { color: var(--dg-ink-3); font-weight: 600; }
+  th i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; background: var(--q); margin-right: 6px; }
+  small { color: var(--dg-ink-3); }
+  .mhist { container-type: inline-size; }
+  @container (max-width: 480px) { td small { display: block; } th, td { padding: 6px 4px; } }
+  input:focus-visible { outline: 2px solid var(--dg-accent); outline-offset: 2px; }
+</style>

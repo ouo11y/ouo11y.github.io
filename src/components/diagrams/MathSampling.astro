@@ -1,0 +1,92 @@
+---
+// Head sampling a stream of traces: what a probability p keeps, how many errors survive, and what
+// one day of hourly error-rate estimates looks like with 95% intervals. Selects and a Resample
+// button (a little JS); without JS the figure shows the props, simulated at build time.
+// <MathSampling perHour={60000} errIdx={4} p={0.01} />
+import '../../styles/diagram.css';
+import { samplingSvg, simulateHours } from './MathLib';
+
+const RATES = [0.0001, 0.0002, 0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05];
+const VOLUMES = [6000, 60000, 600000, 6000000];
+const PROBS = [1, 0.5, 0.25, 0.1, 0.05, 0.01, 0.001];
+interface Props { perHour?: number; errIdx?: number; p?: number; caption?: string; }
+const { perHour = 60000, errIdx = 4, p = 0.01, caption } = Astro.props;
+const e = RATES[errIdx];
+const hours = simulateHours(perHour, e, p);
+const pc = (v: number) => `${+(v * 100).toPrecision(3)}%`;
+const int = (v: number) => v.toLocaleString('en-US', { maximumFractionDigits: v < 10 ? 1 : 0 });
+const errs = Math.round(perHour * e);
+---
+<figure class="dg msamp not-content" data-msamp data-rates={JSON.stringify(RATES)}>
+  <div class="ctl">
+    <label>Traces per hour
+      <select data-in="v">{VOLUMES.map((v) => <option value={v} selected={v === perHour}>{v.toLocaleString('en-US')}</option>)}</select></label>
+    <label>Error rate <output data-out="e">{pc(e)}</output>
+      <input type="range" min="0" max={RATES.length - 1} step="1" value={errIdx} data-in="e" aria-valuetext={pc(e)} /></label>
+    <label>Sampling probability
+      <select data-in="p">{PROBS.map((v) => <option value={v} selected={v === p}>{pc(v)}</option>)}</select></label>
+  </div>
+  <dl class="kpi" aria-live="polite">
+    <div><dt>traces kept per hour</dt><dd data-k="kept">{int(perHour * p)}</dd></div>
+    <div><dt>error traces kept per hour</dt><dd data-k="ek">{int(errs * p)}</dd><dd class="sub">of <span data-k="errs">{int(errs)}</span></dd></div>
+    <div><dt>hours with no error trace kept</dt><dd data-k="none">{pc((1 - p) ** errs)}</dd></div>
+    <div><dt>each kept trace stands for</dt><dd data-k="adj">{int(1 / p)}</dd><dd class="sub">traces (adjusted count)</dd></div>
+  </dl>
+  <p class="head">24 sampled hours: estimated error rate and 95% interval <button type="button" data-resample>Resample</button></p>
+  <svg viewBox={`0 0 480 ${30 + 16 * hours.length}`} role="img" aria-label="For each of 24 hours, the error rate estimated from the sample with its 95% interval, against the true rate" set:html={samplingSvg(hours, e)} />
+  <p class="legend"><span class="t">┆ true rate</span> <span>● estimate</span> <span>— 95% interval</span> <span class="m">red: interval misses the truth</span></p>
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+  import { samplingSvg, simulateHours } from './MathLib';
+  const pc = (v: number) => `${+(v * 100).toPrecision(3)}%`;
+  const int = (v: number) => v.toLocaleString('en-US', { maximumFractionDigits: v < 10 ? 1 : 0 });
+  for (const fig of document.querySelectorAll<HTMLElement>('[data-msamp]')) {
+    const RATES: number[] = JSON.parse(fig.dataset.rates!);
+    const v = fig.querySelector<HTMLSelectElement>('[data-in="v"]')!;
+    const e = fig.querySelector<HTMLInputElement>('[data-in="e"]')!;
+    const p = fig.querySelector<HTMLSelectElement>('[data-in="p"]')!;
+    const svg = fig.querySelector('svg')!;
+    const set = (k: string, t: string) => { fig.querySelector(`[data-k="${k}"]`)!.textContent = t; };
+    let seed = 1;
+    const update = () => {
+      const perHour = +v.value, rate = RATES[+e.value], prob = +p.value, errs = Math.round(perHour * rate);
+      fig.querySelector('[data-out="e"]')!.textContent = pc(rate);
+      e.setAttribute('aria-valuetext', pc(rate));
+      set('kept', int(perHour * prob)); set('ek', int(errs * prob)); set('errs', int(errs));
+      set('none', pc((1 - prob) ** errs)); set('adj', int(1 / prob));
+      svg.innerHTML = samplingSvg(simulateHours(perHour, rate, prob, 24, seed), rate);
+    };
+    for (const el of [v, e, p]) el.addEventListener('input', update);
+    fig.querySelector('[data-resample]')!.addEventListener('click', () => { seed++; update(); });
+  }
+</script>
+
+<style>
+  .ctl { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px 20px; margin-bottom: 14px; }
+  .ctl label { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 8px; font-size: 13px; align-content: start; }
+  .ctl input, .ctl select { grid-column: 1 / -1; width: 100%; }
+  .ctl input { accent-color: var(--dg-accent); }
+  .ctl select { font: inherit; padding: 4px 6px; border: 1px solid var(--dg-line); border-radius: 6px; background: var(--dg-node); color: var(--dg-ink); }
+  .ctl output { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .kpi { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin: 0 0 14px; }
+  .kpi div { padding: 8px 10px; border-radius: 8px; background: var(--dg-node); border: 1px solid var(--dg-line); }
+  .kpi dt { font-size: 12px; color: var(--dg-ink-3); }
+  .kpi dd { margin: 0; font-size: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .kpi dd.sub { font-size: 12px; font-weight: 400; color: var(--dg-ink-3); }
+  .head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; font-weight: 600; margin: 0 0 6px; }
+  .head button { font: inherit; font-size: 13px; padding: 4px 12px; border-radius: 999px; border: 1px solid var(--dg-accent); background: transparent; color: var(--dg-accent); cursor: pointer; }
+  svg { width: 100%; max-width: 560px; height: auto; display: block; margin: 0 auto; }
+  svg :global(text) { font-size: 12px; fill: var(--dg-ink-3); font-variant-numeric: tabular-nums; }
+  svg :global(.grid) { stroke: var(--dg-line); }
+  svg :global(.ci) { stroke: var(--dg-ink-2); stroke-width: 2; }
+  svg :global(.pt) { fill: var(--dg-accent); }
+  svg :global(.pt.zero) { fill: var(--dg-bg); stroke: var(--dg-accent); stroke-width: 1.5; }
+  svg :global(.miss .ci) { stroke: var(--dg-bad); }
+  svg :global(.miss .pt) { fill: var(--dg-bad); }
+  svg :global(.truth) { stroke: var(--dg-ok); stroke-width: 2; stroke-dasharray: 4 3; }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: var(--dg-ink-3); margin: 8px 0 0; }
+  .legend .t { color: var(--dg-ok); } .legend .m { color: var(--dg-bad); }
+  input:focus-visible, select:focus-visible, button:focus-visible { outline: 2px solid var(--dg-accent); outline-offset: 2px; }
+</style>

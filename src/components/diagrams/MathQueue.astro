@@ -1,0 +1,182 @@
+---
+// A queue in front of c servers (M/M/c): the latency curve against utilization, and a live simulation
+// that measures L, λ and W so the reader can watch L = λW hold. Play/Run buttons and sliders (JS);
+// without JS the curve and the theory numbers show the props, computed at build time.
+// <MathQueue servers={1} rho={0.8} />
+import '../../styles/diagram.css';
+import { erlangC, mmcResponse, queueCurveSvg } from './MathLib';
+
+interface Props { servers?: number; rho?: number; caption?: string; }
+const { servers = 1, rho = 0.8, caption } = Astro.props;
+const S = 0.1; // mean service time, seconds
+const lam = (rho * servers) / S;
+const w = mmcResponse(servers, rho) * S;
+const ms = (v: number) => (v === Infinity ? '∞' : v >= 10 ? `${v.toFixed(1)} s` : `${Math.round(v * 1000)} ms`);
+---
+<figure class="dg mq not-content" data-mq>
+  <div class="ctl">
+    <label>Servers
+      <select data-in="c">{[1, 2, 4, 8].map((c) => <option value={c} selected={c === servers}>{c}</option>)}</select></label>
+    <label>Utilization ρ <output data-out="rho">{Math.round(rho * 100)}%</output>
+      <input type="range" min="0.1" max="0.98" step="0.02" value={rho} data-in="rho" /></label>
+  </div>
+  <p class="given" aria-live="polite">Each request needs <b>100 ms</b> of a server on average. At this utilization <b data-v="lam">{lam.toFixed(1)}</b> requests arrive per second; theory says a request spends <b data-v="w">{ms(w)}</b> in the system (<b data-v="wq">{ms(w - S)}</b> of it waiting), and <b data-v="pw">{Math.round(erlangC(servers, rho * servers) * 100)}%</b> of requests wait at all.</p>
+  <svg class="curve" viewBox="0 0 720 240" role="img" aria-label="Mean time in system, in multiples of the service time, against utilization" set:html={queueCurveSvg(servers, rho)} data-curve />
+  <p class="legend"><span class="cc">— {servers} server{servers > 1 ? 's' : ''}</span>{servers !== 1 && <span class="c1">┅ 1 server, for comparison</span>}</p>
+
+  <div class="sim" data-sim hidden>
+    <div class="lane" aria-hidden="true">
+      <div class="queue" data-queue></div>
+      <div class="servers" data-servers></div>
+    </div>
+    <div class="buttons">
+      <button type="button" data-play aria-pressed="false">Play</button>
+      <button type="button" data-run>Run 100,000 requests</button>
+      <button type="button" data-reset>Reset</button>
+    </div>
+    <dl class="kpi" aria-live="polite">
+      <div><dt>time simulated</dt><dd data-m="t">0 s</dd></div>
+      <div><dt>λ, arrivals per second</dt><dd data-m="lam">–</dd></div>
+      <div><dt>W, mean time in system</dt><dd data-m="w">–</dd></div>
+      <div><dt>L, mean number in system</dt><dd data-m="l">–</dd></div>
+      <div class="hl"><dt>λ × W</dt><dd data-m="lw">–</dd></div>
+    </dl>
+  </div>
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+  import { erlangC, mmcResponse, queueCurveSvg } from './MathLib';
+  const S = 0.1;
+  const ms = (v: number) => (v === Infinity ? '∞' : v >= 10 ? `${v.toFixed(1)} s` : `${Math.round(v * 1000)} ms`);
+  const exp = (rate: number) => -Math.log(1 - Math.random()) / rate;
+
+  for (const fig of document.querySelectorAll<HTMLElement>('[data-mq]')) {
+    const cIn = fig.querySelector<HTMLSelectElement>('[data-in="c"]')!;
+    const rIn = fig.querySelector<HTMLInputElement>('[data-in="rho"]')!;
+    const sim = fig.querySelector<HTMLElement>('[data-sim]')!;
+    const queueEl = fig.querySelector<HTMLElement>('[data-queue]')!;
+    const serversEl = fig.querySelector<HTMLElement>('[data-servers]')!;
+    const play = fig.querySelector<HTMLButtonElement>('[data-play]')!;
+    sim.hidden = false;
+
+    // simulation state, virtual seconds
+    let c = 1, lam = 8, now = 0, nextArrival = 0, busy: number[] = [], queue: number[] = [], start: number[] = [];
+    let area = 0, arrivals = 0, done = 0, sumW = 0, running = false, last = 0;
+    const reset = () => {
+      c = +cIn.value; lam = (+rIn.value * c) / S;
+      now = 0; nextArrival = exp(lam); busy = new Array(c).fill(Infinity); start = new Array(c).fill(0); queue = [];
+      area = 0; arrivals = 0; done = 0; sumW = 0;
+      serversEl.innerHTML = Array.from({ length: c }, () => '<i class="srv"></i>').join('');
+      draw();
+    };
+    // advance to time `until`, event by event
+    const advance = (until: number) => {
+      for (;;) {
+        const inSystem = queue.length + busy.filter((b) => b !== Infinity).length;
+        let k = 0;
+        for (let i = 1; i < c; i++) if (busy[i] < busy[k]) k = i;
+        const t = Math.min(nextArrival, busy[k], until);
+        area += inSystem * (t - now);
+        now = t;
+        if (t === until) return;
+        if (t === busy[k]) {
+          done++; sumW += now - start[k];
+          if (queue.length) { start[k] = queue.shift()!; busy[k] = now + exp(1 / S); } else busy[k] = Infinity;
+        } else {
+          arrivals++;
+          const free = busy.indexOf(Infinity);
+          if (free >= 0) { start[free] = now; busy[free] = now + exp(1 / S); } else queue.push(now);
+          nextArrival = now + exp(lam);
+        }
+      }
+    };
+    const set = (k: string, t: string) => { fig.querySelector(`[data-m="${k}"]`)!.textContent = t; };
+    const draw = () => {
+      const shown = Math.min(queue.length, 30);
+      queueEl.innerHTML = (queue.length > shown ? `<span class="more">+${queue.length - shown}</span>` : '') + '<i class="job"></i>'.repeat(shown);
+      [...serversEl.children].forEach((el, i) => el.classList.toggle('on', busy[i] !== Infinity));
+      set('t', `${now.toFixed(now < 100 ? 1 : 0)} s`);
+      if (now > 0 && done > 0) {
+        const L = area / now, l = arrivals / now, W = sumW / done;
+        set('lam', l.toFixed(2)); set('w', ms(W)); set('l', L.toFixed(2)); set('lw', (l * W).toFixed(2));
+      } else for (const k of ['lam', 'w', 'l', 'lw']) set(k, '–');
+    };
+    const frame = (ts: number) => {
+      if (!running) return;
+      const dt = Math.min(0.1, (ts - last) / 1000);
+      last = ts;
+      advance(now + dt);
+      draw();
+      requestAnimationFrame(frame);
+    };
+    const stop = () => { running = false; play.textContent = 'Play'; play.setAttribute('aria-pressed', 'false'); };
+    play.addEventListener('click', () => {
+      if (running) return stop();
+      running = true; play.textContent = 'Pause'; play.setAttribute('aria-pressed', 'true');
+      last = performance.now(); requestAnimationFrame(frame);
+    });
+    fig.querySelector('[data-run]')!.addEventListener('click', () => {
+      // 100,000 arrivals take 100,000 / λ seconds of virtual time
+      advance(now + 100000 / lam);
+      draw();
+    });
+    fig.querySelector('[data-reset]')!.addEventListener('click', () => { stop(); reset(); });
+
+    const theory = () => {
+      const cc = +cIn.value, rho = +rIn.value, w = mmcResponse(cc, rho) * S;
+      fig.querySelector('[data-out="rho"]')!.textContent = `${Math.round(rho * 100)}%`;
+      fig.querySelector('[data-v="lam"]')!.textContent = ((rho * cc) / S).toFixed(1);
+      fig.querySelector('[data-v="w"]')!.textContent = ms(w);
+      fig.querySelector('[data-v="wq"]')!.textContent = ms(w - S);
+      fig.querySelector('[data-v="pw"]')!.textContent = `${Math.round(erlangC(cc, rho * cc) * 100)}%`;
+      fig.querySelector('[data-curve]')!.innerHTML = queueCurveSvg(cc, rho);
+      const leg = fig.querySelector('.legend')!;
+      leg.innerHTML = `<span class="cc">— ${cc} server${cc > 1 ? 's' : ''}</span>${cc !== 1 ? '<span class="c1">┅ 1 server, for comparison</span>' : ''}`;
+    };
+    const changed = () => { theory(); const was = running; stop(); reset(); if (was) play.click(); };
+    cIn.addEventListener('input', changed);
+    rIn.addEventListener('input', changed);
+    reset();
+  }
+</script>
+
+<style>
+  .ctl { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 3fr); gap: 10px 20px; margin-bottom: 10px; }
+  .ctl label { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 8px; font-size: 13px; align-content: start; }
+  .ctl input, .ctl select { grid-column: 1 / -1; width: 100%; }
+  .ctl input { accent-color: var(--dg-accent); }
+  .ctl select { font: inherit; padding: 4px 6px; border: 1px solid var(--dg-line); border-radius: 6px; background: var(--dg-node); color: var(--dg-ink); }
+  .ctl output { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .given { font-size: 13px; color: var(--dg-ink-2); margin: 0 0 8px; }
+  .given b { color: var(--dg-ink); font-variant-numeric: tabular-nums; }
+  svg { width: 100%; height: auto; display: block; }
+  svg :global(text) { font-size: 12px; fill: var(--dg-ink-3); }
+  svg :global(.al) { fill: var(--dg-ink-2); }
+  svg :global(.grid) { stroke: var(--dg-line); }
+  svg :global(.cc) { fill: none; stroke: var(--dg-accent); stroke-width: 3; }
+  svg :global(.c1) { fill: none; stroke: var(--dg-ink-3); stroke-width: 2; stroke-dasharray: 6 5; }
+  svg :global(.now) { fill: var(--dg-bad); stroke: var(--dg-bg); stroke-width: 2; }
+  svg :global(.now-t) { fill: var(--dg-bad); font-weight: 700; font-size: 14px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; margin: 4px 0 0; }
+  .legend :global(.cc) { color: var(--dg-accent); } .legend :global(.c1) { color: var(--dg-ink-3); }
+  .sim { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--dg-line); }
+  .lane { display: flex; align-items: center; justify-content: flex-end; gap: 10px; min-height: 48px; padding: 8px; border-radius: 10px; background: var(--dg-node); overflow: hidden; }
+  .queue { display: flex; flex-wrap: wrap-reverse; justify-content: flex-end; gap: 3px; flex: 1; min-width: 0; align-items: center; }
+  .queue :global(.job) { width: 10px; height: 10px; border-radius: 50%; background: var(--dg-warn); }
+  .queue :global(.more) { font-size: 12px; color: var(--dg-warn); font-weight: 700; margin-right: 4px; }
+  .servers { display: grid; grid-template-columns: repeat(4, 18px); gap: 4px; flex: none; }
+  .servers :global(.srv) { width: 18px; height: 18px; border-radius: 4px; border: 2px solid var(--dg-accent); }
+  .servers :global(.srv.on) { background: var(--dg-accent); }
+  .buttons { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+  .buttons button { font: inherit; font-size: 13px; padding: 5px 14px; border-radius: 999px; border: 1px solid var(--dg-accent); background: transparent; color: var(--dg-accent); cursor: pointer; }
+  .buttons button[aria-pressed='true'], .buttons button:first-child { background: var(--dg-accent); color: var(--dg-bg); }
+  .kpi { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin: 0; }
+  .kpi div { padding: 8px 10px; border-radius: 8px; border: 1px solid var(--dg-line); background: var(--dg-node); }
+  .kpi .hl { border-color: var(--dg-accent); }
+  .kpi dt { font-size: 12px; color: var(--dg-ink-3); }
+  .kpi dd { margin: 0; font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .mq { container-type: inline-size; }
+  @container (max-width: 480px) { .ctl { grid-template-columns: minmax(0, 1fr); } }
+  input:focus-visible, select:focus-visible, button:focus-visible { outline: 2px solid var(--dg-accent); outline-offset: 2px; }
+</style>

@@ -1,0 +1,176 @@
+---
+title: "The math of observability, part 2: percentiles, histograms and why you cannot average a p99"
+description: Why the mean hides your slowest users, why averaging percentiles across hosts gives a wrong answer, and how explicit and exponential histograms make percentiles add up. With a latency playground and a bucket explorer.
+date: 2026-10-30
+tags: [math, latency, histograms, opentelemetry, prometheus]
+series: "The math of observability"
+part: 2
+---
+import MathLatency from '../../components/diagrams/MathLatency.astro';
+import MathHistogram from '../../components/diagrams/MathHistogram.astro';
+import MathFormula from '../../components/diagrams/MathFormula.astro';
+import Chart from '../../components/diagrams/Chart.astro';
+import Note from '../../components/Note.astro';
+
+[Part 1](/blog/math-nines-and-uptime/) was about whether a service is up. This part is about how long it makes people wait, and the three mistakes almost every latency dashboard makes at some point: showing the mean, averaging percentiles, and trusting a percentile without asking which buckets it came from.
+
+## Why percentiles became the standard
+
+For a long time "response time" meant the average. Two lines of work changed that.
+
+In 2013 Jeffrey Dean and Luiz André Barroso published [The Tail at Scale](https://research.google/pubs/the-tail-at-scale/) (*Communications of the ACM* 56(2)). Their point: when one user request fans out to many servers, the user waits for the slowest one, so rare slowness on each server becomes common slowness for users. If 1 request in 100 is slow on a server and a page needs 100 such calls, the chance that the page hits at least one slow call is:
+
+<MathFormula label="P of at least one slow call equals one minus 0.99 to the power 100, which is 63 percent">
+  P(at least one slow) = 1 − (1 − <var>p</var>)<sup><var>n</var></sup> = 1 − 0.99<sup>100</sup> = 63%
+</MathFormula>
+
+<Chart
+  title="Share of user requests that hit at least one slow call"
+  x={{ label: 'calls per user request (fan-out)', values: [1, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100] }}
+  y={{ label: '%', min: 0, max: 100, format: 'pct' }}
+  series={[
+    { name: '1 in 100 calls slow (p99)', values: [1, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map((n) => +(100 * (1 - 0.99 ** n)).toFixed(2)), tone: 'bad' },
+    { name: '1 in 1,000 calls slow (p99.9)', values: [1, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100].map((n) => +(100 * (1 - 0.999 ** n)).toFixed(2)), tone: 'accent' },
+  ]}
+  caption="1 − (1 − p)^n for independent calls. Your server's p99 is your user's median once a request makes about 70 calls."
+/>
+
+So the p99 of a backend is not a detail for perfectionists; it is what a fan-out turns into the typical user experience.
+
+Around the same time Gil Tene's talk "How NOT to Measure Latency" and his [HdrHistogram](https://github.com/HdrHistogram/HdrHistogram) library made two more points stick: report the distribution, not a summary of it, and record latency in a structure that keeps a fixed relative precision over a huge range. Relative-error sketches such as [DDSketch](https://arxiv.org/abs/1908.10693) (Masson, Rim and Lee, VLDB 2019) followed, and OpenTelemetry's exponential histogram is built on the same idea.
+
+## The mean lies, and the median cannot see the tail
+
+Below are 2,000 request latencies: most around 80 ms, plus a share of slow requests. Drag the share of slow requests and how slow they are, and watch the four markers.
+
+<MathLatency tail={0.02} tailMs={1200} caption="2,000 requests on a log axis (bar height on a square-root scale, so a small tail stays visible). Percentiles are nearest-rank: the p99 is the 1,980th fastest request." />
+
+With 2% of requests at about 1.2 s:
+
+- the **median** (p50) barely moves, from 80 ms to 81 ms: it cannot see the tail by design;
+- the **mean** goes from 89 ms to 112 ms, a change that looks like "a bit slower overall" when in fact 98% of users saw no change and 2% waited fifteen times longer;
+- the **p95** moves only from 168 ms to 185 ms, because the slow 2% sit above it;
+- the **p99** jumps from 227 ms to 1.19 s and tells you what the slow users actually saw.
+
+Set the slow share to 5% and the p95 jumps too. That is the practical rule: a percentile tells you about the slowest (100 − q)% of requests, and nothing about anything rarer. If 0.5% of checkouts take 10 seconds, the p99 will not show it; the p99.9 will.
+
+The mean has one honest use: total work. Mean latency × request rate = average number of requests in flight. That is Little's law, the subject of [part 4](/blog/math-queues-and-littles-law/).
+
+## You cannot average percentiles
+
+Two hosts serve the same endpoint. Host A is healthy and serves 9,000 requests a minute; host B has a problem and serves 1,000. You have the p99 of each. What is the p99 of the service?
+
+Not the average of the two. A percentile is a position in a sorted list. Averaging two positions from two different lists, with different lengths, gives a number that is not a position in the combined list. With the latency model above (host A without a tail, host B with 20% of requests around 1.5 s), the true p99 of all 10,000 requests is 1.50 s, and the average of the two p99s is 1.24 s. With other data the average can land above the truth just as easily. The same goes for averaging over time: the mean of sixty one-minute p99s is not the p99 of the hour.
+
+What you can add up are **counts**. If each host reports how many requests fell into each latency bucket, the service's histogram is the sum of the hosts' histograms, bucket by bucket, and the p99 comes from the sum. Counts add across hosts, across time and across label values. Percentiles do not.
+
+Here is the difference in PromQL, as a test file you can run with `promtool` (it ships in the Prometheus image). The two hosts are made-up counts in five buckets:
+
+```yaml
+# percentiles-test.yml: two hosts, one minute of requests each, cumulative buckets in ms
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'latency_ms_bucket{host="a",le="100"}'
+        values: '0 7400'
+      - series: 'latency_ms_bucket{host="a",le="250"}'
+        values: '0 8950'
+      - series: 'latency_ms_bucket{host="a",le="1000"}'
+        values: '0 9000'
+      - series: 'latency_ms_bucket{host="a",le="2500"}'
+        values: '0 9000'
+      - series: 'latency_ms_bucket{host="a",le="+Inf"}'
+        values: '0 9000'
+      - series: 'latency_ms_bucket{host="b",le="100"}'
+        values: '0 600'
+      - series: 'latency_ms_bucket{host="b",le="250"}'
+        values: '0 790'
+      - series: 'latency_ms_bucket{host="b",le="1000"}'
+        values: '0 800'
+      - series: 'latency_ms_bucket{host="b",le="2500"}'
+        values: '0 990'
+      - series: 'latency_ms_bucket{host="b",le="+Inf"}'
+        values: '0 1000'
+    promql_expr_test:
+      # wrong: a p99 per host, then the average of the two
+      - expr: avg(histogram_quantile(0.99, sum by (host, le) (rate(latency_ms_bucket[5m]))))
+        eval_time: 1m
+        exp_samples: [{ labels: '{}', value: 1373.064516129032 }]
+      # right: add the buckets of both hosts, then take the p99
+      - expr: histogram_quantile(0.99, sum by (le) (rate(latency_ms_bucket[5m])))
+        eval_time: 1m
+        exp_samples: [{ labels: '{}', value: 1789.4736842105206 }]
+```
+
+```bash
+docker run --rm -v "$PWD:/w" --entrypoint promtool prom/prometheus:v3.15.1 test rules /w/percentiles-test.yml
+```
+
+It prints `SUCCESS`: we ran it with Prometheus 3.15.1. The average of the per-host p99s is 1,373 ms; the p99 of all requests is 1,789 ms. You can check both by hand: host A's 8,910th request falls in its 100–250 ms bucket, host B's 990th sits at the top of its 1,000–2,500 ms bucket, and in the summed histogram the 9,900th of 10,000 requests falls in the 1,000–2,500 ms bucket, 100 requests into its 190.
+
+<Note type="tip" title="The rule for dashboards">
+Aggregate first, take the quantile last. In PromQL, `sum by (le)` (or `sum` for native histograms) goes **inside** `histogram_quantile`. A recording rule that stores a p99 per pod has thrown away what you need to get the p99 per service.
+</Note>
+
+## Every bucketed percentile is an estimate
+
+A histogram does not keep the requests, only how many fell between two bounds. When `histogram_quantile()` finds that the 99th percentile is somewhere in the 1,000–2,500 ms bucket, it has to guess where. Prometheus assumes the requests are spread evenly inside the bucket and interpolates linearly ([PromQL functions](https://prometheus.io/docs/prometheus/latest/querying/functions/#histogram_quantile)). The true value can be anywhere in the bucket, so the error is bounded only by the bucket's width: up to 150% of the lower bound in a 1,000–2,500 ms bucket.
+
+Explicit buckets are what you get by default. The OpenTelemetry SDK's default boundaries are `[0, 5, 10, 25, 50, 75, 100, 250, 500, 750, 1000, 2500, 5000, 7500, 10000]` ([metrics SDK spec](https://opentelemetry.io/docs/specs/otel/metrics/sdk/#explicit-bucket-histogram-aggregation)); the HTTP semantic conventions advise the same shape in seconds for `http.server.request.duration` ([HTTP metrics](https://opentelemetry.io/docs/specs/semconv/http/http-metrics/)). Good boundaries are a guess about your latency made before you have measured it. If your p99 lives between 250 and 500 ms, you get two buckets of resolution where you need ten.
+
+## Exponential histograms: a fixed relative error everywhere
+
+OpenTelemetry's answer is the base-2 exponential histogram. It started as [OTEP 149](https://github.com/open-telemetry/opentelemetry-specification/blob/main/oteps/0149-exponential-histogram.md), which argued that log-scale buckets suit long-tailed data like response times, and it is now part of the [metrics data model](https://opentelemetry.io/docs/specs/otel/metrics/data-model/#exponentialhistogram). Instead of a list of bounds, the histogram has one integer, the **scale**:
+
+<MathFormula label="base equals 2 to the power 2 to the power minus scale; bucket i holds values above base to the i, up to base to the i plus 1">
+  base = 2<sup>2<sup>−scale</sup></sup>, &nbsp; bucket <var>i</var> holds (base<sup><var>i</var></sup>, base<sup><var>i</var>+1</sup>]
+</MathFormula>
+
+Every bucket's upper bound is a fixed multiple of its lower bound, so the error is the same relative size at 5 ms and at 5 s. If you answer with the point inside the bucket that is closest, in relative terms, to both ends, you are never off by more than:
+
+<MathFormula label="maximum relative error equals base minus 1 over base plus 1">
+  relative error ≤ (base − 1) / (base + 1)
+</MathFormula>
+
+| scale | base | max relative error | buckets per doubling |
+|---|---|---|---|
+| 0 | 2 | 33.3% | 1 |
+| 1 | 1.4142 | 17.2% | 2 |
+| 2 | 1.1892 | 8.6% | 4 |
+| 3 | 1.0905 | 4.3% | 8 |
+| 4 | 1.0443 | 2.2% | 16 |
+| 5 | 1.0219 | 1.1% | 32 |
+
+Two design choices make it practical. First, the SDK picks the scale for you: with the default limit of 160 buckets (and a maximum scale of 20) it uses the largest scale whose buckets cover the values it has seen, and lowers the scale as the range grows. The spec's own example: a range of 1 ms to 100 s fits at scale 3, about 4.3% error. Second, going down one scale merges neighbouring buckets in pairs exactly, so two histograms recorded at different scales can always be added by bringing both to the lower one. Counts still add, which is the property the last section needed.
+
+Below, the same 2,000 latencies stored both ways. The top row of ticks is the default explicit bounds; the bottom row is the exponential bounds at the chosen scale; the dashed lines are the true p50, p95 and p99.
+
+<MathHistogram tailMs={1200} scale={3} caption="Explicit estimates use Prometheus' linear interpolation; exponential estimates use the bucket's lowest-relative-error point. Between 10 ms and 10 s the default explicit buckets have 13 bounds; scale 3 has 80." />
+
+With the defaults, the explicit histogram puts the p95 at 238 ms and the p99 at 1.53 s: both about 28% too high, because the true values (185 ms and 1.19 s) sit low in wide buckets. The exponential histogram at scale 3 is within 2.2% on all three, and the scale an SDK would pick for this data (4) is within 0.4%. Move the slow requests around: the explicit error jumps as the p99 crosses bucket bounds; the exponential error never leaves its band.
+
+<Note type="note" title="What this costs, and where it is supported">
+An exponential histogram data point is a scale, an offset and up to 160 counts per sign, sent as one point in OTLP. Prometheus native histograms use the same base-2 scheme, and Prometheus can ingest OTLP exponential histograms as native histograms. Not every backend can query them yet, so check yours before you switch the SDK's default aggregation from explicit to exponential.
+</Note>
+
+## What to take to your dashboards
+
+- Show p50 with p95 or p99 (and p99.9 for high-volume or fan-out services); show the mean only next to request rate, as total work.
+- Never average, sum or `max` percentiles across hosts, pods or time windows. Add bucket counts, then take the quantile.
+- Know your bucket bounds. A p99 that sits on a bucket bound for weeks and then jumps is probably bucket resolution, not your service.
+- Prefer exponential histograms where your backend supports them. They remove the guess about bounds and keep the error a known, small percentage.
+
+[Part 3](/blog/math-sampling/) turns to traces: if you keep 1% of them, what fraction of rare errors do you keep, how sure can you be of a rate measured from a sample, and how does OpenTelemetry record the sampling probability so the backend can count correctly?
+
+## How we checked the numbers
+
+The widgets run the same small set of functions at build time and in your browser; the numbers in the text come from running the same functions in Node 24. To make sure our explicit-bucket estimate matches Prometheus, we loaded the 2,000 latencies into `promtool` as bucket counts and compared `histogram_quantile()` with our function at p50, p95 and p99: they agree to 15 significant digits (Prometheus 3.15.1). The two-host example above is a `promtool` test that passes as printed.
+
+## Sources
+
+- J. Dean, L. A. Barroso, "[The Tail at Scale](https://research.google/pubs/the-tail-at-scale/)", *Communications of the ACM* 56(2), 2013.
+- G. Tene, [HdrHistogram](https://github.com/HdrHistogram/HdrHistogram), and his talk "How NOT to Measure Latency".
+- C. Masson, J. E. Rim, H. K. Lee, "[DDSketch: A Fast and Fully-Mergeable Quantile Sketch with Relative-Error Guarantees](https://arxiv.org/abs/1908.10693)", VLDB 2019.
+- OpenTelemetry, [Metrics data model: ExponentialHistogram](https://opentelemetry.io/docs/specs/otel/metrics/data-model/#exponentialhistogram), [Metrics SDK: aggregations](https://opentelemetry.io/docs/specs/otel/metrics/sdk/#aggregation), [OTEP 149](https://github.com/open-telemetry/opentelemetry-specification/blob/main/oteps/0149-exponential-histogram.md).
+- OpenTelemetry semantic conventions, [HTTP metrics](https://opentelemetry.io/docs/specs/semconv/http/http-metrics/).
+- Prometheus, [`histogram_quantile()`](https://prometheus.io/docs/prometheus/latest/querying/functions/#histogram_quantile).

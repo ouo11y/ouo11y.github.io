@@ -1,0 +1,77 @@
+---
+// Did MTTR really improve? Simulates pairs of quarters where the second is truly better and counts
+// how often the observed MTTR says it got worse. Sliders re-run it (a little JS); without JS the
+// figure shows the defaults, computed at build time with the same seeded simulation.
+// <MathMttr n={10} improvement={0.2} sigma={1} />
+import '../../styles/diagram.css';
+import { mttrPairs } from './MathLib';
+
+interface Props { n?: number; improvement?: number; sigma?: number; caption?: string; }
+const { n = 10, improvement = 0.2, sigma = 1, caption } = Astro.props;
+const all = mttrPairs(n, improvement, sigma);
+const worse = all.filter(Boolean).length / all.length;
+const grid = all.slice(0, 100);
+---
+<figure class="dg mmttr not-content" data-mmttr>
+  <div class="ctl">
+    <label>Incidents per quarter <output data-out="n">{n}</output>
+      <input type="range" min="3" max="100" step="1" value={n} data-in="n" /></label>
+    <label>True MTTR improvement <output data-out="i">{Math.round(improvement * 100)}%</output>
+      <input type="range" min="0" max="0.5" step="0.05" value={improvement} data-in="i" /></label>
+    <label>Spread of durations (σ) <output data-out="s">{sigma}</output>
+      <input type="range" min="0.25" max="2" step="0.25" value={sigma} data-in="s" /></label>
+  </div>
+  <div class="body">
+    <div class="waffle" aria-hidden="true">{grid.map((w) => <i class:list={{ w }} />)}</div>
+    <div class="out" aria-live="polite">
+      <p class="big"><b data-worse>{Math.round(worse * 100)}%</b></p>
+      <p>of quarters show a <b class="bad">higher</b> MTTR than the quarter before, although the team truly got <b data-imp>{Math.round(improvement * 100)}%</b> faster.</p>
+      <p class="legend"><span><i class="w" /> looks worse</span> <span><i /> looks better</span></p>
+      <p class="small">Each square is one simulated pair of quarters; the percentage is over 4,000 pairs. Durations are lognormal with mean 60 min before, 60 × (1 − improvement) after.</p>
+    </div>
+  </div>
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+  import { mttrPairs } from './MathLib';
+  for (const fig of document.querySelectorAll<HTMLElement>('[data-mmttr]')) {
+    const get = (k: string) => fig.querySelector<HTMLInputElement>(`[data-in="${k}"]`)!;
+    const squares = [...fig.querySelectorAll<HTMLElement>('.waffle i')];
+    let timer = 0;
+    const update = () => {
+      const n = +get('n').value, i = +get('i').value, s = +get('s').value;
+      fig.querySelector('[data-out="n"]')!.textContent = String(n);
+      fig.querySelector('[data-out="i"]')!.textContent = `${Math.round(i * 100)}%`;
+      fig.querySelector('[data-out="s"]')!.textContent = String(s);
+      fig.querySelector('[data-imp]')!.textContent = `${Math.round(i * 100)}%`;
+      clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        const all = mttrPairs(n, i, s);
+        fig.querySelector('[data-worse]')!.textContent = `${Math.round((all.filter(Boolean).length / all.length) * 100)}%`;
+        squares.forEach((sq, k) => sq.classList.toggle('w', all[k]));
+      }, 30);
+    };
+    for (const k of ['n', 'i', 's']) get(k).addEventListener('input', update);
+  }
+</script>
+
+<style>
+  .ctl { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px 20px; margin-bottom: 16px; }
+  .ctl label { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; font-size: 13px; }
+  .ctl input { grid-column: 1 / -1; width: 100%; accent-color: var(--dg-accent); }
+  .ctl output { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .body { display: grid; grid-template-columns: minmax(0, 220px) minmax(0, 1fr); gap: 20px; align-items: center; }
+  .waffle { display: grid; grid-template-columns: repeat(10, 1fr); gap: 4px; }
+  .waffle i, .legend i { display: inline-block; aspect-ratio: 1; border-radius: 3px; background: color-mix(in srgb, var(--dg-ok) 70%, transparent); }
+  .waffle i.w, .legend i.w { background: var(--dg-bad); }
+  .legend { display: flex; gap: 14px; font-size: 13px; color: var(--dg-ink-2); }
+  .legend i { width: 12px; margin-right: 4px; vertical-align: -1px; }
+  .out p { margin: 4px 0; }
+  .big { font-size: 34px; line-height: 1.1; color: var(--dg-bad); font-variant-numeric: tabular-nums; }
+  .bad { color: var(--dg-bad); }
+  .small { font-size: 12px; color: var(--dg-ink-3); }
+  .mmttr { container-type: inline-size; }
+  @container (max-width: 480px) { .body { grid-template-columns: minmax(0, 1fr); } .waffle { max-width: 220px; } }
+  input:focus-visible { outline: 2px solid var(--dg-accent); outline-offset: 2px; }
+</style>

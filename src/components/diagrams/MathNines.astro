@@ -1,0 +1,86 @@
+---
+// Availability target -> allowed downtime per day, week, 30 days, 90 days and 365 days.
+// Type a percentage or pick a preset (a little JS); without JS the table shows the presets.
+// <MathNines value={99.9} />
+import '../../styles/diagram.css';
+import { WINDOWS, fmtDuration } from './MathLib';
+
+interface Props { value?: number; caption?: string; }
+const { value = 99.9, caption } = Astro.props;
+const presets = [99, 99.5, 99.9, 99.95, 99.99, 99.999];
+---
+<figure class="dg mnines not-content" data-mnines>
+  <div class="ctl">
+    <label for="mnines-in">Availability target</label>
+    <div class="row">
+      <input id="mnines-in" type="number" inputmode="decimal" min="0" max="100" step="any" value={value} data-in /> <span>%</span>
+    </div>
+    <div class="presets" role="group" aria-label="Presets">
+      {presets.map((p) => <button type="button" data-p={p} aria-pressed={p === value ? 'true' : 'false'}>{p}%</button>)}
+    </div>
+  </div>
+  <div class="tbl" aria-live="polite">
+    <table>
+      <thead><tr><th scope="col">Target</th>{WINDOWS.map((w) => <th scope="col">per {w.label}</th>)}</tr></thead>
+      <tbody>
+        {presets.map((p) => (
+          <tr class:list={{ on: p === value }} data-row={p}>
+            <th scope="row">{p}%</th>
+            {WINDOWS.map((w) => <td>{fmtDuration(((100 - p) / 100) * w.minutes)}</td>)}
+          </tr>
+        ))}
+        <tr class="custom" data-custom hidden><th scope="row"></th>{WINDOWS.map(() => <td />)}</tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="bad" data-bad hidden>Enter a number between 0 and 100.</p>
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+  import { WINDOWS, fmtDuration } from './MathLib';
+  for (const fig of document.querySelectorAll<HTMLElement>('[data-mnines]')) {
+    const input = fig.querySelector<HTMLInputElement>('[data-in]')!;
+    const custom = fig.querySelector<HTMLTableRowElement>('[data-custom]')!;
+    const bad = fig.querySelector<HTMLElement>('[data-bad]')!;
+    const update = () => {
+      const v = Number(input.value);
+      const ok = input.value.trim() !== '' && v >= 0 && v <= 100;
+      bad.hidden = ok;
+      let preset = false;
+      for (const row of fig.querySelectorAll<HTMLElement>('[data-row]')) {
+        const on = ok && Number(row.dataset.row) === v;
+        row.classList.toggle('on', on);
+        preset ||= on;
+      }
+      for (const b of fig.querySelectorAll<HTMLButtonElement>('[data-p]')) b.setAttribute('aria-pressed', String(ok && Number(b.dataset.p) === v));
+      custom.hidden = !ok || preset;
+      if (ok && !preset) {
+        const cells = custom.children;
+        cells[0].textContent = `${v}%`;
+        WINDOWS.forEach((w, i) => { cells[i + 1].textContent = fmtDuration(((100 - v) / 100) * w.minutes); });
+      }
+    };
+    input.addEventListener('input', update);
+    for (const b of fig.querySelectorAll<HTMLButtonElement>('[data-p]')) b.addEventListener('click', () => { input.value = b.dataset.p!; update(); });
+  }
+</script>
+
+<style>
+  .ctl { display: grid; gap: 8px; margin-bottom: 14px; }
+  .ctl label { font-weight: 700; }
+  .row { display: flex; align-items: center; gap: 6px; font-size: 18px; }
+  .row input { width: 9em; font: inherit; font-variant-numeric: tabular-nums; padding: 6px 10px; border: 1px solid var(--dg-line); border-radius: 8px; background: var(--dg-node); color: var(--dg-ink); }
+  .presets { display: flex; flex-wrap: wrap; gap: 6px; }
+  .presets button { font: inherit; font-size: 13px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--dg-line); background: var(--dg-node); color: var(--dg-ink-2); cursor: pointer; }
+  .presets button[aria-pressed='true'] { background: var(--dg-accent); border-color: var(--dg-accent); color: var(--dg-bg); }
+  .tbl { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 13px; }
+  th, td { text-align: right; padding: 6px 8px; border-bottom: 1px solid var(--dg-line); white-space: nowrap; }
+  th:first-child { text-align: left; }
+  thead th { color: var(--dg-ink-3); font-weight: 600; }
+  tr.on, tr.custom { background: var(--dg-accent-soft); }
+  tr.on th, tr.custom th { color: var(--dg-accent); }
+  .bad { color: var(--dg-bad); margin: 8px 0 0; }
+  button:focus-visible, input:focus-visible { outline: 2px solid var(--dg-accent); outline-offset: 2px; }
+</style>
