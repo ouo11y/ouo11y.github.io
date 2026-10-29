@@ -1,0 +1,48 @@
+---
+title: "ouo is now ouo11y: every published name, old and new"
+description: The npm scope, the image paths, the Go modules and the Grafana app ID moved to ouo11y. What changed, what did not, and what to do about the Grafana app.
+date: 2026-10-18
+kind: notice
+tags: [rename, breaking]
+---
+
+import Note from '../../components/Note.astro';
+
+On 18 October the project took the name **ouo11y** (Open Unified Observability), and every name we publish moved with it. Nothing was released that day; the first releases under the new names came on [22 October](/announcements/2026-10-22-images-under-ouo11y/) (images) and [23 October](/announcements/2026-10-23-sdks-on-npm/) (SDKs).
+
+## Old and new
+
+| What | Before 18 October | From 18 October |
+|---|---|---|
+| Browser SDK on npm | `@ouo/browser` | `@ouo11y/browser` |
+| React Native SDK on npm | `@ouo/react-native` | `@ouo11y/react-native` |
+| Container images | `ghcr.io/ziadmansourm/ouo/{collector,rum-api,grafana}` | `ghcr.io/ouo11y/{collector,rum-api,grafana}` |
+| Grafana app ID | `ouo-rum-app` | `ouo11y-rum-app` |
+| Go modules (for your own collector build) | `github.com/ZiadMansourM/ouo/...` | `github.com/ouo11y/ouo11y/...` |
+| Swift package | — | `ouo11y-ios`; products `OuoReplay` and `OuoReplayCore` keep their names |
+
+The SDKs were never published to npm under `@ouo`, so there is nothing to uninstall or deprecate. The 0.2.0 images exist only under the old path.
+
+## What did not change
+
+- Attribute names under `ouo.` (see [semantic conventions](/docs/concepts/semantic-conventions/)).
+- The collector components `ouosentry`, `ouoreplay` and `ouoratelimit`, and the binary `ouo-collector`, so collector configs keep working.
+- The `OUO_*` environment variables.
+- The Helm chart name, `ouo`.
+
+## Your stored data
+
+The SDKs write their own name into `ouo.sdk.name` and the OpenTelemetry instrumentation scope. Data recorded before the rename keeps `@ouo/browser` or `@ouo/react-native`; data from 0.2.0 on carries `@ouo11y/…`. A query or dashboard that filters on the SDK name needs both values for a while.
+
+## The Grafana app gets a new ID
+
+Grafana keys everything on a plugin's ID, so to Grafana `ouo11y-rum-app` is a different plugin. This arrived with app 0.7.0, inside the [grafana image 0.3.0](/announcements/2026-10-22-images-under-ouo11y/):
+
+- Pages move from `/a/ouo-rum-app/...` to `/a/ouo11y-rum-app/...`. Old bookmarks and dashboard links answer "plugin not found".
+- The app's settings (`rumApiUrl`, `readToken`) are stored per ID and are **not carried over**. A stack that provisions the app (the [one-file stack](/docs/start/quickstart/), the [VM install](/docs/operate/vm/), the [Helm chart](/docs/operate/helm/)) gets them again on the next start. A Grafana you configured by hand needs both values entered again at `/plugins/ouo11y-rum-app`.
+- `GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS` and `GF_SECURITY_DISABLE_FRONTEND_SANDBOX_FOR_PLUGINS` must name `ouo11y-rum-app`, or Grafana refuses to load the unsigned app.
+- The old `ouo-rum-app` row stays in Grafana's database as a disabled, missing plugin. It is harmless. If you copied the app into `/var/lib/grafana/plugins/ouo-rum-app` by hand, delete that folder.
+
+<Note type="tip" title="Where the name comes from">
+"o11y" is the usual short form of observability: an o, eleven letters, a y. Say "oh-you-oh-eleven-why", or "ouo" for short.
+</Note>

@@ -1,4 +1,132 @@
 ---
-import SectionIndex from '../../layouts/SectionIndex.astro';
+import Base from '../../layouts/Base.astro';
+import CurrentVersions from '../../components/announcements/CurrentVersions.astro';
+import ReleaseTimeline from '../../components/announcements/ReleaseTimeline.astro';
+import { fmtDate, listPosts, sections } from '../../lib/site';
+
+const entries = await listPosts('announcements');
+const kinds = { release: 'Release', notice: 'Notice', docs: 'Docs', site: 'Site' } as const;
+type Kind = keyof typeof kinds;
+const kindOf = (e: (typeof entries)[number]): Kind => e.data.kind ?? 'notice';
+const present = (Object.keys(kinds) as Kind[]).filter((k) => entries.some((e) => kindOf(e) === k));
+
+const months = new Map<string, typeof entries>();
+for (const e of entries) {
+  const m = e.data.date.toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+  months.set(m, [...(months.get(m) ?? []), e]);
+}
 ---
-<SectionIndex section="announcements" />
+<Base title="Announcements" description="What ouo11y shipped, which versions to run together, and how to upgrade.">
+  <section class="an-head">
+    <div class="wrap">
+      <p class="eyebrow">ouo11y announcements</p>
+      <h1>What shipped, and <em>how to upgrade</em>.</h1>
+      <p class="lede">{sections.announcements.blurb} Every release here lists what you get, the commands to get it, what changes when you upgrade, and which versions work together.</p>
+      <p class="meta">Follow with <a href="/announcements/rss.xml">RSS</a>. Dates are UTC, from the release or the npm publish.</p>
+    </div>
+  </section>
+
+  <section class="tight">
+    <div class="wrap">
+      <h2 class="sub" id="current">Current versions</h2>
+      <CurrentVersions />
+    </div>
+  </section>
+
+  <section class="tight">
+    <div class="wrap">
+      <h2 class="sub" id="timeline">Every release so far</h2>
+      <p class="hint">One lane per package. The numbered bands are release trains: versions released together, each with one announcement.</p>
+      <ReleaseTimeline />
+    </div>
+  </section>
+
+  <section class="tight">
+    <div class="wrap narrow-list">
+      <div class="all-head">
+        <h2 class="sub" id="all">All announcements</h2>
+        <div class="filters" role="group" aria-label="Filter by type">
+          <button type="button" class="on" data-kind="">All</button>
+          {present.map((k) => <button type="button" data-kind={k}>{kinds[k]}</button>)}
+        </div>
+      </div>
+      <p class="meta tag-chip" hidden>Tag <b></b> · <a href="/announcements/#all">show all</a></p>
+      {[...months].map(([month, list]) => (
+        <div class="month" data-month>
+          <h3 class="month-title">{month}</h3>
+          <ul class="an-list">
+            {list.map((e) => (
+              <li data-kind={kindOf(e)} data-tags={e.data.tags.join('|')}>
+                <a class="an-item" href={`/announcements/${e.id}/`}>
+                  <span class="an-meta">
+                    <span class={`badge ${kindOf(e)}`}>{kinds[kindOf(e)]}</span>
+                    <time datetime={e.data.date.toISOString().slice(0, 10)}>{fmtDate(e.data.date)}</time>
+                  </span>
+                  <span class="an-title">{e.data.title}</span>
+                  <span class="an-desc">{e.data.description}</span>
+                </a>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+      <p class="meta empty" hidden>Nothing of that type yet.</p>
+    </div>
+  </section>
+</Base>
+
+<script>
+  const buttons = [...document.querySelectorAll<HTMLButtonElement>('.filters button')];
+  const items = [...document.querySelectorAll<HTMLElement>('.an-list li')];
+  const months = [...document.querySelectorAll<HTMLElement>('[data-month]')];
+  const empty = document.querySelector<HTMLElement>('.empty')!;
+  const chip = document.querySelector<HTMLElement>('.tag-chip')!;
+  function apply(kind: string, tag: string) {
+    buttons.forEach((b) => b.classList.toggle('on', b.dataset.kind === kind));
+    for (const li of items) {
+      li.hidden = !((!kind || li.dataset.kind === kind) && (!tag || (li.dataset.tags ?? '').split('|').includes(tag)));
+    }
+    for (const m of months) m.hidden = !m.querySelector('li:not([hidden])');
+    empty.hidden = items.some((li) => !li.hidden);
+    chip.hidden = !tag;
+    chip.querySelector('b')!.textContent = tag;
+  }
+  const params = new URL(location.href).searchParams;
+  let tag = params.get('tag') ?? '';
+  buttons.forEach((b) => b.addEventListener('click', () => {
+    const kind = b.dataset.kind ?? '';
+    apply(kind, tag);
+    const url = new URL(location.href);
+    kind ? url.searchParams.set('type', kind) : url.searchParams.delete('type');
+    history.replaceState(null, '', url);
+  }));
+  if (params.get('type') || tag) apply(params.get('type') ?? '', tag);
+</script>
+
+<style>
+  .an-head { padding: 72px 0 24px; }
+  .an-head h1 { margin-top: 8px; }
+  section.tight { padding: 16px 0 36px; }
+  .sub { font-size: 22px; margin: 0 0 14px; }
+  .hint { color: var(--ink-2); font-size: 15px; margin: -6px 0 14px; }
+  .narrow-list { max-width: 860px; }
+  .all-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 12px; }
+  .filters { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+  .filters button { font: inherit; font-size: 13px; padding: 4px 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--bg-2); color: var(--ink-2); cursor: pointer; }
+  .filters button.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+  .month[hidden], .an-list li[hidden] { display: none; }
+  .month-title { font-size: 13px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); margin: 18px 0 10px; }
+  .an-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; border-left: 2px solid var(--line); padding-left: 16px; }
+  .an-item { position: relative; display: grid; gap: 4px; padding: 14px 18px; border: 1px solid var(--line); border-radius: 14px; background: var(--bg-2); color: var(--ink); }
+  .an-item::before { content: ''; position: absolute; left: -24px; top: 22px; width: 12px; height: 12px; border-radius: 50%; background: var(--bg); border: 2px solid var(--accent); }
+  .an-item:hover { text-decoration: none; border-color: var(--accent); }
+  .an-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-3); }
+  .an-title { font-size: 18px; font-weight: 700; line-height: 1.3; letter-spacing: -.01em; }
+  .an-desc { font-size: 15px; color: var(--ink-2); }
+  .badge { font-size: 11.5px; font-weight: 700; padding: 1px 8px; border-radius: 999px; text-transform: uppercase; letter-spacing: .04em; }
+  .badge.release { background: var(--accent-soft); color: var(--accent); }
+  .badge.notice { background: color-mix(in srgb, var(--warn) 15%, transparent); color: var(--warn); }
+  .badge.docs { background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); }
+  .badge.site { background: color-mix(in srgb, var(--ink-3) 18%, transparent); color: var(--ink-2); }
+  .tag-chip { margin: 0 0 8px; }
+</style>

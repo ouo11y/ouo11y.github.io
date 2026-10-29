@@ -1,0 +1,28 @@
+---
+title: "Docs and three quickstarts, all on the site"
+description: Three apps you build from an empty folder, ending with real sessions, traces and replays in Grafana, plus reference docs for every component we release. Every file you need is on the page or in a download.
+date: 2026-10-28
+kind: docs
+tags: [docs, quickstarts]
+---
+
+The [docs](/docs/) moved to ouo11y.com and were rewritten for people who have never seen our repository. Every command is copy-paste ready, every file is embedded in the page, and each quickstart offers its finished folder as a download.
+
+## Three quickstarts
+
+| | What you build | What you see at the end |
+|---|---|---|
+| [1. Tiny Shop](/docs/quickstarts/1-tiny-shop/) | a small Express API and React shop from an empty folder, traced with OpenTelemetry, with `@ouo11y/browser` | one crashed session with its trace and its replay in Grafana; about 30 minutes |
+| [2. Without our SDK](/docs/quickstarts/2-tiny-shop-otel/) | the same shop with no ouo11y code in the browser: OpenTelemetry JS, rrweb and web-vitals | the same session, traces and replay, proving the server side needs only OpenTelemetry |
+| [3. Funnels](/docs/quickstarts/3-funnels/) | a five-page shop whose page views and custom events make a funnel | fifty generated shoppers, the funnel in Grafana, and the replay of a shopper who gave up |
+
+All three run on the [one-file stack](/docs/start/quickstart/) (collector, Loki, Tempo, Mimir, rum-api, Grafana), which needs pull access to the images during early access.
+
+## Reference
+
+- **Start here:** [Principles](/docs/start/principles/), [two ways in](/docs/start/two-paths/) (our SDK or plain OpenTelemetry), [Run the stack](/docs/start/quickstart/).
+- **Instrument:** [the browser SDK](/docs/instrument/ouo-sdk/) (every option, the API, delivery, browser support, bundle size), [React Native](/docs/instrument/react-native/), [iOS](/docs/instrument/ios/), [your backend](/docs/instrument/backend/), [bring your own OpenTelemetry](/docs/instrument/bring-your-own-otel/), [coming from Sentry](/docs/instrument/sentry/).
+- **Concepts:** [architecture](/docs/concepts/architecture/), [sessions](/docs/concepts/sessions/), [replay](/docs/concepts/replay/), [funnels](/docs/concepts/funnels/), [credentials](/docs/concepts/credentials/), [semantic conventions](/docs/concepts/semantic-conventions/).
+- **Operate:** [Docker Compose](/docs/operate/compose/), [a single VM](/docs/operate/vm/), [Helm](/docs/operate/helm/), [the collector](/docs/operate/collector/), [rum-api](/docs/operate/rum-api/), [the Sentry bridge](/docs/operate/sentry-bridge/), [project tokens](/docs/operate/tokens/), [customize everything](/docs/operate/customize/), [benchmarks](/docs/operate/benchmarks/), [upgrading](/docs/operate/upgrade/).
+
+The docs describe the [current versions](/announcements/#current). When a page and a release disagree, the release announcement says so, as the [26 October release](/announcements/2026-10-26-funnels-stacks-browser-0-3/#stack-traces-you-can-read) does for source maps. Found a mistake? [hello@ouo11y.com](mailto:hello@ouo11y.com).

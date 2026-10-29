@@ -1,0 +1,79 @@
+---
+title: "Funnels, readable stack traces, and @ouo11y/browser 0.3.0"
+description: The Grafana app 0.9.0 and rum-api 0.5.0 add funnels and source-mapped stacks. The browser SDK 0.3.0 stops losing telemetry on bad networks and closed tabs, and starts a new session when the user changes.
+date: 2026-10-26
+kind: release
+tags: [release, rum-api, grafana, browser, funnels, upgrade]
+---
+
+import ReleaseTable from '../../components/announcements/ReleaseTable.astro';
+import Note from '../../components/Note.astro';
+
+Released over two days: rum-api 0.5.0 and the Grafana app 0.9.0 on 25 October, `@ouo11y/browser` 0.3.0 and the grafana image 0.5.0 that carries the app on 26 October. The collector stays at 0.4.0. These are the [current versions](/announcements/#current).
+
+<ReleaseTable train="funnels" />
+
+## Funnels
+
+Of the sessions that reached step 1, how many went on to step 2, then step 3, and where did the others stop? In Grafana, open **More apps → ouo11y RUM → Funnels**:
+
+- define ordered steps, each a page path (exact or a prefix) or an event name;
+- see how many sessions and users reach each step and the drop-off between them, over up to 31 days;
+- open the sessions that stopped at a step, with their replays, to see why;
+- share or bookmark the funnel: it lives in the URL.
+
+Funnels are computed from the events you already send. Page steps need no code with `@ouo11y/browser`, which records every page load and history change as a `navigation` event; an event step is one `rum.addEvent("add_to_cart")` where the action happens. Results are cached per definition and range for 60 s (`LOKI_FUNNEL_CACHE_TTL`, `0` turns the cache off).
+
+Read [Funnels](/docs/concepts/funnels/) for how they are counted, or build one from fifty generated shoppers in [quickstart 3](/docs/quickstarts/3-funnels/).
+
+## Stack traces you can read
+
+A minified production bundle reports `at o (index-B3x9.js:40:1234)`. rum-api 0.5.0 stores your source maps per project and maps each frame back to the original file, line and function when the session is read. The Grafana app shows the mapped stack with a `source mapped` badge and the source lines around the first frame, and an **Original / Raw** toggle back to what the browser reported. The raw stack is never changed, and a map uploaded after an error still applies.
+
+On the server side:
+
+- maps are uploaded with `PUT /v1/sourcemaps` and a per-project **upload token**, a secret for your CI, not the public project token (`projects.<id>.upload_token` or `OUO_UPLOAD_TOKENS`);
+- they are stored next to the replays, kept for `retention.sourcemaps` (default `2160h`), and removed when a project is deleted.
+
+<Note type="caution" title="Not ready for your build pipeline yet">
+`@ouo11y/browser` 0.3.0 tags each exception with the debug ids of its scripts, and rum-api accepts uploads, but the command-line tool that injects debug ids and uploads maps from a build is not published on npm, so [Errors from a minified bundle](/docs/instrument/ouo-sdk/#errors-from-a-minified-bundle) lists source map upload as not released. Stacks from an app without maps show raw, as before.
+</Note>
+
+## @ouo11y/browser 0.3.0
+
+**Delivery that does not lose telemetry.** Every request goes through one [delivery layer](/docs/instrument/ouo-sdk/#delivery):
+
+- bodies of 1 KB or more are gzipped;
+- network errors, timeouts, `408`, `429` and `5xx` are retried with backoff, honouring `Retry-After`, up to `transport.maxAttempts` (5);
+- when the page is hidden or closed, what is left is sent with `keepalive`;
+- what still cannot be sent waits in an offline store in IndexedDB (at most 5 MB and 24 hours) and goes out when the browser is back online or on the next page load.
+
+`rum.deliveryStats()` counts what was sent, retried, queued and dropped.
+
+**Never breaks the host page.** Every hook catches its own exceptions, patched functions behave exactly like the originals, and an SDK that cannot start removes what it installed and returns an inert instance. It runs under a strict CSP with no `unsafe-eval` or `unsafe-inline`, and a one-hour soak test of a busy single-page app showed no growth in listeners, timers, DOM nodes or heap. See [The host page is never broken](/docs/instrument/ouo-sdk/#the-host-page-is-never-broken).
+
+**Sessions follow the user.** From one identified user to another, the session ends and a new one starts. `rum.clearUser()` on logout and `rum.endSession()` end the session too. A login from anonymous keeps the session. Every session carries `device.id`, random and made once per browser profile and origin, so you can link the sessions of one browser without an IP address or a fingerprint. rum-api 0.5.0 returns it on sessions as `device_id`. See [Sessions](/docs/instrument/ouo-sdk/#sessions).
+
+## Get it
+
+```bash
+npm install @ouo11y/browser@0.3.0
+```
+
+```ini
+OUO_RUM_API_VERSION=0.5.0
+OUO_GRAFANA_VERSION=0.5.0
+```
+
+## Upgrade
+
+Order: **rum-api 0.5.0**, then **the grafana image 0.5.0**, then **`@ouo11y/browser` 0.3.0** in your apps. The collector stays at 0.4.0. [Upgrading](/docs/operate/upgrade/) has the steps for Compose, the VM and Helm.
+
+- **rum-api:** storage is compatible with 0.4, and source maps are stored next to the replays. Nothing to migrate.
+- **The browser SDK sends gzip.** Bodies arrive with `Content-Encoding: gzip`. A collector on another origin must allow that header on the replay receiver and expose `Retry-After`; check your CORS settings against [Collector side](/docs/instrument/ouo-sdk/#collector-side). A proxy in front of the collector must pass the body untouched.
+- **Session counts can rise.** Apps where one browser switches between identified users now get one session per user instead of one shared session.
+- **Browsers.** The package ships no syntax newer than ES2022: it runs on Chrome and Edge 94+, Firefox 93+, Safari 16.4+, and is tested on the last two years of each ([Browsers](/docs/instrument/ouo-sdk/#browsers)).
+
+<Note title="Which versions work together">
+The Grafana app 0.9 and the grafana image 0.5 need rum-api 0.4.0 or newer; the Funnels page and mapped stacks need rum-api 0.5.0, and with 0.4 the raw stack shows. `@ouo11y/browser` 0.3 needs collector and rum-api 0.2.0 or newer; mapped stacks and `device_id` need rum-api 0.5.0. `@ouo11y/react-native` stays at 0.2.1.
+</Note>

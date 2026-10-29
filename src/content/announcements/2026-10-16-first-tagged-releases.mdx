@@ -1,0 +1,38 @@
+---
+title: "First tagged releases: collector, rum-api and grafana 0.2.0"
+description: The three server-side images got version numbers, multi-arch builds, SBOMs and provenance. Superseded by 0.3.0 under the new name; read this for what the stack is made of.
+date: 2026-10-16
+kind: release
+tags: [release, collector, rum-api, grafana]
+---
+
+import ReleaseTable from '../../components/announcements/ReleaseTable.astro';
+import Note from '../../components/Note.astro';
+
+Until 16 October, ouo11y shipped from its main branch without version tags. From this day every server-side component has its own version number, its own changelog and its own release. The first three are the images the whole stack runs on.
+
+<ReleaseTable train="first-tags" />
+
+<Note type="caution" title="Do not install these">
+These images live under the project's old name, `ghcr.io/ziadmansourm/ouo/…`. Two days later the project became ouo11y, and the same three images were released again as 0.3.0 under `ghcr.io/ouo11y/…`. Start from the [current versions](/announcements/#current), and see [Images under ghcr.io/ouo11y](/announcements/2026-10-22-images-under-ouo11y/) to move a 0.2.0 install.
+</Note>
+
+## What is in them
+
+**collector 0.2.0** is an [OpenTelemetry Collector distribution](/docs/operate/collector/) built with Collector components 0.160.0. Next to the upstream pieces (the `otlp` receiver, `basicauth` and `health_check`, the `batch`, `memory_limiter`, `attributes`, `resource` and `transform` processors, the `otlp`, `otlphttp` and `debug` exporters, the `routing` connector), it adds three of our own:
+
+- the [`ouoreplay` receiver](/docs/operate/collector/#ouoreplay-receiver) on port 4319, which takes replay chunks at `POST /v1/replay/chunks`, and its exporter, which hands them to rum-api;
+- the [`ouoratelimit` processor](/docs/operate/collector/#ouoratelimit);
+- the [`ouosentry` receiver](/docs/operate/sentry-bridge/) on port 4320, which turns Sentry SDK envelopes into OTLP and can forward them to Sentry as well.
+
+**rum-api 0.2.0** is the first image of the service that stores replays and serves sessions to Grafana.
+
+**grafana 0.2.0** is Grafana 13.2.1 with our Grafana app inside, at version 0.6.0. That version added taps to Sentry video replays (an orange ring where the finger touched, with the component's name), tap markers on the scrubber, and an activity list beside the video and frame players.
+
+## Supply chain
+
+Every image is built for `linux/amd64` and `linux/arm64`, and carries an SBOM and a provenance attestation. Each release names its digest, listed above, so you can check that what you pulled is what was released.
+
+## Which versions work together
+
+collector 0.2.0 and grafana 0.2.0 need rum-api 0.2.0 or newer. Grafana provisioning (data sources, the app's settings with the read token) is not in the image.

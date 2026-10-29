@@ -18,6 +18,8 @@ const post = z.object({
   updated: z.coerce.date().optional(),
   // The blog index shows the newest featured post first; without one, the newest post.
   featured: z.boolean().default(false),
+  // Announcements only: the badge and filter on /announcements/ (AUTHORING.md, "Announcements").
+  kind: z.enum(['release', 'notice', 'docs', 'site']).optional(),
 });
 
 const posts = (dir: string) =>
