@@ -94,6 +94,8 @@ services:
 
   rabbitmq:
     image: rabbitmq:4.4.0-management-alpine
+    # Once in our four fresh starts it exited reading .erlang.cookie (eacces); a restart fixed it.
+    restart: unless-stopped
     environment:
       RABBITMQ_DEFAULT_USER: shop
       RABBITMQ_DEFAULT_PASS: shop

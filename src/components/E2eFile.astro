@@ -2,7 +2,9 @@
 // Embeds a file of the end-to-end blog project (blog-sources/e2e/) as a code block titled with
 // its path, so readers copy it from the post. The whole folder is public/blog/e2e/blog-e2e.zip.
 // <E2eFile path="compose.yaml" />
-import { Code } from '@astrojs/starlight/components';
+// Expressive Code's own component, as fenced code blocks in posts use. Starlight's Code would also
+// load Starlight's theme variables, which are dark by default on non-docs pages.
+import { Code } from 'astro-expressive-code/components';
 
 interface Props { path: string; title?: string; lang?: string; open?: boolean; }
 const { path, title, lang, open = true } = Astro.props;
@@ -21,5 +23,6 @@ const display = title ?? `blog-e2e/${path}`;
 
 <style>
   .e2e-file { margin: 1rem 0; }
+  .e2e-file > summary code { overflow-wrap: anywhere; }
   .e2e-file > summary { cursor: pointer; font-size: .9rem; color: var(--sl-color-gray-2, var(--ink-2)); margin-bottom: .5rem; }
 </style>

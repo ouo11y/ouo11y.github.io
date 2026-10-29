@@ -1,0 +1,222 @@
+---
+title: "End-to-end observability, hands-on, part 3: databases and Redis"
+description: What the stable db.* conventions changed and what four real instrumentations emit, what ends up in db.query.text, connection pool metrics, a Redis hit ratio you can predict, and finding the slow query behind a slow click.
+date: 2026-10-31
+tags: [opentelemetry, tracing, postgresql, redis, metrics, hands-on]
+series: "End-to-end observability, hands-on"
+part: 3
+---
+import Note from '../../components/Note.astro';
+import Chart from '../../components/diagrams/Chart.astro';
+import E2eCacheCalc from '../../components/diagrams/E2eCacheCalc.astro';
+import E2eFile from '../../components/E2eFile.astro';
+import E2ePostStyle from '../../components/E2ePostStyle.astro';
+
+<E2ePostStyle />
+
+In the click from [part 1](/blog/e2e-observability-1-one-click-three-signals/), one `SELECT` took 57 of the worker's 104 milliseconds. This part finds that query the way you would in production, from the slow user action down to the plan, fixes it, and measures the fix. On the way: what the database conventions say, what the libraries actually send, and what to watch on a connection pool and a cache.
+
+Same project and versions as part 1: PostgreSQL 18.6 and Redis 8.10.3; on the API, `@opentelemetry/instrumentation-pg` 0.77.0 and `instrumentation-ioredis` 0.72.0; on the worker, `opentelemetry-instrumentation-psycopg` and `-redis` 0.66b1.
+
+## The database conventions are stable, and they renamed everything
+
+Database spans were among the first conventions OpenTelemetry wrote, and among the last to stabilise. [Semantic conventions v1.33.0](https://github.com/open-telemetry/semantic-conventions/releases/tag/v1.33.0), released on 2 May 2025, was the first release where "the core of database semantic conventions have stabilized", and it marked the conventions for PostgreSQL, MySQL, MariaDB and Microsoft SQL Server as stable. In v1.44.0 the [PostgreSQL page](https://github.com/open-telemetry/semantic-conventions/blob/v1.44.0/docs/db/postgresql.md) is stable; the Redis page is still at Development.
+
+Stabilising meant renaming. The attributes you will meet in older dashboards and their stable names:
+
+| Before | Stable | What it holds |
+|---|---|---|
+| `db.system` | `db.system.name` | `postgresql`, `redis`, … |
+| `db.name` | `db.namespace` | the database, here `shop` |
+| `db.statement` | `db.query.text` | the query, with parameters as placeholders |
+| `db.operation` | `db.operation.name` | `SELECT`, `get`, … |
+| `db.sql.table` | `db.collection.name` | the table |
+| (new) | `db.query.summary` | a short, low-cardinality summary such as `SELECT orders`, meant for span names |
+| `net.peer.name`, `net.peer.port` | `server.address`, `server.port` | the database host |
+
+Because a rename breaks every query and dashboard, instrumentations do not switch on their own. The `OTEL_SEMCONV_STABILITY_OPT_IN` variable selects the names: `database` for the stable ones, `database/dup` for both during a migration, unset for the old ones. We set `database` on both services.
+
+## What the four instrumentations actually emitted
+
+From the trace of part 1, with `OTEL_SEMCONV_STABILITY_OPT_IN=database`:
+
+| | API: `pg` 0.77.0 | API: `ioredis` 0.72.0 | Worker: `psycopg` 0.66b1 | Worker: `redis` 0.66b1 |
+|---|---|---|---|---|
+| Span name | `pg.query:INSERT shop` | `get` | `SELECT` | `SET` |
+| System | `db.system.name` ✓ | `db.system.name` ✓ | `db.system.name` ✓ | `db.system.name` ✓ |
+| Database | `db.namespace: shop` ✓ | (none) | `db.namespace: shop` ✓ | (none) |
+| Operation | (none) | `db.operation.name: get` ✓ | (none) | (none) |
+| Query text | `INSERT INTO orders (...) VALUES ($1, $2, $3) RETURNING id` | `get product:3` | `SELECT count(*) FROM orders WHERE customer_email = %s` | `SET ? ? ? ?` |
+| Host | `server.address`, `server.port` ✓ | `server.address`, `server.port` ✓ | `net.peer.name`, `net.peer.port` ✗ | `net.peer.name`, `net.peer.port` ✗ |
+| Extra spans | `pg-pool.connect` | | | |
+
+Two of four still use the old `net.peer.*` names for the host, even with the opt-in set; none sets `db.query.summary` or `db.collection.name`; span names follow four different patterns. In TraceQL, `span.db.system.name = "postgresql"` finds every database span from both services, but `span.server.address = "postgres"` finds only the Node.js half. Query on `db.system.name` and `db.query.text`; treat the rest as nice-to-have.
+
+### What is in `db.query.text`
+
+The conventions want query text with parameters left as placeholders, so values do not reach your tracing backend. Here is what each library did with the email address and the Redis keys:
+
+- **`pg` and `psycopg`** recorded the parameterised query as written: `$1` and `%s`. The email address never left the process, because the driver sends it separately. If your code builds SQL by string concatenation, the values *are* the query text, and they go into the span.
+- **Python `redis`** replaced every argument with `?`: `SET ? ? ? ?`. Safe, and it says nothing about which key.
+- **`ioredis`** recorded the command and its key: `get product:3`, `get order:3000248:status`. Useful for debugging; a problem if your keys contain emails, session tokens or user IDs. The instrumentation has a `dbStatementSerializer` option to change that; we did not change it.
+
+Decide per library whether its default is acceptable, and test it with a real trace, as we did. The Collector can redact on the way through too: our [OTTL redaction post](/blog/ottl-redaction-at-the-edge/) shows how.
+
+## Following a slow click down to the query plan
+
+Suppose a user says "my order took a second to show as paid". Starting from the symptom, the steps are the same every time: find slow traces, find the slow span in them, find out how often it is slow, then ask the database why.
+
+**1. Find the slow database spans.** TraceQL in Tempo, from all services at once, returning the query text with each match:
+
+```text
+{ span.db.system.name = "postgresql" && duration > 50ms } | select(span.db.query.text)
+```
+
+```text
+7c794eb5…  shop-api  POST /api/orders   147 ms   SELECT count(*) FROM orders WHERE customer_email = %s   91.9 ms
+10f1a73a…  shop-api  POST /api/orders   155 ms   SELECT count(*) FROM orders WHERE customer_email = %s   90.8 ms
+32ffc9aa…  shop-api  POST /api/orders  1014 ms   SELECT count(*) FROM orders WHERE customer_email = %s  278.5 ms
+```
+
+The root is `shop-api` because these are load-generator orders, which start at the API. Every match is the same query in the worker.
+
+**2. Is it this query every time, or this time?** Tempo 3 computes metrics from spans on the fly. The p95 duration of every PostgreSQL query over the last ten minutes, grouped by query text:
+
+```text
+{ span.db.system.name = "postgresql" } | quantile_over_time(duration, .95) by (span.db.query.text)
+```
+
+| Query | p95 |
+|---|---|
+| `SELECT count(*) FROM orders WHERE customer_email = %s` | 213.1 ms |
+| `INSERT INTO orders (...) RETURNING id` | 10.4 ms |
+| `UPDATE orders SET status = 'paid', paid_at = now() WHERE id = %s` | 5.8 ms |
+| `SELECT id, name, price_cents FROM products WHERE id = $1` | 4.2 ms |
+| `SELECT id, name, price_cents FROM products ORDER BY id` | 2.1 ms |
+
+Grouping by query text works because both drivers record parameterised queries, so every customer's lookup has the same text. With literal values in the SQL you would get one group per customer; that is what `db.query.summary` is for, once libraries set it.
+
+**3. Ask PostgreSQL why.**
+
+```bash
+docker compose exec postgres psql -U shop -c "EXPLAIN (ANALYZE, BUFFERS) SELECT count(*) FROM orders WHERE customer_email = 'customer4242@example.com'"
+```
+
+```text
+ Finalize Aggregate  ...
+   Workers Launched: 2
+   ->  Partial Aggregate  (actual time=38.058..38.058 rows=1.00 loops=3)
+         Buffers: shared hit=15969 read=18141
+         ->  Parallel Seq Scan on orders  (cost=0.00..49743.31 rows=25 width=0) (actual time=1.563..38.045 rows=20.00 loops=3)
+               Filter: (customer_email = 'customer4242@example.com'::text)
+               Rows Removed by Filter: 1000409
+ Execution Time: 41.471 ms
+```
+
+A parallel sequential scan of three million rows to count 60. The first time we ran it, with a cold cache (`read` buffers from disk), it took 322 ms, in the range of the slowest span above. `init.sql` created the table without an index on `customer_email`, on purpose.
+
+**4. Fix it, and measure the fix the same way you found it.**
+
+```bash
+docker compose exec postgres psql -U shop -c "CREATE INDEX CONCURRENTLY orders_customer_email_idx ON orders (customer_email)"
+```
+
+```text
+CREATE INDEX
+Time: 2862.138 ms (00:02.862)
+```
+
+`CONCURRENTLY` builds the index without blocking writes, so the API kept inserting orders during those 2.9 seconds. The plan afterwards:
+
+```text
+ Aggregate  (actual time=0.049..0.051 rows=1.00 loops=1)
+   ->  Index Only Scan using orders_customer_email_idx on orders  (actual time=0.034..0.045 rows=60.00 loops=1)
+         Index Cond: (customer_email = 'customer4242@example.com'::text)
+         Heap Fetches: 0
+ Execution Time: 0.087 ms
+```
+
+From 41 ms to 0.09 ms. And what the users' orders felt, the worker's p95 processing time from `messaging_process_duration_bucket` in Mimir, every 15 seconds around the moment we created the index:
+
+<Chart
+  title="Worker p95 processing time, before and after the index (ms)"
+  caption="Measured: histogram_quantile(0.95, sum by (le) (rate(messaging_process_duration_bucket[1m]))). Index created at 0 s; the 1-minute rate window spreads the drop over the next minute. What remains is mostly the 20 to 60 ms charge card step."
+  x={{ label: 'seconds from CREATE INDEX', values: [-285,-270,-255,-240,-225,-210,-195,-180,-165,-150,-135,-120,-105,-90,-75,-60,-45,-30,-15,0,15,30,45,60,75,90,105,120,135,150] }}
+  y={{ label: 'ms', min: 0, max: 260, format: 'int' }}
+  series={[{ name: 'p95', tone: 'accent', area: true, values: [228,229,230,231,235,235,237,238,234,234,236,238,246,241,238,235,233,229,234,235,236,232,216,125,92,93,94,94,94,92] }]}
+/>
+
+From 235 ms to 93 ms. The `SELECT` span's p95, from the span metrics in Mimir, went from 98.5 ms to under 5 ms, which is as low as that histogram can say: its lowest bucket ends at 5 ms.
+
+## A metric that looked right and was useless
+
+The psycopg instrumentation records the conventions' `db.client.operation.duration` histogram. Its p95 for both the worker's `SELECT` and `UPDATE` was exactly 4.75 before the index, while the spans said 90 ms. The buckets explain it:
+
+```text
+db_client_operation_duration_bucket{job="shop/shop-worker"}
+le=0: 0   le=5: 1612   le=10: 1612   le=25: 1612 ... le=10000: 1612   le=+Inf: 1612
+```
+
+The instrumentation records seconds, as the conventions require (Mimir's metadata says `unit: seconds`), but the Python SDK's default histogram buckets, `0, 5, 10, 25, … 10000`, were designed for milliseconds. Every query, slow or fast, lands in the first bucket, and every quantile is an interpolation inside `[0, 5]` seconds. The Node.js `pg` instrumentation passes its own boundaries (`0.001, 0.005, 0.01, 0.05, …`), so the API's histogram of the same metric name was fine.
+
+The fix is a View with explicit bucket boundaries for that instrument in the SDK's meter provider, or exponential histograms. We did not run either in this project, because `opentelemetry-instrument` builds the meter provider for you. We used the span metrics from the Collector instead, which have buckets we chose. Before you trust a latency histogram, look at its buckets once.
+
+## The connection pool
+
+A slow query hurts twice: it is slow, and it holds a connection while it is. The `pg` instrumentation reports `pg.Pool` with the conventions' connection metrics:
+
+| Series | What it is |
+|---|---|
+| `db_client_connection_count{db_client_connection_state="used"\|"idle"}` | connections in the pool, by state |
+| `db_client_connection_max` | the pool's size, `max: 10` in `server.js` |
+| `db_client_connection_pending_requests` | callers waiting for a connection: anything above 0 means the pool is the bottleneck |
+
+The first time we looked, the pool's name was wrong:
+
+```text
+db_client_connection_count{db_client_connection_pool_name="unknown_host:unknown_port/unknown_database", db_client_connection_state="used"} 1
+```
+
+The instrumentation builds `db.client.connection.pool.name` from the pool's `host`, `port` and `database` options, and we had created the pool with a `connectionString`, which it does not parse. Passing the fields (the version of `server.js` in part 1 does) gives `postgres:5432/shop`. With one pool it does not matter; with a pool per database, they would all be the same series.
+
+From the server side, the Collector's `postgresql` receiver reports `postgresql_backends{postgresql_database_name="shop"}`: 3 connections while the API's pool reported 1 in use. The worker's connection and the receiver's own are not in any pool metric, which is why you need both views: the server count is the one that hits `max_connections`, and a growing gap between it and your pools is how you notice a leak somewhere else.
+
+Alert on what users feel, written from these series (run as queries, not loaded into a ruler):
+
+```text
+# Callers are queueing for a connection.
+max by (db_client_connection_pool_name) (db_client_connection_pending_requests) > 0
+
+# The pool is nearly full.
+sum by (db_client_connection_pool_name) (db_client_connection_count{db_client_connection_state="used"})
+  / max by (db_client_connection_pool_name) (db_client_connection_max) > 0.8
+```
+
+## Redis: a hit ratio you can predict
+
+The API caches each product for 30 seconds. The Collector's `redis` receiver reads `INFO` and gives `redis_keyspace_hits` and `redis_keyspace_misses` as counters, so the hit ratio is:
+
+```text
+sum(rate(redis_keyspace_hits[5m]))
+  / (sum(rate(redis_keyspace_hits[5m])) + sum(rate(redis_keyspace_misses[5m])))
+```
+
+which returned **0.879**. That number is predictable, and predicting it is a good test of whether you understand your cache. Eight products, each expiring every 30 seconds, means at most 8 misses per 30 seconds: 0.27 misses per second. The API made 1.99 product lookups per second (from `traces_span_metrics_calls{span_name="get"}`), so the expected ratio is 1 − 0.27 / 2 ≈ 0.87. If the measured ratio is far below your prediction, keys are being evicted, the TTL is not what you think, or something else is reading the same Redis. Keyspace hits and misses are server-wide, so a shared Redis mixes every client's ratio into one.
+
+For latency, the spans are the honest source: Redis `get` and `SET` took 0.2 to 0.4 ms in every trace we read. The span metrics said p50 2.5 ms and p95 4.75 ms for the same calls, which is again a bucket artefact: our `span_metrics` buckets start at 5 ms, and a quantile inside the first bucket is a guess. For a sub-millisecond dependency, give the connector smaller buckets (`100us`, `250us`, `500us`, `1ms`) or read the spans.
+
+What the ratio is worth depends on how much slower a miss is than a hit. Starting from our measurements, a hit (GET, 0.3 ms) and a miss (GET, the products query at its 4.2 ms p95, then SET):
+
+<E2eCacheCalc hitMs={0.3} missMs={4.8} ratio={0.88} rps={2}
+  caption="Mean lookup time and the load left on PostgreSQL for a given hit ratio. Starting values are from our traces; raise the lookups per second to see what the cache saves at production rates." />
+
+At our two lookups per second, the cache saves PostgreSQL almost nothing. At 2,000 per second, the 12 % of misses are 240 queries a second, and going from 88 % to 98 % cuts that to 40. The ratio matters in proportion to traffic.
+
+## What we learned
+
+- The `db.*` conventions are stable, but libraries are not all there: set `OTEL_SEMCONV_STABILITY_OPT_IN=database`, then check what you get. Two of our four instrumentations still sent `net.peer.*`.
+- Parameterised queries make `db.query.text` safe and groupable. Check what your Redis client records; ours put keys in the span.
+- From a slow click to the fix took four queries: TraceQL for slow spans, TraceQL metrics to see if it is systematic, `EXPLAIN ANALYZE`, and the same metric afterwards.
+- Read a histogram's buckets before you read its quantiles. Two of ours (the Python SDK's defaults, and our own span metrics for Redis) were useless at the low end.
+
+[Part 4](/blog/e2e-observability-4-exemplars/) is about the dot on the latency graph that opens a trace: how an exemplar gets from a `record()` call to Grafana, what each hop needs, and the six ways we broke it.

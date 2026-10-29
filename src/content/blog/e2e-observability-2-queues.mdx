@@ -1,0 +1,222 @@
+---
+title: "End-to-end observability, hands-on, part 2: queues"
+description: How trace context crosses a message queue, when a consumer span should be a child and when a link, which messaging attributes libraries really emit, and the queue metrics that page you before your users notice.
+date: 2026-10-30
+tags: [opentelemetry, tracing, rabbitmq, messaging, metrics, hands-on]
+series: "End-to-end observability, hands-on"
+part: 2
+---
+import Note from '../../components/Note.astro';
+import Chart from '../../components/diagrams/Chart.astro';
+import Sequence from '../../components/diagrams/Sequence.astro';
+import E2eTrace from '../../components/diagrams/E2eTrace.astro';
+import E2eQueueSim from '../../components/diagrams/E2eQueueSim.astro';
+import E2eFile from '../../components/E2eFile.astro';
+import E2ePostStyle from '../../components/E2ePostStyle.astro';
+
+<E2ePostStyle />
+
+In [part 1](/blog/e2e-observability-1-one-click-three-signals/) one click became one trace, from the browser through RabbitMQ to a Python worker. That worked because two lines of code agreed on a header. This part looks at that header, at the choice we made when the worker continued the trace, and at the question a trace cannot answer: how many orders are waiting right now, and for how long?
+
+Same project, same versions as part 1 (download it there). The queue is RabbitMQ 4.4.0; the producer is Node.js with `@opentelemetry/instrumentation-amqplib` 0.71.0; the consumer is Python with `opentelemetry-sdk` 1.45.1.
+
+## Why queues are harder than HTTP
+
+An HTTP call is synchronous: the caller waits, the callee answers, and the callee's server span is naturally a child of the caller's client span. A message is different in three ways:
+
+- **Time.** The consumer may pick the message up a millisecond later or an hour later. A parent span that ended an hour before its child is legal, but it makes a strange waterfall.
+- **Fan-in and fan-out.** One message can be read by several consumers, and one consumer can process a batch of messages from many producers. A span has exactly one parent, so a batch of 50 messages cannot be a child of 50 producers.
+- **Ambient context.** The consumer may already be inside another span when it handles the message: a scheduled job, or an HTTP push from the broker.
+
+OpenTelemetry's [messaging semantic conventions](https://github.com/open-telemetry/semantic-conventions/blob/v1.44.0/docs/messaging/messaging-spans.md) answer these with **span links**, references from one span to another that do not make a parent. The conventions, still at Development status in v1.44.0, say that a "Process" span SHOULD link to the context of the message it processes, and they explain why links are the default: links are the only structure that works the same for every broker, for batches, and for consumers that run inside another span.
+
+Parent/child is still allowed in one case: when each "Process" span handles exactly one message, it MAY use that message's context as its parent. That is our case: one worker, one message at a time, no ambient span. So we wrote the worker to do both, and compared.
+
+## How the context travels
+
+<Sequence
+  caption="The traceparent header (00-trace_id-publish span_id-01) written into the AMQP message is the only thing the worker knows about the API's trace. The worker extracts it, then starts its process span as a child or with a link."
+  actors={['API (Node.js)', 'RabbitMQ', 'Worker (Python)']}
+  steps={[
+    { from: 0, to: 0, label: 'publish span', note: 'producer kind' },
+    { from: 0, to: 1, label: 'basic.publish', note: 'traceparent in headers' },
+    { from: 1, to: 0, label: 'confirm' },
+    { from: 1, to: 2, label: 'basic.deliver', note: 'same headers' },
+    { from: 2, to: 1, label: 'basic.ack', note: 'after process span', tone: 'ok' },
+  ]}
+/>
+
+On the producer side there is nothing to write: the amqplib instrumentation injects `traceparent` into the message headers inside `channel.sendToQueue`. On the consumer side we wrote the span by hand, because we wanted to control exactly how it joins the trace and which attributes it has:
+
+<E2eFile path="worker/worker.py" />
+
+`TRACE_MODE` picks between the two shapes. In `child` mode, the extracted context becomes the span's parent. In `link` mode, the span starts with `context=None` (a new root, so a new trace) and links to the publish span.
+
+## Parent/child or link: the same orders, both ways
+
+We ran the worker in each mode and read the traces back from Tempo. Switch between the two:
+
+<E2eTrace
+  toggle
+  duration={278}
+  traceIds={['58898222c16257cf4a2ab93951a45043', '027ea14dde53cf82fd48a92218ea5371']}
+  caption="Times are from the child-mode click of part 1. In link mode we ran other orders: there the worker's trace (trace 2, 027ea14d…) starts at process orders and links to the API's publish span in trace 6ba4871e…."
+  spans={[
+    { id: 'buy', name: 'buy', service: 'shop-web', depth: 0, from: 0, to: 278, kind: 'internal' },
+    { id: 'post', name: 'POST', service: 'shop-web', depth: 1, from: 0, to: 21, kind: 'client' },
+    { id: 'srv', name: 'POST /api/orders', service: 'shop-api', depth: 2, from: 7, to: 18.9, kind: 'server' },
+    { id: 'h', name: 'request handler - /api/orders', service: 'shop-api', depth: 3, from: 8, to: 19.3, kind: 'internal' },
+    { id: 'pub', name: 'publish <default>', service: 'shop-api', depth: 4, from: 11, to: 17.4, kind: 'producer', attrs: { span_id: '42018e6962245b8f' } },
+    { id: 'get', name: 'GET', service: 'shop-web', depth: 1, from: 273, to: 278, kind: 'client' },
+    { id: 'gsrv', name: 'GET /api/orders/:id', service: 'shop-api', depth: 2, from: 273, to: 275.9, kind: 'server' },
+    { id: 'proc', name: 'process orders', service: 'shop-worker', depth: 5, linkDepth: 0, linkTrace: 1, linkTo: 'publish <default>', from: 15.7, to: 120, kind: 'consumer',
+      attrs: { 'messaging.system': 'rabbitmq', 'messaging.destination.name': 'orders', 'messaging.operation.type': 'process', 'messaging.message.id': '3000248' },
+      note: 'child mode: parentSpanId 42018e6962245b8f. link mode: no parent; links[0] = { traceId: 6ba4871e…, spanId: d3ed3b1d80fcd402 }, the publish span of that order.' },
+    { id: 'cc', name: 'charge card', service: 'shop-worker', depth: 6, linkDepth: 1, linkTrace: 1, from: 16, to: 61, kind: 'internal' },
+    { id: 'up', name: 'UPDATE', service: 'shop-worker', depth: 6, linkDepth: 1, linkTrace: 1, from: 61.2, to: 62.6, kind: 'client' },
+    { id: 'sel', name: 'SELECT', service: 'shop-worker', depth: 6, linkDepth: 1, linkTrace: 1, from: 62.6, to: 119.5, kind: 'client' },
+    { id: 'set', name: 'SET', service: 'shop-worker', depth: 6, linkDepth: 1, linkTrace: 1, from: 119.6, to: 119.8, kind: 'client' },
+  ]}
+/>
+
+What each shape gave us in practice:
+
+| | Parent/child (`TRACE_MODE=child`) | Span link (`TRACE_MODE=link`) |
+|---|---|---|
+| Traces per order | one: browser, API and worker together | two: browser and API; worker on its own |
+| The waterfall from a click | shows the worker; "why was my order slow" is one view | stops at `publish`; you follow the link in Grafana (the span's **References**) |
+| `trace:rootService` of the worker's spans | `shop-web` or `shop-api` | `shop-worker`: you can search for worker traces by their root |
+| A message processed an hour later | one trace an hour long | two short traces |
+| Batches, fan-in, ambient spans | does not work | works |
+| Tail sampling on the whole trace | sees the worker | decides on the two halves separately |
+
+The link really is in the data. The worker span from the link run, as Tempo stored it:
+
+```text
+process orders  SPAN_KIND_CONSUMER  parent=None
+  links=[{traceId: 6ba4871ec432f44bc355bed99963113c, spanId: d3ed3b1d80fcd402}]
+```
+
+and `d3ed3b1d80fcd402` is the `publish <default>` span in trace `6ba4871e…`. Asking Tempo for traces rooted in the worker, `{ trace:rootService = "shop-worker" }`, returned the link-mode traces and none from the child-mode run.
+
+**What we would do.** For a work queue where one message is one job and people ask "why did *my* order take so long", parent/child is the more useful default, and the conventions allow it. As soon as you batch, fan out, or consume inside another span, use links. If you write the consumer span yourself, add the link in both modes; the conventions recommend that whenever the parent is not the message's context, and a link costs a few bytes.
+
+## Which `messaging.*` attributes you actually get
+
+The conventions are still at Development status, and they keep moving. Comparing what the publish span carried (amqplib instrumentation 0.71.0) with what our hand-written process span carries (v1.44.0 conventions):
+
+| | publish span (amqplib 0.71.0) | process span (ours, v1.44.0) |
+|---|---|---|
+| System | `messaging.system: rabbitmq` | `messaging.system: rabbitmq` |
+| Destination | `messaging.destination: ""` and `messaging.destination_kind: topic` | `messaging.destination.name: orders` |
+| Routing key | `messaging.rabbitmq.routing_key: orders` | `messaging.rabbitmq.destination.routing_key: orders` |
+| Message ID | `messaging.message_id: 3000248` | `messaging.message.id: 3000248` |
+| Operation | (none) | `messaging.operation.type: process`, `messaging.operation.name: process` |
+| Broker | `messaging.url: amqp://shop:***@rabbitmq:5672`, `server.address`, `server.port` | (none) |
+| Span name | `publish <default>` | `process orders` |
+
+The instrumentation still emits the names from before the messaging conventions were reworked: `messaging.destination` is empty because we publish to the default exchange, and the routing key, the thing you would search for, is in an attribute with another name. A TraceQL query for "every span about the `orders` queue" therefore needs both names:
+
+```text
+{ span.messaging.destination.name = "orders" || span.messaging.rabbitmq.routing_key = "orders" }
+```
+
+And the target keeps moving: on the semantic-conventions `main` branch after v1.44.0, `messaging.system` has become `messaging.system.name` and the routing key `rabbitmq.destination.routing_key`. For RabbitMQ, v1.44.0 also says `messaging.destination.name` should be `{exchange}:{routing key}`, or just the routing key on the default exchange, which is what we set. Pin the conventions version you write queries against, and read the instrumentation's changelog when you upgrade it.
+
+## A trace cannot tell you the queue is full
+
+Traces describe work that happened. When the worker is down, no work happens, and no spans arrive that could be slow. To see that, you need the broker's own numbers. The Collector's `rabbitmq` receiver reads the management API every 10 seconds; in Mimir that gives, among others:
+
+| Series in Mimir | What it is |
+|---|---|
+| `rabbitmq_message_current{state="ready"}` | messages waiting, not yet delivered: the queue depth |
+| `rabbitmq_message_current{state="unacknowledged"}` | delivered, not yet acked: work in progress |
+| `rabbitmq_message_published` | counter of messages published |
+| `rabbitmq_message_delivered`, `rabbitmq_message_acknowledged` | counters of deliveries and acks |
+
+Our worker adds three of its own, recorded per message:
+
+| Series | Kind | Source |
+|---|---|---|
+| `messaging_process_duration_bucket` | histogram, seconds | `messaging.process.duration` from the conventions |
+| `messaging_client_consumed_messages` | counter | `messaging.client.consumed.messages` from the conventions |
+| `shop_queue_wait_duration_bucket` | histogram, seconds | ours: now minus the AMQP `timestamp` the API set; no convention exists for it |
+
+<Note type="caution" title="Our queue-depth series had no queue name">
+The receiver puts the queue name on the *resource* (`rabbitmq.queue.name`, `rabbitmq.vhost.name`), not on the data point. Mimir's OTLP endpoint does not turn resource attributes into labels unless you list them, so our first `rabbitmq_message_current` series had only `state`. With one queue you do not notice; with twenty, they collapse into one sum. We added them to `promote_otel_resource_attributes` in `mimir/config.yaml` and got `rabbitmq_message_current{rabbitmq_queue_name="orders", rabbitmq_vhost_name="/", state="ready"}`. Mimir reads that file at start: after editing it, `docker compose restart mimir`; `docker compose up -d` does not notice a changed file.
+</Note>
+
+## Breaking it on purpose: the worker goes away for 90 seconds
+
+With the load generator at two orders per second, we stopped the worker for 90 seconds and started it again:
+
+```bash
+docker compose stop worker
+```
+
+```bash
+docker compose start worker
+```
+
+Then we read every series back from Mimir with `query_range` at a 10-second step. Queue depth, from the broker:
+
+<Chart
+  title="Messages waiting in orders (rabbitmq_message_current, state=ready)"
+  caption="Measured. Worker stopped at 40 s, started at 131 s. Two orders a second accumulate to 179; the worker had drained them less than 40 s after it came back."
+  x={{ label: 'seconds since the start of the test', values: [0,10,20,30,40,50,60,70,80,90,100,110,120,130,140,150,160,170,180,190,200,210,220,230,240,250,260,270,280,290] }}
+  y={{ label: 'messages', min: 0, max: 200, format: 'int' }}
+  series={[{ name: 'ready', tone: 'accent', area: true, values: [0,0,0,0,0,0,18,38,58,78,99,119,139,159,179,108,22,0,0,0,0,0,0,0,0,0,0,0,0,0] }]}
+  lines={[{ at: 100, label: 'alert: > 100 for 2 m', tone: 'bad' }]}
+/>
+
+And the worker's own metrics over the same window (a dash means Mimir returned no sample):
+
+| t (s) | consumed/s | p99 queue wait | mean queue wait | p95 process |
+|---|---|---|---|---|
+| 0–40 | 2.0 | 0.01 s | 0.00 s | 0.24 s |
+| 50 | 1.42 | 0.01 s | 0.00 s | 0.24 s |
+| 60–150 | — | — | — | — |
+| 160 | 7.81 | 60.0 s | 25.8 s | 0.23 s |
+| 170 | 6.70 | 59.2 s | 20.5 s | 0.23 s |
+| 180 | 2.45 | 9.19 s | 0.43 s | 0.23 s |
+| 190–290 | 2.0 | 0.00 s | 0.00 s | 0.23 s |
+
+Three lessons, all from this one table:
+
+1. **Consumer metrics go silent exactly when you need them.** For 90 seconds the worker recorded nothing, so every worker-side panel showed a gap, not a spike. An alert on `p99 queue wait > 30s` would not have fired during the outage; it fired afterwards, while the queue drained. Alert on the broker's numbers, which keep coming.
+2. **Process time does not move.** p95 stayed at 0.23 s throughout. The worker was never slow; it was absent. Latency inside the consumer is the wrong signal for a queue.
+3. **The histogram clipped at its top bucket.** The worst wait was about 90 s, but p99 read 60.0 s, because 60 is the largest bucket boundary in `worker.py`. A quantile can never exceed the last finite bucket. Size the buckets for the outage you want to measure, not for normal traffic.
+
+What we would alert on. We ran each expression against the live series, and stopped the worker once more to check the second one: 80 seconds later it returned `{rabbitmq_queue_name="orders"} 2` with 139 messages waiting. We did not load them into a ruler, so the `for:` durations are yours to choose:
+
+```text
+# Work is piling up: more than 100 waiting for 2 minutes.
+max by (rabbitmq_queue_name) (rabbitmq_message_current{state="ready"}) > 100
+
+# Messages arrive and nobody takes them (catches a dead worker in one minute).
+sum by (rabbitmq_queue_name) (rate(rabbitmq_message_published[1m])) > 0
+  and sum by (rabbitmq_queue_name) (rate(rabbitmq_message_delivered[1m])) == 0
+
+# Users wait: the age of messages when they are picked up (only fires once someone picks them up).
+histogram_quantile(0.99, sum by (le) (rate(shop_queue_wait_duration_bucket[5m]))) > 30
+```
+
+RabbitMQ does not report the age of the oldest waiting message through the management API we read, which is why the third alert is measured at pickup. Kafka's equivalent is consumer group lag in offsets (the Collector's `kafkametrics` receiver reports it); divide it by the consume rate and you get an estimate in seconds. We did not run Kafka for this series.
+
+## Play with it: utilisation decides everything
+
+The depth curve above follows one rule: a queue grows whenever messages arrive faster than workers finish them. If one order takes *s* seconds and you have *c* workers, they finish *c/s* per second. Divide the arrival rate by that and you get the utilisation. Below 100 % a backlog drains; at 100 % or above it never does. Start from our numbers (2 orders/s, one worker, about 120 ms per order) and move the sliders:
+
+<E2eQueueSim rate={2} consumers={1} serviceMs={120} outage={[40, 130]}
+  caption="A FIFO queue, simulated second by second in your browser with a constant time per order. The 40 to 130 s outage matches our test; the measured backlog peaked at 179 and drained in under 40 s." />
+
+Try 8 orders per second with one worker: utilisation is 96 %, the outage backlog takes minutes to drain, and the age of the oldest message keeps climbing long after the worker is back. That is the shape to recognise in a real incident: the worker is "fine" and the users are not.
+
+## What we learned
+
+- The context crosses the queue in one header. Instrumentation writes it on publish; on consume you decide what to do with it.
+- The conventions default to span links and allow parent/child for one message at a time. For a work queue we prefer parent/child for the one-trace view, and we add the link anyway.
+- Instrumentations lag the conventions. Our producer emitted pre-rework `messaging.*` names; write queries that accept both, and pin the version.
+- Watch queues from the broker. The consumer's metrics stop when the consumer stops.
+
+[Part 3](/blog/e2e-observability-3-databases-and-redis/) follows the trace into PostgreSQL and Redis: what the stable `db.*` conventions changed, what ends up in `db.query.text`, the connection pool, and the `SELECT` that took half the worker's time.
