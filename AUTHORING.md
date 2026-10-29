@@ -92,5 +92,9 @@ updated: 2026-11-05                                   # optional
 
 Posts live in `src/content/blog/<slug>.mdx` (or `.md`); the file name is the URL. Components
 for posts: everything in `src/components/diagrams/`, and `src/components/Note.astro` for
-callouts (Starlight's `Aside` is styled only inside the docs). Import paths from a post:
+callouts (Starlight's `Aside` is styled only inside the docs). Do not import
+Starlight's `Code` (or `QuickstartFile`, which uses it) into a post: it loads Starlight's
+dark-default theme and turns every diagram on the page dark in light mode. Use
+`astro-expressive-code/components` instead, as `src/components/E2eFile.astro` does. Set
+`featured: true` on the one post the blog index should lead with. Import paths from a post:
 `../../components/...`.

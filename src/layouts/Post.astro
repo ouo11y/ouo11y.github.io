@@ -2,7 +2,7 @@
 import type { CollectionEntry } from 'astro:content';
 import { render } from 'astro:content';
 import Base from './Base.astro';
-import { fmtDate, listPosts, readingTime, sections, seriesIn, slugify, type Section } from '../lib/site';
+import { fmtDate, listPosts, readingTime, sections, seriesIn, shortTitle, slugify, type Section } from '../lib/site';
 
 interface Props { section: Section; entry: CollectionEntry<Section>; }
 const { section, entry } = Astro.props;
@@ -43,7 +43,7 @@ const nextPart = thisSeries && seriesIdx >= 0 && seriesIdx < thisSeries.posts.le
             <ol>
               {thisSeries.posts.map((p) => (
                 <li class:list={{ here: p.id === entry.id }}>
-                  {p.id === entry.id ? <span>{p.data.title}</span> : <a href={`/${section}/${p.id}/`}>{p.data.title}</a>}
+                  {p.id === entry.id ? <span>{shortTitle(p.data.title, thisSeries.title)}</span> : <a href={`/${section}/${p.id}/`}>{shortTitle(p.data.title, thisSeries.title)}</a>}
                 </li>
               ))}
             </ol>

@@ -96,6 +96,7 @@ const data = JSON.stringify({ x: x.values, series: series.map((s) => ({ name: s.
   .ref line { stroke: var(--tone); stroke-dasharray: 4 4; stroke-width: 1.5; }
   .ref text { fill: var(--tone); font-weight: 600; }
   .cursor { stroke: var(--dg-ink-3); stroke-width: 1; }
+  .readout[hidden] { display: none; }
   .readout { position: absolute; top: 0; transform: translateX(-50%); display: grid; gap: 2px; padding: 6px 10px; border-radius: 8px; background: var(--dg-node); border: 1px solid var(--dg-line); font-size: 12px; pointer-events: none; white-space: nowrap; box-shadow: 0 4px 16px rgba(0,0,0,.15); }
   .legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px; font-size: 13px; color: var(--dg-ink-2); }
   .legend i { display: inline-block; width: 12px; height: 3px; border-radius: 2px; background: var(--tone); margin-right: 6px; vertical-align: middle; }

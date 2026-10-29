@@ -16,6 +16,8 @@ const post = z.object({
   series: z.string().optional(),
   part: z.number().int().positive().optional(),
   updated: z.coerce.date().optional(),
+  // The blog index shows the newest featured post first; without one, the newest post.
+  featured: z.boolean().default(false),
 });
 
 const posts = (dir: string) =>

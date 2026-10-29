@@ -32,7 +32,11 @@ export const sections: Record<Section, { title: string; blurb: string }> = {
 
 export async function listPosts(section: Section): Promise<CollectionEntry<Section>[]> {
   const entries = await getCollection(section, ({ data }) => import.meta.env.DEV || !data.draft);
-  return entries.sort((a, b) => b.data.date.valueOf() - a.data.date.valueOf());
+  // Newest first; posts of one day keep their series together, in part order.
+  return entries.sort((a, b) =>
+    b.data.date.valueOf() - a.data.date.valueOf() ||
+    (a.data.series ?? '').localeCompare(b.data.series ?? '') ||
+    (a.data.part ?? 0) - (b.data.part ?? 0));
 }
 
 export const fmtDate = (d: Date) =>
@@ -56,4 +60,11 @@ export function seriesIn(entries: CollectionEntry<Section>[]): Series[] {
   }
   for (const s of map.values()) s.posts.sort((a, b) => (a.data.part ?? 0) - (b.data.part ?? 0) || a.data.date.valueOf() - b.data.date.valueOf());
   return [...map.values()];
+}
+
+// "Series name, part 2: the topic" → "the topic", for lists that already show the series.
+export function shortTitle(title: string, series?: string) {
+  if (!series || !title.startsWith(series)) return title;
+  const rest = title.slice(series.length).replace(/^[,:]?\s*part \d+\s*[:,-]?\s*/i, '');
+  return rest ? rest[0].toUpperCase() + rest.slice(1) : title;
 }

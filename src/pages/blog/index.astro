@@ -1,12 +1,16 @@
 ---
 import Base from '../../layouts/Base.astro';
 import PostCard from '../../components/PostCard.astro';
-import { listPosts, sections, seriesIn } from '../../lib/site';
+import { listPosts, sections, seriesIn, shortTitle } from '../../lib/site';
 
 const posts = await listPosts('blog');
 const series = seriesIn(posts);
-const [featured, ...rest] = posts;
-const tags = [...new Set(posts.flatMap((p) => p.data.tags))].sort();
+const featured = posts.find((p) => p.data.featured) ?? posts[0];
+const rest = posts.filter((p) => p !== featured);
+// Only tags shared by three or more posts make useful filters.
+const counts = new Map<string, number>();
+for (const t of posts.flatMap((p) => p.data.tags)) counts.set(t, (counts.get(t) ?? 0) + 1);
+const tags = [...counts].filter(([, n]) => n >= 3).map(([t]) => t).sort();
 ---
 <Base title="Blog" description={sections.blog.blurb}>
   <section class="blog-head">
@@ -33,7 +37,7 @@ const tags = [...new Set(posts.flatMap((p) => p.data.tags))].sort();
             <a class="series-card" href={`/blog/series/${s.slug}/`}>
               <b>{s.title}</b>
               <span>{s.posts.length} {s.posts.length === 1 ? 'part' : 'parts'}</span>
-              <ol>{s.posts.slice(0, 4).map((p) => <li>{p.data.title}</li>)}</ol>
+              <ol>{s.posts.slice(0, 5).map((p) => <li>{shortTitle(p.data.title, s.title)}</li>)}</ol>
             </a>
           ))}
         </div>
