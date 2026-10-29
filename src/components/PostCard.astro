@@ -1,0 +1,30 @@
+---
+import type { CollectionEntry } from 'astro:content';
+import { fmtDate, readingTime, type Section } from '../lib/site';
+
+interface Props { section: Section; entry: CollectionEntry<Section>; big?: boolean; }
+const { section, entry, big = false } = Astro.props;
+const { title, description, date, tags, series, part, draft } = entry.data;
+---
+<a class:list={['pc', { big }]} href={`/${section}/${entry.id}/`} data-tags={tags.join('|')}>
+  <span class="pc-meta">
+    {series && <span class="pc-series">{series}{part && ` · part ${part}`}</span>}
+    <span>{fmtDate(date)} · {readingTime(entry.body)} min{draft && ' · draft'}</span>
+  </span>
+  <h3>{title}</h3>
+  <p>{description}</p>
+  {tags.length > 0 && <span class="pc-tags">{tags.slice(0, 4).map((t) => <span class="tag">{t}</span>)}</span>}
+</a>
+
+<style>
+  .pc { display: flex; flex-direction: column; gap: 8px; height: 100%; padding: 20px 22px; background: var(--bg-2); border: 1px solid var(--line); border-radius: 14px; color: var(--ink); transition: border-color .15s, transform .15s; }
+  .pc:hover { text-decoration: none; border-color: var(--accent); transform: translateY(-2px); }
+  .pc-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 13px; color: var(--ink-3); }
+  .pc-series { color: var(--accent); font-weight: 600; }
+  .pc h3 { margin: 0; font-size: 19px; line-height: 1.3; letter-spacing: -.01em; }
+  .pc p { margin: 0; color: var(--ink-2); font-size: 15px; flex: 1; }
+  .pc.big { padding: 32px; }
+  .pc.big h3 { font-size: clamp(24px, 3.4vw, 32px); }
+  .pc.big p { font-size: 17px; max-width: 720px; }
+  .pc-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+</style>

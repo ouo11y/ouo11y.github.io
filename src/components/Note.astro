@@ -1,0 +1,18 @@
+---
+// A callout for blog posts and other non-docs pages (Starlight's Aside is styled only inside the docs).
+// <Note type="tip" title="Why this matters">...</Note>
+interface Props { type?: 'note' | 'tip' | 'caution' | 'danger'; title?: string; }
+const { type = 'note', title } = Astro.props;
+const icons = { note: 'ℹ', tip: '✦', caution: '⚠', danger: '⛔' };
+---
+<aside class={`note not-content ${type}`}>
+  <p class="note-title">{icons[type]} {title ?? type[0].toUpperCase() + type.slice(1)}</p>
+  <div><slot /></div>
+</aside>
+
+<style>
+  .note { --c: var(--accent, #0a6fa6); margin: 1.5rem 0; padding: 14px 18px; border-left: 4px solid var(--c); border-radius: 0 12px 12px 0; background: color-mix(in srgb, var(--c) 9%, transparent); }
+  .note.tip { --c: #16a34a; } .note.caution { --c: #d97706; } .note.danger { --c: #e5484d; }
+  .note-title { margin: 0 0 4px; font-weight: 700; color: var(--c); }
+  .note :global(p) { margin: .4em 0; }
+</style>
