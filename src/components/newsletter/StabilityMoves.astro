@@ -1,0 +1,73 @@
+---
+// What moved up (or out) the OpenTelemetry maturity ladder this month: one row per component,
+// an arrow from its old level to its new one.
+// <StabilityMoves moves={[{ what: 'OTTL (traces, metrics, logs)', from: 'beta', to: 'stable', date: '2026-10-26', href: '...' }]} />
+// Levels: development, alpha, beta, rc, stable, deprecated, removed.
+import '../../styles/diagram.css';
+import { inline, shortDate } from './inline';
+
+type Level = 'development' | 'alpha' | 'beta' | 'rc' | 'stable' | 'deprecated' | 'removed';
+interface Move { what: string; from: Level; to: Level; date: string; href: string; note?: string; }
+interface Props { moves: Move[]; caption?: string; }
+const { moves, caption } = Astro.props;
+const levels: Level[] = ['development', 'alpha', 'beta', 'rc', 'stable', 'deprecated', 'removed'];
+const used = levels.filter((l) => moves.some((m) => m.from === l || m.to === l) || ['alpha', 'beta', 'stable'].includes(l));
+const col = (l: Level) => used.indexOf(l) + 2;
+const names: Record<Level, string> = { development: 'dev', alpha: 'alpha', beta: 'beta', rc: 'RC', stable: 'stable', deprecated: 'deprecated', removed: 'removed' };
+---
+<figure class="dg sm not-content" style={`--n:${used.length}`}>
+  <div class="sm-grid" role="table" aria-label="Stability changes">
+    <div class="row hd" role="row">
+      <span role="columnheader">Component</span>
+      {used.map((l) => <span role="columnheader" class:list={['lv', l]}>{names[l]}</span>)}
+    </div>
+    {moves.map((m) => {
+      const a = col(m.from), b = col(m.to);
+      const down = b < a || m.to === 'deprecated' || m.to === 'removed';
+      return (
+        <div class:list={['row', { down }]} role="row">
+          <span class="what" role="cell">
+            <a href={m.href} rel="noopener" set:html={inline(m.what)} />
+            <small>{shortDate(m.date)}{m.note && <> · <span set:html={inline(m.note)} /></>}</small>
+          </span>
+          {used.map((_, i) => <span class="cellbg" style={`grid-column:${i + 2}`} />)}
+          <span class="arrow" role="cell" style={`grid-column:${Math.min(a, b)} / ${Math.max(a, b) + 1}`} aria-label={`${m.from} to ${m.to}`}>
+            <i class:list={['from', { right: b < a }]}>{names[m.from]}</i>
+            <i class:list={['to', { left: b < a }]}>{names[m.to]}</i>
+          </span>
+        </div>
+      );
+    })}
+  </div>
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<style>
+  .sm { container-type: inline-size; }
+  .sm-grid { display: grid; gap: 0; }
+  .row { display: grid; grid-template-columns: minmax(150px, 1.4fr) repeat(var(--n), minmax(0, 1fr)); align-items: center; min-height: 48px; border-bottom: 1px solid var(--dg-line); position: relative; }
+  .row > * { grid-row: 1; }
+  .hd { min-height: 0; padding-bottom: 6px; }
+  .hd span { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--dg-ink-3); text-align: center; }
+  .hd span:first-child { text-align: left; }
+  .hd .stable { color: var(--dg-ok); }
+  .what { grid-column: 1; display: grid; padding: 6px 10px 6px 0; font-weight: 600; line-height: 1.3; }
+  .what a { color: var(--dg-ink); }
+  .what small { font-weight: 400; color: var(--dg-ink-3); font-size: 12px; }
+  .what :global(code) { font-size: 12px; overflow-wrap: anywhere; }
+  .cellbg { align-self: stretch; border-left: 1px dashed var(--dg-line); }
+  .arrow { position: relative; height: 24px; margin: 0 6%; border-radius: 999px; background: linear-gradient(90deg, color-mix(in srgb, var(--dg-accent) 20%, transparent), color-mix(in srgb, var(--dg-ok) 40%, transparent)); display: flex; justify-content: space-between; align-items: center; padding: 0 3px; z-index: 1; }
+  .down .arrow { background: linear-gradient(90deg, color-mix(in srgb, var(--dg-warn) 40%, transparent), color-mix(in srgb, var(--dg-warn) 15%, transparent)); }
+  .arrow i { font-style: normal; font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 999px; background: var(--dg-bg); color: var(--dg-ink-2); border: 1px solid var(--dg-line); white-space: nowrap; }
+  .arrow i.to { color: var(--dg-ok); border-color: var(--dg-ok); }
+  .down .arrow i.to { color: var(--dg-warn); border-color: var(--dg-warn); }
+  .arrow i.to::after { content: " →"; }
+  .arrow i.right { order: 2; } .arrow i.left { order: 1; }
+  @container (max-width: 560px) {
+    .row { grid-template-columns: minmax(0, 1fr); padding: 8px 0; }
+    .row > * { grid-row: auto; }
+    .hd, .cellbg { display: none; }
+    .what { padding: 0 0 6px; }
+    .arrow { grid-column: 1 !important; margin: 0; justify-content: flex-start; gap: 8px; background: none; padding: 0; height: auto; }
+  }
+</style>

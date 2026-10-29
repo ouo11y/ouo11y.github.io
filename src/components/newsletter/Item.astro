@@ -1,0 +1,68 @@
+---
+// One newsletter item: what happened (the slot), why it matters, what to do, and its sources.
+// <Item id="ottl-v1" title="OTTL is v1" label="stable" date="2026-10-26"
+//   why="..." todo="..." sources={[{ label: 'OTel blog', href: 'https://...' }]}
+//   deeper={[{ label: 'OTTL v1, one statement at a time', href: '/blog/ottl-v1-hands-on/' }]}>
+//   What happened, in Markdown.
+// </Item>
+// `why`, `todo` and labels accept `code`, **bold** and [links](url).
+import { inline, shortDate } from './inline';
+
+type Label = 'stable' | 'breaking' | 'release' | 'security' | 'new' | 'deprecation' | 'event' | 'read' | 'vendor' | 'ours';
+interface Link { label: string; href: string; }
+interface Props { id: string; title: string; label?: Label; date?: string; why?: string; todo?: string; sources?: Link[]; deeper?: Link[]; }
+const { id, title, label, date, why, todo, sources = [], deeper = [] } = Astro.props;
+const tones: Record<Label, string> = {
+  stable: 'ok', breaking: 'bad', security: 'bad', release: 'accent', new: 'info', deprecation: 'warn',
+  event: 'info', read: 'accent', vendor: 'accent', ours: 'accent',
+};
+---
+<article class="nl-item not-content" id={id}>
+  <header>
+    {(label || date) && (
+      <p class="kick">
+        {label && <span class={`lbl tone-${tones[label]}`}>{label}</span>}
+        {date && <time datetime={date}>{shortDate(date)}</time>}
+      </p>
+    )}
+    <h3><a href={`#${id}`} set:html={inline(title)} /></h3>
+  </header>
+  <div class="what"><slot /></div>
+  {(why || todo) && (
+    <dl>
+      {why && <><dt>Why it matters</dt><dd set:html={inline(why)} /></>}
+      {todo && <><dt>What to do</dt><dd set:html={inline(todo)} /></>}
+    </dl>
+  )}
+  {(sources.length > 0 || deeper.length > 0) && (
+    <p class="links">
+      {sources.length > 0 && <span><b>Sources</b> {sources.map((s, n) => <>{n > 0 && ' · '}<a href={s.href} rel="noopener" set:html={inline(s.label)} /></>)}</span>}
+      {deeper.length > 0 && <span><b>Go deeper</b> {deeper.map((s, n) => <>{n > 0 && ' · '}<a href={s.href} set:html={inline(s.label)} /></>)}</span>}
+    </p>
+  )}
+</article>
+
+<style>
+  .nl-item { margin: 18px 0 22px; padding: 18px 20px; border: 1px solid var(--line); border-radius: 14px; background: var(--bg-2); scroll-margin-top: 80px; }
+  .nl-item:target { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .kick { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 6px; font-size: 12px; color: var(--ink-3); }
+  .lbl { --tone: var(--accent); font-weight: 700; text-transform: uppercase; letter-spacing: .05em; font-size: 11px; padding: 2px 8px; border-radius: 999px; color: var(--tone); background: color-mix(in srgb, var(--tone) 14%, transparent); }
+  .tone-ok { --tone: var(--ok); } .tone-bad { --tone: var(--alert); } .tone-warn { --tone: var(--warn); } .tone-info { --tone: #7c3aed; } .tone-accent { --tone: var(--accent); }
+  .nl-item header h3 { margin: 0 0 8px; font-size: 19px; line-height: 1.3; letter-spacing: -.01em; }
+  .nl-item h3 a { color: var(--ink); }
+  .nl-item h3 a:hover { color: var(--accent); text-decoration: none; }
+  .what { font-size: 16px; line-height: 1.65; }
+  .what :global(p) { margin: 0 0 10px; }
+  .what :global(ul) { margin: 0 0 10px; padding-left: 20px; }
+  dl { display: grid; grid-template-columns: 128px minmax(0, 1fr); gap: 6px 14px; margin: 12px 0 0; padding: 12px 0 0; border-top: 1px dashed var(--line); font-size: 15px; line-height: 1.55; }
+  dt { font-weight: 700; color: var(--ink-3); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; padding-top: 3px; }
+  dd { margin: 0; color: var(--ink); }
+  .links { display: grid; gap: 4px; margin: 12px 0 0; font-size: 14px; color: var(--ink-2); }
+  .links b { color: var(--ink-3); font-size: 12px; text-transform: uppercase; letter-spacing: .05em; margin-right: 6px; }
+  .nl-item :global(code) { font-size: .88em; overflow-wrap: anywhere; }
+  @media (max-width: 560px) {
+    .nl-item { padding: 16px; }
+    dl { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+    dd { margin-bottom: 8px; }
+  }
+</style>

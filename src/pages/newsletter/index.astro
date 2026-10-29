@@ -1,4 +1,169 @@
 ---
-import SectionIndex from '../../layouts/SectionIndex.astro';
+import Base from '../../layouts/Base.astro';
+import Follow from '../../components/newsletter/Follow.astro';
+import InThisIssue from '../../components/newsletter/InThisIssue.astro';
+import { fmtDate, listPosts, sections } from '../../lib/site';
+
+const issues = await listPosts('newsletter');
+const latest = issues[0];
+const month = (d: Date) => d.toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+// An issue's number comes from its front matter; older issues without one are counted from the oldest.
+const number = (i: number) => issues[i].data.issue ?? issues.length - i;
+const local = (href: string, id: string) => (href.startsWith('#') ? `/newsletter/${id}/${href}` : href);
+
+const format = [
+  { name: 'OpenTelemetry', what: 'Specification, semantic conventions, the Collector and the SDKs: what went stable, what broke, what is next.' },
+  { name: 'Release radar', what: 'The month\'s notable releases on one timeline, with the one change in each that you should know about.' },
+  { name: 'Client-side and RUM', what: 'Browser and mobile telemetry: the Browser SIG, web vitals, sessions, crash and ANR reporting.' },
+  { name: 'Vendors', what: 'What observability companies shipped or changed, from their own announcements, without the adjectives.' },
+  { name: 'Community and events', what: 'Conferences, SIG meetings, elections and calls for papers, with dates.' },
+  { name: 'Reading list', what: 'A few posts from elsewhere worth your time, summarised in our words.' },
+  { name: 'From ouo11y', what: 'Our own posts and releases of the month, last and short.' },
+];
+const topics = [
+  { area: 'Signals', items: ['traces', 'metrics', 'logs', 'profiles', 'events', 'exemplars'] },
+  { area: 'Pipeline', items: ['OpenTelemetry Collector', 'OTTL', 'OpAMP', 'OTel Operator', 'sampling'] },
+  { area: 'SDKs', items: ['JavaScript', 'browser', 'Java', 'Python', 'Go', '.NET', 'Android', 'Swift'] },
+  { area: 'Conventions', items: ['semantic conventions', 'Kubernetes', 'HTTP and DB', 'GenAI', 'client-side', 'stability policy'] },
+  { area: 'Practice', items: ['RUM and sessions', 'SLOs', 'cost and cardinality', 'agent and LLM observability', 'eBPF'] },
+  { area: 'Backends', items: ['Prometheus', 'Grafana, Loki, Tempo, Mimir', 'Jaeger', 'commercial vendors'] },
+];
 ---
-<SectionIndex section="newsletter" />
+<Base title="The o11y radar, a monthly OpenTelemetry newsletter" description={sections.newsletter.blurb}>
+  <section class="nl-head">
+    <div class="wrap">
+      <p class="eyebrow">ouo11y newsletter</p>
+      <h1>The o11y <em>radar</em></h1>
+      <p class="lede">
+        Once a month: what changed in OpenTelemetry and across observability, why it matters, and what to do about it.
+        For engineers who run telemetry pipelines, instrument apps, or choose the tools, and do not have time to read every changelog.
+      </p>
+      <ul class="facts">
+        <li><b>Monthly</b><span>last week of the month</span></li>
+        <li><b>Every item sourced</b><span>release notes, specs, announcements</span></li>
+        <li><b>Vendor-neutral</b><span>including about us</span></li>
+        <li><b>10 minutes</b><span>scan it in two</span></li>
+      </ul>
+      <p class="ctas">
+        {latest && <a class="btn primary" href={`/newsletter/${latest.id}/`}>Read the latest issue</a>}
+        <a class="btn" href="#follow">Follow</a>
+      </p>
+    </div>
+  </section>
+
+  {latest && (
+    <section class="tight">
+      <div class="wrap">
+        <article class="hero">
+          <div class="hero-main">
+            <p class="meta"><span class="no">Issue #{number(0)}</span> {month(latest.data.date)} · published {fmtDate(latest.data.date)}</p>
+            <h2><a href={`/newsletter/${latest.id}/`}>{latest.data.title}</a></h2>
+            <p class="desc">{latest.data.description}</p>
+            <a class="btn primary" href={`/newsletter/${latest.id}/`}>Read issue #{number(0)}</a>
+          </div>
+          {latest.data.inThisIssue && (
+            <div class="hero-list">
+              <InThisIssue items={latest.data.inThisIssue.map((i) => ({ ...i, href: local(i.href, latest.id) }))} />
+            </div>
+          )}
+        </article>
+      </div>
+    </section>
+  )}
+
+  <section class="tight">
+    <div class="wrap two-col">
+      <div>
+        <h2 class="sub">What is in an issue</h2>
+        <p class="section-lede">Seven sections, always in this order, so you can skip to yours. Every item answers four questions: what happened, why it matters, what to do, and where it says so.</p>
+        <ol class="format">
+          {format.map((f) => <li><b>{f.name}</b><span>{f.what}</span></li>)}
+        </ol>
+      </div>
+      <div>
+        <h2 class="sub">What we track</h2>
+        <p class="section-lede">Open standards first. A vendor appears when it changed something you can check.</p>
+        <div class="topics">
+          {topics.map((t) => (
+            <div class="topic">
+              <p>{t.area}</p>
+              <ul>{t.items.map((i) => <li>{i}</li>)}</ul>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="tight">
+    <div class="wrap">
+      <h2 class="sub">All issues</h2>
+      <ol class="archive" reversed>
+        {issues.map((e, i) => (
+          <li>
+            <a href={`/newsletter/${e.id}/`}>
+              <span class="num">#{number(i)}</span>
+              <span class="body">
+                <span class="meta">{month(e.data.date)}{e.data.draft && ' · draft'}</span>
+                <b>{e.data.title}</b>
+                <span class="d">{e.data.description}</span>
+              </span>
+            </a>
+          </li>
+        ))}
+      </ol>
+      <Follow />
+      <p class="meta tipline">Seen something we should cover, or a mistake we made? Write to <a href="mailto:news@ouo11y.com">news@ouo11y.com</a>. We correct issues in place and say so at the top.</p>
+    </div>
+  </section>
+</Base>
+
+<style>
+  .nl-head { padding-bottom: 24px !important; }
+  .facts { list-style: none; padding: 0; margin: 24px 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; max-width: 860px; }
+  .facts li { display: grid; gap: 2px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg-2); }
+  .facts b { font-size: 15px; }
+  .facts span { font-size: 13px; color: var(--ink-3); }
+  .tight { padding: 28px 0 !important; }
+  .sub { font-size: 24px; margin: 0 0 10px; }
+  .section-lede { margin-bottom: 18px; font-size: 16px; }
+
+  .hero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 28px; padding: 28px; border: 1px solid var(--line); border-radius: 18px; background: linear-gradient(160deg, var(--accent-soft), transparent 55%), var(--bg-2); box-shadow: var(--shadow); }
+  .hero h2 { font-size: clamp(24px, 3.4vw, 32px); margin: 10px 0 10px; }
+  .hero h2 a { color: var(--ink); }
+  .hero .desc { color: var(--ink-2); font-size: 16px; margin: 0 0 18px; }
+  .no { display: inline-block; padding: 2px 8px; border-radius: 999px; background: var(--accent); color: var(--on-accent); font-weight: 700; margin-right: 4px; }
+  .hero-list :global(.iti) { margin: 0; }
+
+  .two-col { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 40px; }
+  .format { list-style: none; padding: 0; margin: 0; counter-reset: f; display: grid; gap: 10px; }
+  .format li { counter-increment: f; display: grid; grid-template-columns: 30px minmax(0, 1fr); grid-template-rows: auto auto; column-gap: 6px; }
+  .format li::before { content: counter(f); grid-row: span 2; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); font-weight: 700; font-size: 13px; }
+  .format b { font-size: 15px; }
+  .format span { color: var(--ink-2); font-size: 14.5px; }
+  .topics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+  .topic { padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg-2); }
+  .topic p { margin: 0 0 8px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-3); }
+  .topic ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+  .topic li { font-size: 13px; padding: 2px 9px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); }
+
+  .archive { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
+  .archive a { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 14px; align-items: start; padding: 16px 18px; border: 1px solid var(--line); border-radius: 14px; background: var(--bg-2); color: var(--ink); }
+  .archive a:hover { text-decoration: none; border-color: var(--ink-3); }
+  .num { font-size: 26px; font-weight: 800; letter-spacing: -.02em; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .body { display: grid; gap: 2px; }
+  .body b { font-size: 17px; }
+  .body .d { color: var(--ink-2); font-size: 15px; }
+  .tipline { margin-top: 18px; }
+
+  @media (max-width: 860px) {
+    .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .hero, .two-col { grid-template-columns: minmax(0, 1fr); }
+    .hero { padding: 20px; }
+  }
+  @media (max-width: 480px) {
+    .topics { grid-template-columns: minmax(0, 1fr); }
+    .archive a { grid-template-columns: 44px minmax(0, 1fr); gap: 10px; padding: 14px; }
+    .num { font-size: 20px; }
+  }
+</style>

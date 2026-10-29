@@ -57,7 +57,7 @@ const nextPart = thisSeries && seriesIdx >= 0 && seriesIdx < thisSeries.posts.le
         )}
       </aside>
 
-      <div class="prose"><Content /></div>
+      <div class="prose"><slot name="before" /><Content /><slot name="after" /></div>
     </div>
 
     <footer class="wrap post-foot">
