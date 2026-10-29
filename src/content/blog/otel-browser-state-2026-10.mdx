@@ -1,0 +1,488 @@
+---
+title: "The state of OpenTelemetry in the browser, October 2026"
+description: OTel JS 3.0 removed sdk-trace-web, the Browser SIG shipped its own SDK, and the two do not mix yet. Which packages to use today, which are on their way out, and a page we ran end to end.
+date: 2026-10-29
+tags: [opentelemetry, browser, hands-on]
+series: "OpenTelemetry in the browser"
+part: 1
+---
+import Note from '../../components/Note.astro';
+import Timeline from '../../components/diagrams/Timeline.astro';
+import Flow from '../../components/diagrams/Flow.astro';
+import BrowserMigrationMap from '../../components/diagrams/BrowserMigrationMap.astro';
+
+This series follows the [OpenTelemetry Browser SIG](/blog/otel-browser-sig-how-it-works/) and everything around OpenTelemetry for the web. Each post says where things stand on the day it was written, with links to the release, PR or meeting note behind every claim. This first one is a map.
+
+October 2026 is a confusing month to start. In one week:
+
+- On 20 October, OpenTelemetry JS released [SDK 3.0](https://github.com/open-telemetry/opentelemetry-js/releases/tag/v3.0.0) and [API 1.10](https://github.com/open-telemetry/opentelemetry-js/releases/tag/api%2Fv1.10.0). 3.0 deletes `@opentelemetry/sdk-trace-web`, the package almost every browser setup started from, and 1.10 folds the Logs API into `@opentelemetry/api`.
+- On 22 October, the Browser SIG released [`@opentelemetry/browser-sdk` 0.6.0](https://github.com/open-telemetry/opentelemetry-browser/releases/tag/browser-sdk-v0.6.0) and [`@opentelemetry/browser-instrumentation` 0.9.0](https://github.com/open-telemetry/opentelemetry-browser/releases/tag/browser-instrumentation-v0.9.0) from its own repository. They are built on OTel JS **2.12**, not 3.0.
+
+So the newest browser packages and the newest JS SDK do not fit together yet. We installed both, hit the edges, and wrote down what works today.
+
+<Note type="tip" title="The short answer, 29 October 2026">
+Use `@opentelemetry/browser-sdk@0.6.0` and `@opentelemetry/browser-instrumentation@0.9.0`, with `@opentelemetry/api@1.9.1`. Do not upgrade the API to 1.10 or the SDK packages to 3.0 in a browser app until the browser packages move to 3.x ([PR #525](https://github.com/open-telemetry/opentelemetry-browser/pull/525) is open). If you start from `sdk-trace-web` today, its 2.x line is supported for [one year from 3.0.0](https://github.com/open-telemetry/opentelemetry-js/blob/main/doc/3.x/migration-guide.md).
+</Note>
+
+## How we got here
+
+For six years, OpenTelemetry in the browser was a side job of the Node.js SDK. The first browser tracer, `@opentelemetry/web`, was [published in October 2019](https://www.npmjs.com/package/@opentelemetry/web) and later renamed `sdk-trace-web`. Fetch, XHR, document-load and user-interaction instrumentations followed in 2021, all producing spans, and all leaning on Zone.js to carry context from a click to the request it caused.
+
+In 2025 the community decided the browser needed its own group. The [Browser Phase 1 proposal](https://github.com/open-telemetry/community/blob/main/projects/browser-phase-1.md) (merged June 2025) lists why: unloading a page is nothing like shutting down a server, CPU and network are scarce on phones, there is no gRPC or built-in compression, bundle size matters, and one page serves one user, so sessions matter more than requests. Browsers also have no async context, so Zone.js-style tricks are fragile. The SIG started meeting weekly in July 2025 and opened [`open-telemetry/opentelemetry-browser`](https://github.com/open-telemetry/opentelemetry-browser) that September. [Part 2](/blog/otel-browser-sig-how-it-works/) tells that story in detail.
+
+The new direction has two big ideas, both visible in the packages:
+
+1. **Events, not spans, for most of what a page does.** A page load, a click, a web vital, a console warning and an uncaught error are log records with an `event.name`. Only network requests (fetch and XHR) stay spans. The repository's [event catalog](https://github.com/open-telemetry/opentelemetry-browser/blob/main/docs/browser-observability-model.md) gives the reason: in a browser it is often unclear when a span should start or end, and a span held open costs memory.
+2. **No Zone.js.** The SIG [committed to a zoneless design](https://github.com/open-telemetry/opentelemetry-browser/blob/main/docs/roadmap.md#package-consolidation) ([#210](https://github.com/open-telemetry/opentelemetry-browser/issues/210)). A click and the fetch it triggers are linked by time and `session.id`, not by a parent span.
+
+## What OTel JS 3.0 changed for the browser
+
+The [3.x migration guide](https://github.com/open-telemetry/opentelemetry-js/blob/main/doc/3.x/migration-guide.md) is long. These are the parts a frontend engineer meets:
+
+| Change in 3.0 / API 1.10 | What to do | Source |
+|---|---|---|
+| `@opentelemetry/sdk-trace-web` and `sdk-trace-base` removed | Use `@opentelemetry/sdk-trace`: `WebTracerProvider` becomes `TracerProvider`, and you register the context manager and propagators yourself | [#7117](https://github.com/open-telemetry/opentelemetry-js/issues/7117), [guide](https://github.com/open-telemetry/opentelemetry-js/blob/main/doc/3.x/migration-guide.md#-opentelemetrysdk-trace-web-package-removed) |
+| A stack-based context manager ships in `sdk-trace` | `StackContextManager` replaces the one `sdk-trace-web` gave you | [#7086](https://github.com/open-telemetry/opentelemetry-js/pull/7086) |
+| `@opentelemetry/api-logs` removed; `logs` lives in `@opentelemetry/api` 1.10 | `import { logs } from '@opentelemetry/api'` | [#4862](https://github.com/open-telemetry/opentelemetry-js/pull/4862) |
+| `@opentelemetry/sdk-logs` is stable (3.0.0) | Logs are no longer experimental in OTel JS | [#7143](https://github.com/open-telemetry/opentelemetry-js/issues/7143) |
+| The `browser` field in `package.json` is replaced by `#platform` subpath imports | Your bundler must support `imports`/`exports`: webpack 5.54 or later, Jest 29.4 or later | [#7141](https://github.com/open-telemetry/opentelemetry-js/pull/7141) |
+| Deep imports such as `.../build/esm/...` no longer resolve | Import from the package name only | [#6293](https://github.com/open-telemetry/opentelemetry-js/pull/6293) |
+| `BatchSpanProcessorBrowserOptions` deprecated | Use `disableAutoFlushOnDocumentHide` on the normal options | [#7140](https://github.com/open-telemetry/opentelemetry-js/pull/7140) |
+| `web-common` network-span helpers deprecated | Do not build on them; the guide says to copy what you need | [#7114](https://github.com/open-telemetry/opentelemetry-js/issues/7114) |
+
+The Events API went earlier: `@opentelemetry/api-events` and `sdk-events` were [removed in experimental 0.203.0](https://github.com/open-telemetry/opentelemetry-js/pull/5737) (July 2025), after `logger.emit()` gained an [`eventName` field](https://github.com/open-telemetry/opentelemetry-js/pull/5707). An event is now a log record with a name.
+
+The guide also says, in its package list, that packages from the browser repository are not part of "JS SDK 3.0" and "will update to JS SDK 3.x releases soon". That sentence is the gap this post is about.
+
+## The new repository
+
+[`open-telemetry/opentelemetry-browser`](https://github.com/open-telemetry/opentelemetry-browser) publishes two packages, both marked experimental. Under its [versioning policy](https://github.com/open-telemetry/opentelemetry-browser/blob/main/VERSIONING.md) (merged 17 October) any minor release may break things, and changes to emitted telemetry get no deprecation period.
+
+<Flow
+  caption="What each new package does, and which signal it produces. Versions as of 29 October 2026."
+  columns={[
+    { label: 'Instrumentations', arrow: 'events and spans', nodes: [
+      { title: 'errors, console', sub: 'events: exception, browser.console', tone: 'info' },
+      { title: 'navigation, navigation-timing, resource-timing', sub: 'events: browser.navigation, browser.navigation_timing, browser.resource_timing', tone: 'info' },
+      { title: 'user-action, web-vitals', sub: 'events: browser.user_action.click, browser.web_vital', tone: 'info' },
+      { title: 'fetch, xhr', sub: 'spans: one CLIENT span per request', tone: 'accent' },
+    ] },
+    { label: '@opentelemetry/browser-sdk 0.6.0', arrow: 'OTLP/HTTP JSON', nodes: [
+      { title: 'startBrowserSdk()', sub: 'LoggerProvider + TracerProvider, batch processors, propagators, stack context manager' },
+      { title: '/session', sub: 'session.id in localStorage, stamped on every record' },
+      { title: '/browser-detector', sub: 'browser.* resource attributes (opt in)' },
+    ] },
+    { label: 'Backend', nodes: [
+      { title: 'OpenTelemetry Collector', sub: '/v1/logs and /v1/traces', tone: 'ok' },
+    ] },
+  ]}
+/>
+
+Every instrumentation comes from `@opentelemetry/browser-instrumentation/experimental/<name>`. The [repository README](https://github.com/open-telemetry/opentelemetry-browser#migrate-from-classic-browser-instrumentations) gives two rules worth repeating:
+
+- **Do not run a classic instrumentation and its replacement together.** Neither can see the other's patch, so every request or click is recorded twice.
+- **Some replacements change the signal.** `instrumentation-document-load` and `instrumentation-user-interaction` made spans; their replacements emit events. You need a `LoggerProvider`, and your dashboards need new queries.
+
+## If you use X, move to Y
+
+<BrowserMigrationMap
+  asOf="29 October 2026"
+  rows={[
+    { from: '@opentelemetry/sdk-trace-web', to: '<code>@opentelemetry/browser-sdk</code> (or <code>@opentelemetry/sdk-trace</code> 3.x by hand)', status: 'removed', signal: 'SDK',
+      why: 'Deprecated on npm ("Use @opentelemetry/sdk-trace package") and deleted from OTel JS 3.0. The 2.x line is supported for one year from 3.0.0. For a browser app, the Browser SDK is the shorter path: it wires providers, propagators and a stack context manager for you.',
+      sources: [{ label: 'npm', href: 'https://www.npmjs.com/package/@opentelemetry/sdk-trace-web' }, { label: 'opentelemetry-js#7117', href: 'https://github.com/open-telemetry/opentelemetry-js/issues/7117' }] },
+    { from: '@opentelemetry/sdk-trace-base', to: '<code>@opentelemetry/sdk-trace</code>', status: 'removed', signal: 'SDK',
+      why: 'Merged with sdk-trace-node and sdk-trace-web into one package, first published as 2.9.0 in July 2026.',
+      sources: [{ label: 'migration guide', href: 'https://github.com/open-telemetry/opentelemetry-js/blob/main/doc/3.x/migration-guide.md' }, { label: 'npm', href: 'https://www.npmjs.com/package/@opentelemetry/sdk-trace' }] },
+    { from: '@opentelemetry/api-logs', to: '<code>logs</code> from <code>@opentelemetry/api</code> 1.10', status: 'removed', signal: 'API',
+      why: 'Removed in experimental 0.300.0. <b>But</b> browser-instrumentation 0.9.0 and browser-sdk 0.6.0 still use <code>api-logs</code> 0.223, and a provider registered through <code>@opentelemetry/api</code> 1.10 is not visible to them (we tested it, see below). Wait for the browser packages to move.',
+      sources: [{ label: 'opentelemetry-js#4862', href: 'https://github.com/open-telemetry/opentelemetry-js/pull/4862' }, { label: 'opentelemetry-browser#525', href: 'https://github.com/open-telemetry/opentelemetry-browser/pull/525' }] },
+    { from: '@opentelemetry/api-events, sdk-events', to: '<code>logger.emit({ eventName })</code>', status: 'removed', signal: 'API',
+      why: 'Removed from OTel JS in experimental 0.203.0 (July 2025). An event is a log record with an <code>eventName</code>.',
+      sources: [{ label: 'opentelemetry-js#5737', href: 'https://github.com/open-telemetry/opentelemetry-js/pull/5737' }, { label: 'opentelemetry-js#5707', href: 'https://github.com/open-telemetry/opentelemetry-js/pull/5707' }] },
+    { from: '@opentelemetry/instrumentation-fetch', to: '<code>browser-instrumentation/experimental/fetch</code>', status: 'superseded', signal: 'Spans',
+      why: 'Its README says it is deprecated and points to the new fetch instrumentation, and warns that the telemetry differs a lot. It is not marked deprecated on npm yet, and 0.300.0 still shipped with JS 3.0.',
+      sources: [{ label: 'README', href: 'https://github.com/open-telemetry/opentelemetry-js/tree/main/experimental/packages/opentelemetry-instrumentation-fetch' }, { label: 'new fetch', href: 'https://github.com/open-telemetry/opentelemetry-browser/tree/main/packages/instrumentation#fetch' }] },
+    { from: '@opentelemetry/instrumentation-xml-http-request', to: '<code>browser-instrumentation/experimental/xhr</code>', status: 'superseded', signal: 'Spans',
+      why: 'Same status as fetch. The new XHR span starts on <code>send()</code>, not <code>open()</code>, and has no span events (SIG decision, 13 August 2026).',
+      sources: [{ label: 'browser README', href: 'https://github.com/open-telemetry/opentelemetry-browser#span-based-instrumentations-other-repositories' }, { label: 'meeting notes', href: 'https://docs.google.com/document/d/1G3yBAV5SzWBO3mmsBUos5bsn4yxsqkS1MLWl1urVojQ' }] },
+    { from: '@opentelemetry/instrumentation-document-load', to: '<code>navigation-timing</code> + <code>resource-timing</code> events', status: 'superseded', signal: 'Spans → events',
+      why: 'The replacements emit events, not a span tree. Whether a span-based document load comes back is still open: issue #327 and draft PR #504. A span is the only way to link a server-rendered page to its backend trace.',
+      sources: [{ label: 'opentelemetry-browser#327', href: 'https://github.com/open-telemetry/opentelemetry-browser/issues/327' }, { label: '#504', href: 'https://github.com/open-telemetry/opentelemetry-browser/pull/504' }] },
+    { from: '@opentelemetry/instrumentation-user-interaction', to: '<code>browser-instrumentation/experimental/user-action</code>', status: 'superseded', signal: 'Spans → events',
+      why: 'The old one used Zone.js to make the click the parent of the requests it caused. The new one emits a <code>browser.user_action.click</code> event and needs no zones.',
+      sources: [{ label: 'roadmap', href: 'https://github.com/open-telemetry/opentelemetry-browser/blob/main/docs/roadmap.md#package-consolidation' }] },
+    { from: '@opentelemetry/instrumentation-web-exception', to: '<code>browser-instrumentation/experimental/errors</code>', status: 'superseded', signal: 'Events',
+      why: 'The deprecation notice is in review in contrib (PR #3832); the package itself is not deprecated on npm yet.',
+      sources: [{ label: 'opentelemetry-js-contrib#3832', href: 'https://github.com/open-telemetry/opentelemetry-js-contrib/pull/3832' }] },
+    { from: '@opentelemetry/instrumentation-browser-navigation', to: '<code>browser-instrumentation/experimental/navigation</code>', status: 'superseded', signal: 'Events',
+      why: 'Same plan as web-exception, tracked in #238.',
+      sources: [{ label: 'opentelemetry-browser#209', href: 'https://github.com/open-telemetry/opentelemetry-browser/issues/209' }] },
+    { from: '@opentelemetry/auto-instrumentations-web', to: 'instances passed to <code>startBrowserSdk({ instrumentations })</code>', status: 'superseded', signal: 'Bundle',
+      why: 'It turns on the classic instrumentations. Replace it with the ones you need from the new package.',
+      sources: [{ label: 'browser README', href: 'https://github.com/open-telemetry/opentelemetry-browser#migrate-from-classic-browser-instrumentations' }] },
+    { from: '@opentelemetry/opentelemetry-browser-detector', to: '<code>@opentelemetry/browser-sdk/browser-detector</code>', status: 'superseded', signal: 'Resource',
+      why: 'Moved into the Browser SDK on 19 October (PR #459). 0.300.0 still shipped from the JS repo.',
+      sources: [{ label: 'opentelemetry-browser#459', href: 'https://github.com/open-telemetry/opentelemetry-browser/pull/459' }] },
+    { from: '@opentelemetry/instrumentation-long-task', to: 'nothing yet; Long Animation Frames is in review', status: 'none', signal: 'Spans',
+      why: 'The migration table says no replacement is planned. A Long Animation Frames instrumentation is open as PR #429.',
+      sources: [{ label: 'browser README', href: 'https://github.com/open-telemetry/opentelemetry-browser#span-based-instrumentations-other-repositories' }, { label: '#429', href: 'https://github.com/open-telemetry/opentelemetry-browser/pull/429' }] },
+    { from: '@opentelemetry/context-zone', to: 'keep it only if you still need Zone.js context', status: 'keep', signal: 'Context',
+      why: 'Stable, and released as 3.0.0 with the SDK. The new packages do not need it: the Browser SDK installs a stack context manager by default.',
+      sources: [{ label: 'npm', href: 'https://www.npmjs.com/package/@opentelemetry/context-zone' }, { label: '#210', href: 'https://github.com/open-telemetry/opentelemetry-browser/issues/210' }] },
+  ]}
+/>
+
+## Build it: one page, the new packages, a local collector
+
+We built the smallest page that exercises the new stack: a page load, a click that fetches a JSON file, and a click that throws. Telemetry goes to an OpenTelemetry Collector that prints everything it receives.
+
+**What we ran it on:** macOS on Apple silicon, Node.js 24.15.0, npm 11.12.1, Docker 29.3.1, Vite 8.3.5, Collector contrib 0.164.0, and Chromium (Chrome for Testing, Playwright build 1248, headless). Every output below is copied from that run on 29 October 2026.
+
+The whole folder is [otel-browser-oct-2026.zip](/blog/browser-sig/otel-browser-oct-2026.zip). These are its files.
+
+`package.json` pins the versions. Note the API: 1.9.1, not 1.10.
+
+```json title="package.json"
+{
+  "name": "otel-browser-oct-2026",
+  "private": true,
+  "type": "module",
+  "scripts": { "dev": "vite --port 5173 --strictPort", "build": "vite build" },
+  "dependencies": {
+    "@opentelemetry/api": "1.9.1",
+    "@opentelemetry/browser-instrumentation": "0.9.0",
+    "@opentelemetry/browser-sdk": "0.6.0"
+  },
+  "devDependencies": { "vite": "8.3.5" }
+}
+```
+
+`src/otel.js` starts a session, then the SDK with five instrumentations.
+
+```js title="src/otel.js"
+import { startBrowserSdk } from '@opentelemetry/browser-sdk';
+import {
+  createDefaultSessionIdGenerator,
+  createLocalStorageSessionStore,
+  createSessionLogRecordProcessor,
+  createSessionManager,
+  createSessionSpanProcessor,
+} from '@opentelemetry/browser-sdk/session';
+import { ErrorsInstrumentation } from '@opentelemetry/browser-instrumentation/experimental/errors';
+import { FetchInstrumentation } from '@opentelemetry/browser-instrumentation/experimental/fetch';
+import { NavigationTimingInstrumentation } from '@opentelemetry/browser-instrumentation/experimental/navigation-timing';
+import { UserActionInstrumentation } from '@opentelemetry/browser-instrumentation/experimental/user-action';
+import { WebVitalsInstrumentation } from '@opentelemetry/browser-instrumentation/experimental/web-vitals';
+
+const COLLECTOR = 'http://localhost:14318';
+
+// A session id in localStorage, stamped as session.id on every span and log record.
+const sessionManager = createSessionManager({
+  sessionIdGenerator: createDefaultSessionIdGenerator(),
+  sessionStore: createLocalStorageSessionStore(),
+  inactivityTimeout: 30 * 60, // seconds
+  maxDuration: 4 * 60 * 60, // seconds
+});
+await sessionManager.start();
+
+export const sdk = startBrowserSdk({
+  serviceName: 'otel-browser-oct-2026',
+  serviceVersion: '1.0.0',
+  // Session processors run first, so the export processor sees session.id.
+  // With processors set, give each signal its full export URL.
+  logs: {
+    processors: [createSessionLogRecordProcessor(sessionManager)],
+    exportConfig: { url: `${COLLECTOR}/v1/logs` },
+  },
+  traces: {
+    processors: [createSessionSpanProcessor(sessionManager)],
+    exportConfig: { url: `${COLLECTOR}/v1/traces` },
+  },
+  instrumentations: [
+    new FetchInstrumentation(),
+    new ErrorsInstrumentation(),
+    new UserActionInstrumentation(),
+    new NavigationTimingInstrumentation(),
+    new WebVitalsInstrumentation({ reportAllChanges: true }),
+  ],
+});
+```
+
+Two details in that file come from reading the 0.6.0 source, not the README on `main`:
+
+- When you pass `processors` for a signal, 0.6.0 does not copy the root `exportConfig` into it. Without a per-signal `exportConfig`, that signal would export to the default `http://localhost:4318`. Giving the full `/v1/logs` and `/v1/traces` URLs is also where the SDK is heading: [PR #495](https://github.com/open-telemetry/opentelemetry-browser/pull/495) makes every signal take its full URL, and [PR #532](https://github.com/open-telemetry/opentelemetry-browser/pull/532) removes the default exporter URL.
+- The README on `main` documents an `enabled: false` option for consent. The 0.6.0 types call it `disabled: true`. Read the README at the [release tag](https://github.com/open-telemetry/opentelemetry-browser/tree/browser-sdk-v0.6.0/packages/sdk) for the version you install.
+
+`src/main.js` imports `otel.js` first, so the SDK patches `fetch` before anything else uses it.
+
+```js title="src/main.js"
+// Start OpenTelemetry before anything else touches fetch or the DOM.
+import './otel.js';
+
+const out = document.getElementById('out');
+
+document.getElementById('price').addEventListener('click', async () => {
+  const res = await fetch('/price.json');
+  const { price } = await res.json();
+  out.textContent = `Price: ${price}`;
+});
+
+document.getElementById('boom').addEventListener('click', () => {
+  throw new Error('Tea kettle exploded');
+});
+```
+
+```html title="index.html"
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OTel browser, October 2026</title>
+  </head>
+  <body>
+    <h1>OTel browser, October 2026</h1>
+    <button id="price">Get price</button>
+    <button id="boom">Throw an error</button>
+    <p id="out"></p>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
+```
+
+`public/price.json` is the file the button fetches:
+
+```json title="public/price.json"
+{ "sku": "tea-01", "price": 4.5 }
+```
+
+The collector accepts OTLP over HTTP and must allow the page's origin, because the browser sends a CORS preflight before each export.
+
+```yaml title="collector.yaml"
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        cors:
+          allowed_origins: ["http://localhost:5173"]
+
+exporters:
+  debug:
+    verbosity: detailed
+
+service:
+  pipelines:
+    traces: { receivers: [otlp], exporters: [debug] }
+    logs: { receivers: [otlp], exporters: [debug] }
+```
+
+We publish it on host port 14318, so it does not clash with a collector you may already run on 4318.
+
+```yaml title="compose.yaml"
+services:
+  collector:
+    image: otel/opentelemetry-collector-contrib:0.164.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./collector.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "14318:4318"
+```
+
+### Run it
+
+From the unzipped folder, start the collector:
+
+```bash
+docker compose up -d
+```
+
+Install the packages. With the lock file this gives exactly the tree we tested, and `npm ls` should print no `invalid` lines:
+
+```bash
+npm ci
+```
+
+Start the page:
+
+```bash
+npm run dev
+```
+
+Open `http://localhost:5173`, click **Get price**, then **Throw an error**, then switch to another tab. Hiding the page makes the batch processors flush. Then read what the collector got:
+
+```bash
+docker compose logs collector
+```
+
+### What the collector printed
+
+The browser sent three requests: two `POST /v1/logs` and one `POST /v1/traces`. Every record carries the same resource and a `session.id`. This is the click, as an event:
+
+```text
+InstrumentationScope @opentelemetry/browser-instrumentation/user-action 0.9.0
+LogRecord #0
+SeverityNumber: Info(9)
+EventName: browser.user_action.click
+Attributes:
+     -> browser.page.x: Int(43)
+     -> browser.page.y: Int(90)
+     -> browser.tag_name: Str(BUTTON)
+     -> browser.element.attributes: Map({})
+     -> browser.mouse_event.button: Str(left)
+     -> browser.css_selector: Str(#price)
+     -> session.id: Str(99d74bdd61899fd5c7ca251f979cdb82)
+```
+
+The fetch it caused is the only span in the run. It has no parent: nothing links it to the click except the time and the session.
+
+```text
+InstrumentationScope @opentelemetry/browser-instrumentation/fetch 0.9.0
+Span #0
+    Trace ID       : 1bdfd96922226f53d6f0309f95a48ec9
+    Parent ID      :
+    Name           : GET
+    Kind           : Client
+Attributes:
+     -> http.request.method: Str(GET)
+     -> url.full: Str(http://localhost:5173/price.json)
+     -> server.address: Str(localhost)
+     -> server.port: Int(5173)
+     -> session.id: Str(99d74bdd61899fd5c7ca251f979cdb82)
+     -> http.response.status_code: Int(200)
+```
+
+The thrown error is a stable `exception` event with severity ERROR:
+
+```text
+InstrumentationScope @opentelemetry/browser-instrumentation/errors 0.9.0
+SeverityNumber: Error(17)
+EventName: exception
+Attributes:
+     -> exception.type: Str(Error)
+     -> exception.message: Str(Tea kettle exploded)
+     -> exception.stacktrace: Str(Error: Tea kettle exploded
+    at HTMLButtonElement.<anonymous> (http://localhost:5173/src/main.js:13:9))
+     -> session.id: Str(99d74bdd61899fd5c7ca251f979cdb82)
+```
+
+And web vitals arrive as one event per metric. We set `reportAllChanges: true` so they are reported as soon as they change; by default the [web-vitals library](https://github.com/GoogleChrome/web-vitals#report-the-value-on-every-change) reports CLS, INP and LCP only when the page is hidden.
+
+```text
+EventName: browser.web_vital
+     -> browser.web_vital.name: Str(inp)
+     -> browser.web_vital.value: Int(248)
+     -> browser.web_vital.delta: Int(248)
+     -> browser.web_vital.rating: Str(needs-improvement)
+     -> browser.web_vital.id: Str(v6-1793282740379-5504838837325)
+     -> browser.web_vital.navigation_type: Str(navigate)
+```
+
+Here is the whole run on one axis. Times are from the page's time origin, read from the record timestamps.
+
+<Timeline
+  duration={2000}
+  unit="ms"
+  caption="Event names without the browser. prefix. Our test run: nine log records and one span in two seconds. The click and the fetch sit 1 ms apart, linked by session.id, not by a parent span."
+  events={[
+    { at: 48, label: 'web_vital', detail: 'ttfb 48.5 ms', tone: 'ok' },
+    { at: 216, label: 'navigation_timing', detail: 'dom_complete 206 ms', tone: 'info' },
+    { at: 980, label: 'web_vital', detail: 'fcp, lcp 980 ms; cls 0', tone: 'ok' },
+    { at: 1381, label: 'web_vital', detail: 'inp 248 ms', tone: 'warn' },
+    { at: 1383, label: 'user_action.click', detail: '#price', tone: 'accent' },
+    { at: 1936, label: 'user_action.click', detail: '#boom', tone: 'accent' },
+    { at: 1936, label: 'exception', detail: 'Tea kettle exploded', tone: 'bad' },
+  ]}
+  spans={[{ from: 1384, to: 1393, label: 'GET /price.json', detail: 'CLIENT span, 9 ms', tone: 'info' }]}
+/>
+
+Two things we expected and did not see:
+
+- **No `session.start` or `session.end` events.** The session manager in 0.6.0 stamps `session.id` and stores `{ id, startTimestamp }` in `localStorage` under `opentelemetry-session`, but it emits no events. First-class session events are a [roadmap goal](https://github.com/open-telemetry/opentelemetry-browser/blob/main/docs/roadmap.md#sessions-and-page-context).
+- **No `browser.*` resource attributes.** The browser detector is a separate import (`@opentelemetry/browser-sdk/browser-detector`) and is not on by default. The resource had only `service.*` and `telemetry.sdk.*`, with `telemetry.sdk.version` 2.12.0.
+
+**Bundle size.** `vite build` of this page produced one 119.30 kB script, 35.04 kB gzipped, nearly all of it OpenTelemetry. The SIG has an open PR to [report bundle sizes on every pull request](https://github.com/open-telemetry/opentelemetry-browser/pull/521).
+
+### The trap: mixing in OTel JS 3.0
+
+We tried the obvious upgrade first: the same three packages with `@opentelemetry/api@1.10.0`. npm installed it with `npm warn ERESOLVE overriding peer dependency`, and `npm ls` flagged `@opentelemetry/api@1.10.0` as invalid all through the tree. Every 2.12 SDK package declares a peer range that stops below 1.10:
+
+```bash
+npm view @opentelemetry/core@2.12.0 peerDependencies
+```
+
+```text
+{ '@opentelemetry/api': '>=1.0.0 <1.10.0' }
+```
+
+The next idea is to skip the Browser SDK and wire the 3.0 SDK by hand, with the new instrumentations on top. We checked the one thing that decides whether that works: can the instrumentations see a logger provider registered through the new API? In Node.js, with `@opentelemetry/api@1.10.0`, `@opentelemetry/sdk-logs@3.0.0` and `@opentelemetry/browser-instrumentation@0.9.0` installed, we registered a provider with `logs` from `@opentelemetry/api` and emitted one record through each API:
+
+```text
+set via @opentelemetry/api: true
+emitted: via-api
+api-logs sees same provider: false
+```
+
+The record emitted through `@opentelemetry/api-logs`, which is what the 0.9.0 instrumentations use, went nowhere. A browser app wired this way would export fetch spans and silently drop every click, web vital and error. Until [#525](https://github.com/open-telemetry/opentelemetry-browser/pull/525) lands in a release, keep the whole page on the 2.12 line.
+
+## Semantic conventions: what is defined, and how stable
+
+The event names above are not all in the same place, and none of the browser-specific ones is stable.
+
+| Name | Defined in | Stability |
+|---|---|---|
+| `exception` (event) | [core semantic conventions](https://opentelemetry.io/docs/specs/semconv/exceptions/exceptions-logs/) | stable; using it for global unhandled errors is still development |
+| `browser.web_vital` and `browser.web_vital.*` | [core semantic conventions, browser](https://github.com/open-telemetry/semantic-conventions/blob/main/model/browser/events.yaml) | development |
+| `browser.brands`, `browser.platform`, `browser.mobile`, `browser.language`, `browser.document.url.full` | [core semantic conventions, browser registry](https://github.com/open-telemetry/semantic-conventions/blob/main/model/browser/registry.yaml) | development |
+| `session.id`, `session.previous_id`, `session.start`, `session.end` | [core semantic conventions, session](https://github.com/open-telemetry/semantic-conventions/tree/main/model/session) | development |
+| `browser.navigation`, `browser.navigation_timing`, `browser.resource_timing`, `browser.console` | [semantic-conventions-client-side](https://github.com/open-telemetry/semantic-conventions-client-side/tree/main/model/browser), added 15 October ([#14](https://github.com/open-telemetry/semantic-conventions-client-side/pull/14)) | development |
+| `browser.user_action.click` | not in either registry yet; the instrumentation is the working definition | none |
+
+The new [`semantic-conventions-client-side`](https://github.com/open-telemetry/semantic-conventions-client-side) repository (created August 2026) is a federated registry for browser, Android, iOS and desktop conventions. It publishes only a `client-side-dev` schema today, version `0.1.0-dev`, because nothing in it is stable. The SIG agreed on 3 September to use snake_case keys everywhere, so `web-vitals` fields such as `navigationType` become `browser.web_vital.navigation_type`, which is what we saw on the wire. On 22 October it agreed to settle the remaining questions one decision per meeting ([semantic-conventions-client-side#34](https://github.com/open-telemetry/semantic-conventions-client-side/issues/34)), starting with the scope of document load, then INP attribution.
+
+<Note type="caution" title="What this means for your queries">
+Anything named `browser.*` can still change, and the [versioning policy](https://github.com/open-telemetry/opentelemetry-browser/blob/main/VERSIONING.md#deprecation) says changes to emitted telemetry get no deprecation period. Pin exact versions, read every release's changelog, and keep dashboards on a small set of attributes.
+</Note>
+
+## What is planned
+
+The [Phase 1 charter](https://github.com/open-telemetry/community/blob/main/projects/browser-phase-1.md) asked for an API review, data models for sessions and navigation, and a core set of instrumentations. Its own timeline has every date as "TBD". The [roadmap](https://github.com/open-telemetry/opentelemetry-browser/blob/main/docs/roadmap.md) (merged 7 August 2026) treats that charter as mostly delivered and lists the next areas by topic, deliberately without dates. The repository uses no GitHub milestones; work is tracked on [project board 146](https://github.com/orgs/open-telemetry/projects/146) and in issues.
+
+Open work that will change what you install, as of today:
+
+- **Move to OTel JS 3.x**: [#525](https://github.com/open-telemetry/opentelemetry-browser/pull/525).
+- **A browser-native `InstrumentationBase`**: [#278](https://github.com/open-telemetry/opentelemetry-browser/pull/278), a breaking change merged on 24 October, after 0.9.0. Expect it in the next release ([release PR #522](https://github.com/open-telemetry/opentelemetry-browser/pull/522)).
+- **Export URLs**: full URL per signal ([#495](https://github.com/open-telemetry/opentelemetry-browser/pull/495)) and no default exporter ([#532](https://github.com/open-telemetry/opentelemetry-browser/pull/532)), both breaking.
+- **Package consolidation**: migrate or deprecate the classic packages in one coordinated sweep ([#209](https://github.com/open-telemetry/opentelemetry-browser/issues/209)). A [migration guide](https://github.com/open-telemetry/opentelemetry-browser/blob/main/docs/migration-guide.md) landed on 22 October.
+- **Document load as a span**: [#327](https://github.com/open-telemetry/opentelemetry-browser/issues/327), [#504](https://github.com/open-telemetry/opentelemetry-browser/pull/504), and server trace context through a meta tag ([#129](https://github.com/open-telemetry/opentelemetry-browser/issues/129)).
+- **New instrumentations**: Long Animation Frames ([#429](https://github.com/open-telemetry/opentelemetry-browser/pull/429)), element timing ([#396](https://github.com/open-telemetry/opentelemetry-browser/pull/396)), INP attribution ([#486](https://github.com/open-telemetry/opentelemetry-browser/pull/486)), web vitals for soft navigations ([#512](https://github.com/open-telemetry/opentelemetry-browser/pull/512)).
+- **Sessions and page context as entities**: [#269](https://github.com/open-telemetry/opentelemetry-browser/pull/269).
+- **Open questions** the roadmap leaves open on purpose: should browsers send metrics at all (current leaning: events first), a thin browser API facade, a compatibility statement, compressed OTLP, and sampling.
+
+## What to watch next
+
+- **A browser-sdk release on JS 3.x.** When it lands, the API moves to 1.10, `api-logs` disappears from the tree, and our demo needs new versions. We will update this post's versions and say so at the top.
+- **The next minor of both packages.** With #278, #495 and #532 queued, it will be a breaking release. Read its changelog before upgrading.
+- **npm deprecation of `instrumentation-fetch` and `instrumentation-xml-http-request`.** Today only their READMEs say "deprecated".
+- **The document-load decision.** It decides whether a page load is one span you can link to your backend, or a set of events.
+- **Browser semantic conventions**, one decision per SIG meeting, in `semantic-conventions-client-side`.
+
+Next in the series: [how the Browser SIG works, and how to follow it](/blog/otel-browser-sig-how-it-works/).
+
+### Versions tested
+
+| Package or tool | Version |
+|---|---|
+| `@opentelemetry/browser-sdk` | 0.6.0 |
+| `@opentelemetry/browser-instrumentation` | 0.9.0 |
+| `@opentelemetry/api` | 1.9.1 (1.10.0 tried, see the trap) |
+| resolved from them: `core`, `resources`, `sdk-trace`, `sdk-metrics` | 2.12.0 |
+| resolved from them: `api-logs`, `sdk-logs`, `instrumentation`, OTLP HTTP exporters | 0.223.0 |
+| `@opentelemetry/semantic-conventions` | 1.44.0 |
+| for the 3.0 test: `@opentelemetry/sdk-logs` | 3.0.0 |
+| OpenTelemetry Collector contrib | 0.164.0 |
+| Vite | 8.3.5 |
+| Node.js / npm | 24.15.0 / 11.12.1 |
+| Chromium | Chrome for Testing, Playwright build 1248, headless |
