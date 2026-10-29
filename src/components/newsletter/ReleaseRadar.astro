@@ -1,0 +1,155 @@
+---
+// Release radar: the month's notable releases as swimlanes (one lane per area, x = date) over a table
+// with the one change that matters in each. Chips filter both; a dot links to its row.
+// <ReleaseRadar from="2026-09-29" to="2026-10-31" releases={[
+//   { area: 'Collector', project: 'collector-contrib', version: 'v0.164.0', date: '2026-10-26',
+//     kind: 'stable', change: 'OTTL is stable', href: 'https://github.com/.../releases/tag/v0.164.0' },
+// ]} />
+// `change` accepts `code`, **bold** and [links](url). `kind` marks the row: major, stable, breaking, security.
+import '../../styles/diagram.css';
+import { inline, shortDate } from './inline';
+
+type Kind = 'major' | 'stable' | 'breaking' | 'security';
+interface Release { area: string; project: string; version: string; date: string; change: string; href: string; kind?: Kind; }
+interface Props { releases: Release[]; from: string; to: string; caption?: string; }
+const { releases, from, to, caption } = Astro.props;
+
+const t0 = Date.parse(`${from}T00:00:00Z`);
+const t1 = Date.parse(`${to}T00:00:00Z`);
+const pct = (d: string) => Math.min(100, Math.max(0, ((Date.parse(`${d}T00:00:00Z`) - t0) / (t1 - t0)) * 100));
+const rows = [...releases].sort((a, b) => a.date.localeCompare(b.date) || a.area.localeCompare(b.area))
+  .map((r, n) => ({ ...r, n: n + 1 }));
+const areas = [...new Set(rows.map((r) => r.area))];
+const hue = (a: string) => `var(--rr-${areas.indexOf(a) % 10})`;
+
+// Dots of one lane on the same day stack up instead of hiding each other.
+const seen = new Map<string, number>();
+const stack = (r: Release) => { const k = `${r.area}|${r.date}`; const i = seen.get(k) ?? 0; seen.set(k, i + 1); return i; };
+const lanes = areas.map((a) => ({ area: a, dots: rows.filter((r) => r.area === a).map((r) => ({ ...r, x: pct(r.date), s: stack(r) })) }));
+const lanesHeight = Object.fromEntries(lanes.map((l) => [l.area, Math.max(...l.dots.map((d) => d.s)) + 1]));
+
+// Ticks on Mondays, labelled with the date.
+const ticks: { x: number; label: string }[] = [];
+for (let t = t0; t <= t1; t += 86400000) {
+  const d = new Date(t);
+  if (d.getUTCDay() === 1) ticks.push({ x: ((t - t0) / (t1 - t0)) * 100, label: shortDate(d.toISOString().slice(0, 10)) });
+}
+const kindLabel: Record<Kind, string> = { major: 'major', stable: 'stable', breaking: 'breaking', security: 'security' };
+---
+<figure class="dg rr not-content" data-rr data-area="all">
+  <div class="chips" role="group" aria-label="Filter by area">
+    <button type="button" data-a="all" class="on" aria-pressed="true">All <span>{rows.length}</span></button>
+    {areas.map((a) => (
+      <button type="button" data-a={a} aria-pressed="false" style={`--c:${hue(a)}`}><i />{a} <span>{rows.filter((r) => r.area === a).length}</span></button>
+    ))}
+  </div>
+
+  <div class="lanes" aria-hidden="true">
+    {lanes.map((l) => (
+      <div class="lane" data-lane={l.area} style={`--c:${hue(l.area)};--h:${lanesHeight[l.area]}`}>
+        <span class="ln">{l.area}</span>
+        <div class="track">
+          {ticks.map((t) => <span class="tick" style={`left:${t.x}%`} />)}
+          {l.dots.map((d) => (
+            <a class:list={['dot', d.kind]} href={`#rr-${d.n}`} style={`left:${d.x}%;--s:${d.s}`} tabindex="-1"
+              title={`${d.project} ${d.version}, ${shortDate(d.date)}`}><b>{d.n}</b></a>
+          ))}
+        </div>
+      </div>
+    ))}
+    <div class="lane axis">
+      <span class="ln" />
+      <div class="track">{ticks.map((t) => <span class="tl" style={`left:${t.x}%`}>{t.label}</span>)}</div>
+    </div>
+  </div>
+
+  <table>
+    <thead><tr><th>#</th><th>Released</th><th>Project</th><th>The change that matters</th></tr></thead>
+    <tbody>
+      {rows.map((r) => (
+        <tr id={`rr-${r.n}`} data-row={r.area} style={`--c:${hue(r.area)}`}>
+          <td class="n"><span>{r.n}</span></td>
+          <td class="d"><time datetime={r.date}>{shortDate(r.date)}</time></td>
+          <td class="p">
+            <a href={r.href} rel="noopener"><b>{r.project}</b> <code>{r.version}</code></a>
+            {r.kind && <span class={`k ${r.kind}`}>{kindLabel[r.kind]}</span>}
+          </td>
+          <td class="c" set:html={inline(r.change)} />
+        </tr>
+      ))}
+    </tbody>
+  </table>
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+  for (const fig of document.querySelectorAll<HTMLElement>('[data-rr]')) {
+    const buttons = fig.querySelectorAll<HTMLButtonElement>('.chips button');
+    buttons.forEach((b) => b.addEventListener('click', () => {
+      const a = b.dataset.a!;
+      fig.dataset.area = a;
+      buttons.forEach((x) => { x.classList.toggle('on', x === b); x.setAttribute('aria-pressed', String(x === b)); });
+      fig.querySelectorAll<HTMLElement>('[data-row]').forEach((r) => { r.hidden = a !== 'all' && r.dataset.row !== a; });
+      fig.querySelectorAll<HTMLElement>('[data-lane]').forEach((l) => l.classList.toggle('dim', a !== 'all' && l.dataset.lane !== a));
+    }));
+  }
+</script>
+
+<style>
+  .rr {
+    --rr-0: #0a6fa6; --rr-1: #7c3aed; --rr-2: #16a34a; --rr-3: #d97706; --rr-4: #db2777; --rr-5: #0891b2; --rr-6: #65a30d; --rr-7: #e5484d; --rr-8: #64748b; --rr-9: #b45309;
+    container-type: inline-size;
+  }
+  :global(:root[data-theme="dark"]) .rr { --rr-0: #5ac8fa; --rr-1: #a78bfa; --rr-2: #4ade80; --rr-3: #fbbf24; --rr-4: #f472b6; --rr-5: #22d3ee; --rr-6: #a3e635; --rr-7: #ff7b7b; --rr-8: #94a3b8; --rr-9: #f59e0b; }
+  @media (prefers-color-scheme: dark) {
+    :global(:root:not([data-theme="light"])) .rr { --rr-0: #5ac8fa; --rr-1: #a78bfa; --rr-2: #4ade80; --rr-3: #fbbf24; --rr-4: #f472b6; --rr-5: #22d3ee; --rr-6: #a3e635; --rr-7: #ff7b7b; --rr-8: #94a3b8; --rr-9: #f59e0b; }
+  }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
+  .chips button { font: inherit; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--dg-line); background: var(--dg-node); color: var(--dg-ink-2); cursor: pointer; }
+  .chips button i { width: 8px; height: 8px; border-radius: 50%; background: var(--c); }
+  .chips button span { color: var(--dg-ink-3); font-size: 12px; font-variant-numeric: tabular-nums; }
+  .chips button.on { border-color: var(--dg-accent); background: var(--dg-accent-soft); color: var(--dg-ink); font-weight: 600; }
+
+  .lanes { display: grid; gap: 2px; margin-bottom: 18px; }
+  .lane { display: grid; grid-template-columns: 92px minmax(0, 1fr); align-items: center; transition: opacity .2s; }
+  .lane.dim { opacity: .25; }
+  .ln { font-size: 12px; font-weight: 600; color: var(--dg-ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 8px; }
+  .track { position: relative; height: calc(var(--h, 1) * 22px + 8px); border-bottom: 1px solid color-mix(in srgb, var(--c, var(--dg-line)) 30%, var(--dg-line)); margin: 0 12px; }
+  .tick { position: absolute; top: 0; bottom: 0; border-left: 1px dashed var(--dg-line); }
+  .dot { position: absolute; top: calc(4px + var(--s) * 22px); transform: translateX(-50%); width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; background: var(--c); color: var(--dg-bg); font-size: 10px; text-decoration: none; box-shadow: 0 0 0 2px var(--dg-bg); }
+  .dot b { font-weight: 700; }
+  .dot.major, .dot.stable, .dot.breaking, .dot.security { box-shadow: 0 0 0 2px var(--dg-bg), 0 0 0 4px var(--c); }
+  .dot:hover { text-decoration: none; transform: translateX(-50%) scale(1.15); }
+  .axis .track { height: 18px; border: 0; }
+  .tl { position: absolute; top: 2px; transform: translateX(-50%); font-size: 11px; color: var(--dg-ink-3); white-space: nowrap; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--dg-ink-3); padding: 6px 8px; border-bottom: 1px solid var(--dg-line); }
+  td { padding: 9px 8px; border-bottom: 1px solid var(--dg-line); vertical-align: top; line-height: 1.5; }
+  tr:target td { background: var(--dg-accent-soft); }
+  tr { scroll-margin-top: 90px; }
+  .n span { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: var(--c); color: var(--dg-bg); font-size: 10px; font-weight: 700; }
+  .d { white-space: nowrap; color: var(--dg-ink-2); font-variant-numeric: tabular-nums; }
+  .p a { color: var(--dg-ink); }
+  .p code { font-size: 12px; color: var(--dg-ink-2); }
+  .k { display: inline-block; margin-left: 4px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; padding: 1px 6px; border-radius: 999px; color: var(--dg-accent); background: var(--dg-accent-soft); }
+  .k.stable { color: var(--dg-ok); background: color-mix(in srgb, var(--dg-ok) 14%, transparent); }
+  .k.breaking, .k.security { color: var(--dg-bad); background: color-mix(in srgb, var(--dg-bad) 14%, transparent); }
+  .k.major { color: var(--dg-info); background: color-mix(in srgb, var(--dg-info) 14%, transparent); }
+  .c { color: var(--dg-ink); }
+  .c :global(code) { font-size: 12px; overflow-wrap: anywhere; }
+
+  @container (max-width: 620px) {
+    .lane { grid-template-columns: 64px minmax(0, 1fr); }
+    .ln { font-size: 11px; }
+    .track { margin: 0 8px; }
+    .dot { width: 16px; height: 16px; font-size: 0; }
+    .tl { font-size: 10px; }
+    thead { display: none; }
+    table, tbody { display: block; }
+    tr { display: grid; grid-template-columns: 28px 52px minmax(0, 1fr); padding: 10px 0; border-bottom: 1px solid var(--dg-line); }
+    tr[hidden] { display: none; }
+    td { border: 0; padding: 0 4px; }
+    .c { grid-column: 3; padding-top: 4px; }
+  }
+</style>

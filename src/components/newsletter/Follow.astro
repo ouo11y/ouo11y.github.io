@@ -1,0 +1,57 @@
+---
+// How to follow the newsletter. The one place to change when an email provider exists:
+// replace the "Email edition" block with the provider's form, keep the RSS block.
+import { site } from '../../lib/site';
+
+interface Props { compact?: boolean; }
+const { compact = false } = Astro.props;
+const feed = new URL('/newsletter/rss.xml', Astro.site ?? 'https://ouo11y.com').href;
+---
+<div class:list={['follow', 'not-content', { compact }]} id="follow">
+  <div class="intro">
+    <p class="kicker">Follow the o11y radar</p>
+    <p class="say">One issue a month, at the end of the month. No tracking, no account.</p>
+  </div>
+  <div class="ways">
+    <div class="way">
+      <p class="how"><b>RSS</b> · works today</p>
+      <div class="feed">
+        <code>{feed}</code>
+        <button type="button" data-copy={feed}>Copy</button>
+      </div>
+      <p class="hint">Paste it into any feed reader (Feedly, NetNewsWire, Inoreader, Thunderbird), or <a href="/newsletter/rss.xml">open the feed</a>.</p>
+    </div>
+    <div class="way">
+      <p class="how"><b>Email edition</b> · on request</p>
+      <p class="hint">We have no mailing list provider yet. Write to us and we will send each issue by hand until we do.</p>
+      <a class="btn" href={`mailto:${site.email.news}?subject=${encodeURIComponent('Subscribe: The o11y radar')}`}>Ask for the email edition</a>
+    </div>
+  </div>
+</div>
+
+<script>
+  for (const b of document.querySelectorAll<HTMLButtonElement>('.follow [data-copy]')) {
+    b.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(b.dataset.copy!); b.textContent = 'Copied'; }
+      catch { b.textContent = 'Select and copy'; }
+      setTimeout(() => (b.textContent = 'Copy'), 2000);
+    });
+  }
+</script>
+
+<style>
+  .follow { display: grid; gap: 18px; padding: 24px; border: 1px solid var(--line); border-radius: 16px; background: linear-gradient(135deg, var(--accent-soft), transparent 60%), var(--bg-2); margin: 32px 0 0; }
+  .kicker { margin: 0; font-weight: 700; font-size: 20px; letter-spacing: -.01em; color: var(--ink); }
+  .say { margin: 4px 0 0; color: var(--ink-2); font-size: 15px; }
+  .ways { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 16px; }
+  .way { display: grid; gap: 8px; align-content: start; padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg-2); }
+  .how { margin: 0; font-size: 14px; color: var(--ink-2); }
+  .how b { color: var(--ink); }
+  .hint { margin: 0; font-size: 14px; color: var(--ink-2); line-height: 1.55; }
+  .feed { display: flex; gap: 8px; align-items: stretch; min-width: 0; }
+  .feed code { flex: 1; min-width: 0; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); font-size: 13px; overflow-wrap: anywhere; color: var(--ink); }
+  .feed button { font: inherit; font-size: 13px; font-weight: 600; padding: 0 14px; border-radius: 8px; border: 1px solid var(--accent); background: var(--accent); color: var(--on-accent); cursor: pointer; }
+  .way .btn { justify-self: start; padding: 8px 14px; font-size: 14px; }
+  .compact .kicker { font-size: 17px; }
+  @media (max-width: 720px) { .ways { grid-template-columns: minmax(0, 1fr); } .follow { padding: 18px; } }
+</style>

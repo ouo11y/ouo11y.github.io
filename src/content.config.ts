@@ -18,6 +18,9 @@ const post = z.object({
   updated: z.coerce.date().optional(),
   // The blog index shows the newest featured post first; without one, the newest post.
   featured: z.boolean().default(false),
+  // Newsletter only: the issue number, and the "In this issue" lines (shown atop the issue and on /newsletter/).
+  issue: z.number().int().positive().optional(),
+  inThisIssue: z.array(z.object({ text: z.string(), href: z.string() })).optional(),
   // Announcements only: the badge and filter on /announcements/ (AUTHORING.md, "Announcements").
   kind: z.enum(['release', 'notice', 'docs', 'site']).optional(),
 });

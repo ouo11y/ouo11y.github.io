@@ -1,0 +1,26 @@
+---
+// The "In this issue" box: the issue number and one line per headline, each linking to its item.
+// Fed from the issue's front matter (`issue`, `inThisIssue`), so the landing page and the issue agree.
+import { inline } from './inline';
+
+interface Props { issue?: number; items: { text: string; href: string }[]; title?: string; }
+const { issue, items, title = 'In this issue' } = Astro.props;
+---
+<nav class="iti not-content" aria-label={title}>
+  <p class="hd">{issue && <span class="no">Issue #{issue}</span>}<span>{title}</span></p>
+  <ol>
+    {items.map((i) => <li><a href={i.href} set:html={inline(i.text)} /></li>)}
+  </ol>
+</nav>
+
+<style>
+  .iti { margin: 0 0 32px; padding: 18px 20px; border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 0 14px 14px 0; background: var(--bg-2); }
+  .hd { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin: 0 0 10px; font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); }
+  .no { padding: 2px 8px; border-radius: 999px; background: var(--accent); color: var(--on-accent); letter-spacing: .02em; }
+  ol { margin: 0; padding: 0; list-style: none; counter-reset: i; display: grid; gap: 6px; }
+  li { counter-increment: i; display: grid; grid-template-columns: 26px minmax(0, 1fr); font-size: 15.5px; line-height: 1.5; }
+  li::before { content: counter(i, decimal-leading-zero); color: var(--accent); font-weight: 700; font-variant-numeric: tabular-nums; font-size: 13px; padding-top: 2px; }
+  a { color: var(--ink); }
+  a:hover { color: var(--accent); }
+  :global(.iti code) { font-size: .9em; overflow-wrap: anywhere; }
+</style>

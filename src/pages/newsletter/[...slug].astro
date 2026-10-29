@@ -1,5 +1,7 @@
 ---
 import Post from '../../layouts/Post.astro';
+import Follow from '../../components/newsletter/Follow.astro';
+import InThisIssue from '../../components/newsletter/InThisIssue.astro';
 import { listPosts } from '../../lib/site';
 
 export async function getStaticPaths() {
@@ -7,5 +9,9 @@ export async function getStaticPaths() {
   return entries.map((entry) => ({ params: { slug: entry.id }, props: { entry } }));
 }
 const { entry } = Astro.props;
+const { issue, inThisIssue } = entry.data;
 ---
-<Post section="newsletter" entry={entry} />
+<Post section="newsletter" entry={entry}>
+  {inThisIssue && <InThisIssue slot="before" issue={issue} items={inThisIssue} />}
+  <Follow slot="after" compact />
+</Post>
