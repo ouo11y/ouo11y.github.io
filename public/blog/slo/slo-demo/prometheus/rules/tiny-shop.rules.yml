@@ -8,7 +8,9 @@ groups:
   rules:
   - record: slo:sli_error:ratio_rate5m
     expr: |
-      (sum(rate(http_server_request_duration_seconds_count{job="shop",http_route="/checkout",http_response_status_code=~"5.."}[5m])))
+      (sum(rate(http_server_request_duration_seconds_count{job="shop",http_route="/checkout",http_response_status_code=~"5.."}[5m]))
+      or vector(0)
+      )
       /
       (sum(rate(http_server_request_duration_seconds_count{job="shop",http_route="/checkout"}[5m])))
     labels:
@@ -19,7 +21,9 @@ groups:
       sloth_window: 5m
   - record: slo:sli_error:ratio_rate30m
     expr: |
-      (sum(rate(http_server_request_duration_seconds_count{job="shop",http_route="/checkout",http_response_status_code=~"5.."}[30m])))
+      (sum(rate(http_server_request_duration_seconds_count{job="shop",http_route="/checkout",http_response_status_code=~"5.."}[30m]))
+      or vector(0)
+      )
       /
       (sum(rate(http_server_request_duration_seconds_count{job="shop",http_route="/checkout"}[30m])))
     labels:
@@ -30,7 +34,9 @@ groups:
       sloth_window: 30m
   - record: slo:sli_error:ratio_rate1h
     expr: |
-      (sum(rate(http_server_request_duration_seconds_count{job="shop",http_route="/checkout",http_response_status_code=~"5.."}[1h])))
+      (sum(rate(http_server_request_duration_seconds_count{job="shop",http_route="/checkout",http_response_status_code=~"5.."}[1h]))
+      or vector(0)
+      )
       /
       (sum(rate(http_server_request_duration_seconds_count{job="shop",http_route="/checkout"}[1h])))
     labels:
@@ -41,7 +47,9 @@ groups:
       sloth_window: 1h
   - record: slo:sli_error:ratio_rate2h
     expr: |
-      (sum(rate(http_server_request_duration_seconds_count{job="shop",http_route="/checkout",http_response_status_code=~"5.."}[2h])))
+      (sum(rate(http_server_request_duration_seconds_count{job="shop",http_route="/checkout",http_response_status_code=~"5.."}[2h]))
+      or vector(0)
+      )
       /
       (sum(rate(http_server_request_duration_seconds_count{job="shop",http_route="/checkout"}[2h])))
     labels:
@@ -52,7 +60,9 @@ groups:
       sloth_window: 2h
   - record: slo:sli_error:ratio_rate6h
     expr: |
-      (sum(rate(http_server_request_duration_seconds_count{job="shop",http_route="/checkout",http_response_status_code=~"5.."}[6h])))
+      (sum(rate(http_server_request_duration_seconds_count{job="shop",http_route="/checkout",http_response_status_code=~"5.."}[6h]))
+      or vector(0)
+      )
       /
       (sum(rate(http_server_request_duration_seconds_count{job="shop",http_route="/checkout"}[6h])))
     labels:
@@ -63,7 +73,9 @@ groups:
       sloth_window: 6h
   - record: slo:sli_error:ratio_rate1d
     expr: |
-      (sum(rate(http_server_request_duration_seconds_count{job="shop",http_route="/checkout",http_response_status_code=~"5.."}[1d])))
+      (sum(rate(http_server_request_duration_seconds_count{job="shop",http_route="/checkout",http_response_status_code=~"5.."}[1d]))
+      or vector(0)
+      )
       /
       (sum(rate(http_server_request_duration_seconds_count{job="shop",http_route="/checkout"}[1d])))
     labels:
@@ -74,7 +86,9 @@ groups:
       sloth_window: 1d
   - record: slo:sli_error:ratio_rate3d
     expr: |
-      (sum(rate(http_server_request_duration_seconds_count{job="shop",http_route="/checkout",http_response_status_code=~"5.."}[3d])))
+      (sum(rate(http_server_request_duration_seconds_count{job="shop",http_route="/checkout",http_response_status_code=~"5.."}[3d]))
+      or vector(0)
+      )
       /
       (sum(rate(http_server_request_duration_seconds_count{job="shop",http_route="/checkout"}[3d])))
     labels:

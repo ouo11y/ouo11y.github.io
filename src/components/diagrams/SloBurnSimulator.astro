@@ -1,0 +1,241 @@
+---
+// Multi-window, multi-burn-rate alerting, simulated minute by minute over one day.
+// Pick an incident (error rate, duration) and an SLO; the chart shows the burn rate seen by each
+// window, the strips show when each of the four alert conditions is true. A little JS.
+// <SloBurnSimulator preset="deploy" />
+import '../../styles/diagram.css';
+
+interface Props { preset?: 'outage' | 'deploy' | 'leak' | 'blip'; caption?: string; }
+const { preset = 'deploy', caption } = Astro.props;
+const presets = {
+  outage: { label: 'Hard outage', err: 100, dur: 15 },
+  deploy: { label: 'Bad deploy', err: 5, dur: 90 },
+  leak: { label: 'Slow leak', err: 0.4, dur: 720 },
+  blip: { label: 'Short blip', err: 10, dur: 4 },
+};
+const p = presets[preset];
+const alerts = [
+  { k: 'p1', sev: 'page', rule: '1h and 5m over 14.4×', note: '2% of a 30-day budget in an hour' },
+  { k: 'p2', sev: 'page', rule: '6h and 30m over 6×', note: '5% of the budget in six hours' },
+  { k: 't1', sev: 'ticket', rule: '1d and 2h over 3×', note: '10% of the budget in a day' },
+  { k: 't2', sev: 'ticket', rule: '3d and 6h over 1×', note: '10% of the budget in three days' },
+];
+---
+<figure class="dg slo-burn not-content" data-slo-burn data-presets={JSON.stringify(presets)} role="group" aria-label={caption ?? 'Burn rate alert simulator'}>
+  <div class="controls">
+    <div class="chips" role="group" aria-label="Incident presets">
+      {Object.entries(presets).map(([k, v]) => <button type="button" data-preset={k} aria-pressed={k === preset ? 'true' : 'false'}>{v.label}</button>)}
+    </div>
+    <div class="sliders">
+      <label>SLO
+        <select data-in="slo">
+          {[99, 99.5, 99.9, 99.95].map((t) => <option value={t} selected={t === 99.9}>{t}%</option>)}
+        </select>
+      </label>
+      <label>Errors during the incident <output data-out="err">{p.err}%</output>
+        <input type="range" min="0" max="100" step="1" value={Math.round(Math.log10(p.err * 10) / 3 * 100)} data-in="err" aria-label="Error rate during the incident" />
+      </label>
+      <label>Incident length <output data-out="dur">{p.dur} min</output>
+        <input type="range" min="1" max="1380" step="1" value={p.dur} data-in="dur" />
+      </label>
+    </div>
+  </div>
+
+  <div class="plot">
+    <svg viewBox="0 0 720 250" role="img" aria-label="Burn rate per window over 24 hours">
+      <g data-grid></g>
+      <rect class="incident" data-incident y="10" height="210" />
+      <g data-lines></g>
+      <line class="cursor" x1="0" x2="0" y1="10" y2="220" visibility="hidden" />
+      <rect class="hit" x="48" y="10" width="660" height="210" fill="transparent" />
+    </svg>
+    <div class="readout" hidden></div>
+  </div>
+  <div class="legend" data-legend></div>
+
+  <div class="strips">
+    {alerts.map((a) => (
+      <div class="strip" data-strip={a.k}>
+        <div class="who"><span class:list={['sev', a.sev]}>{a.sev}</span> {a.rule}<small>{a.note}</small></div>
+        <div class="track"><div class="spans"></div></div>
+        <div class="when" data-when={a.k}>…</div>
+      </div>
+    ))}
+  </div>
+  <p class="summary" data-out="summary" aria-live="polite"></p>
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+  const W = 720, L = 48, R = 12, T = 10, B = 220, DAY = 1440, HIST = 3 * DAY, START = 60;
+  const windows = [
+    { k: '5m', m: 5, tone: 'var(--dg-ink-3)', dash: '2 3' },
+    { k: '30m', m: 30, tone: 'var(--dg-info)', dash: '2 3' },
+    { k: '1h', m: 60, tone: 'var(--dg-bad)' },
+    { k: '6h', m: 360, tone: 'var(--dg-warn)' },
+    { k: '1d', m: 1440, tone: 'var(--dg-accent)' },
+    { k: '3d', m: 4320, tone: 'var(--dg-ok)' },
+  ];
+  const rules: Record<string, [string, string, number]> = {
+    p1: ['1h', '5m', 14.4], p2: ['6h', '30m', 6], t1: ['1d', '2h', 3], t2: ['3d', '6h', 1],
+  };
+  const fmtT = (min: number) => `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
+  const fmtD = (min: number) => min < 120 ? `${min} min` : `${(min / 60).toFixed(1)} h`;
+  const errFromSlider = (v: number) => { const e = Math.pow(10, (v / 100) * 3) / 10; return e >= 10 ? Math.round(e) : +e.toFixed(e >= 1 ? 1 : 2); };
+  const sliderFromErr = (e: number) => Math.round((Math.log10(e * 10) / 3) * 100);
+
+  for (const fig of document.querySelectorAll<HTMLElement>('[data-slo-burn]')) {
+    const presets = JSON.parse(fig.dataset.presets!);
+    const $ = (k: string) => fig.querySelector<HTMLInputElement>(`[data-in="${k}"]`)!;
+    const svg = fig.querySelector('svg')!;
+    const ns = 'http://www.w3.org/2000/svg';
+    const el = (tag: string, attrs: Record<string, string | number>, text?: string) => {
+      const e = document.createElementNS(ns, tag);
+      for (const [a, v] of Object.entries(attrs)) e.setAttribute(a, String(v));
+      if (text) e.textContent = text;
+      return e;
+    };
+    fig.querySelector('[data-legend]')!.innerHTML = windows.map((w) => `<span><i style="background:${w.tone}"></i>${w.k}</span>`).join('');
+    let burn: Record<string, Float64Array> = {};
+    let exact: number | null = presets[fig.querySelector('[aria-pressed="true"]')?.getAttribute('data-preset') ?? '']?.err ?? null;
+    let ymax = 100;
+    const px = (min: number) => L + (min / DAY) * (W - L - R);
+    const py = (v: number) => { const lv = Math.log10(Math.max(0.1, v)); return B - ((lv + 1) / (Math.log10(ymax) + 1)) * (B - T); };
+
+    const update = () => {
+      const slo = +$('slo').value / 100, budget = 1 - slo;
+      const err = (exact ?? errFromSlider(+$('err').value)) / 100;
+      const dur = +$('dur').value;
+      fig.querySelector('[data-out="err"]')!.textContent = `${+(err * 100).toFixed(2)}%`;
+      fig.querySelector('[data-out="dur"]')!.textContent = fmtD(dur);
+      // Error ratio per minute: three quiet days of history, then the day we draw.
+      const n = HIST + DAY, ratio = new Float64Array(n), pre = new Float64Array(n + 1);
+      for (let i = 0; i < n; i++) {
+        const t = i - HIST;
+        ratio[i] = t >= START && t < START + dur ? err : 0;
+        pre[i + 1] = pre[i] + ratio[i];
+      }
+      burn = {};
+      for (const w of [...windows, { k: '2h', m: 120 }]) {
+        const a = new Float64Array(DAY);
+        for (let t = 0; t < DAY; t++) { const i = HIST + t + 1; a[t] = (pre[i] - pre[i - w.m]) / w.m / budget; }
+        burn[w.k] = a;
+      }
+      ymax = Math.max(100, Math.pow(10, Math.ceil(Math.log10(err / budget + 1e-9))));
+
+      // Grid, thresholds, lines.
+      const grid = svg.querySelector('[data-grid]')!; grid.replaceChildren();
+      for (let d = -1; d <= Math.log10(ymax); d++) {
+        const v = Math.pow(10, d);
+        grid.append(el('line', { x1: L, x2: W - R, y1: py(v), y2: py(v), class: 'g' }), el('text', { x: L - 6, y: py(v) + 4, 'text-anchor': 'end' }, `${v}×`));
+      }
+      for (const [v, label] of [[14.4, '14.4×'], [6, '6×'], [3, '3×'], [1, '1×']] as const) {
+        grid.append(el('line', { x1: L, x2: W - R, y1: py(v), y2: py(v), class: 'thr' }), el('text', { x: W - R - 2, y: py(v) - 3, 'text-anchor': 'end', class: 'thr-t' }, label));
+      }
+      for (let h = 0; h <= 24; h += 3) grid.append(el('text', { x: px(h * 60), y: B + 16, 'text-anchor': 'middle' }, `${h}h`));
+      const inc = svg.querySelector<SVGRectElement>('[data-incident]')!;
+      inc.setAttribute('x', String(px(START))); inc.setAttribute('width', String(Math.max(1, px(Math.min(DAY, START + dur)) - px(START))));
+      const lines = svg.querySelector('[data-lines]')!; lines.replaceChildren();
+      for (const w of windows) {
+        let d = '';
+        for (let t = 0; t < DAY; t += t < START + dur + 90 && t > START - 5 ? 1 : 4) d += `${d ? 'L' : 'M'}${px(t).toFixed(1)},${py(burn[w.k][t]).toFixed(1)}`;
+        lines.append(el('path', { d, class: 'ln', stroke: w.tone, 'stroke-dasharray': w.dash ?? 'none' }));
+      }
+
+      // Alert conditions.
+      const first: Record<string, number> = {};
+      for (const [k, [long, short, thr]] of Object.entries(rules)) {
+        const spans: [number, number][] = [];
+        let open = -1;
+        for (let t = 0; t <= DAY; t++) {
+          const on = t < DAY && burn[long][t] > thr && burn[short][t] > thr;
+          if (on && open < 0) open = t;
+          if (!on && open >= 0) { spans.push([open, t]); open = -1; }
+        }
+        const track = fig.querySelector(`[data-strip="${k}"] .spans`)!;
+        track.innerHTML = spans.map(([a, b]) => `<i style="left:${(a / DAY) * 100}%;width:${Math.max(0.4, ((b - a) / DAY) * 100)}%"></i>`).join('')
+          + `<b style="left:${(START / DAY) * 100}%"></b>`;
+        const when = fig.querySelector(`[data-when="${k}"]`)!;
+        if (spans.length) {
+          first[k] = spans[0][0];
+          const spent = (Math.min(spans[0][0] + 1, START + dur) - START) * err / budget / (30 * DAY) * 100;
+          when.textContent = `fires after ${fmtD(spans[0][0] - START + 1)} · ${spent.toFixed(1)}% spent · clears ${spans[0][1] >= DAY ? 'after 24h' : `at ${fmtT(spans[0][1])}`}`;
+        } else when.textContent = 'does not fire';
+      }
+      const total = Math.min(dur, DAY - START) * err / budget / (30 * DAY) * 100;
+      const pages = ['p1', 'p2'].filter((k) => k in first), tickets = ['t1', 't2'].filter((k) => k in first);
+      const firstPage = pages.length ? Math.min(...pages.map((k) => first[k])) : -1;
+      fig.querySelector('[data-out="summary"]')!.textContent =
+        `This incident burns ${(err / budget).toFixed(1)}× and spends ${total.toFixed(1)}% of a 30-day budget. ` +
+        (firstPage >= 0 ? `Someone is paged ${fmtD(firstPage - START + 1)} in.` : tickets.length ? 'Nobody is woken up; a ticket is filed.' : 'No alert fires: the budget absorbs it.');
+    };
+
+    // Hover readout.
+    const hit = svg.querySelector<SVGRectElement>('.hit')!, cursor = svg.querySelector<SVGLineElement>('.cursor')!, out = fig.querySelector<HTMLElement>('.readout')!;
+    const move = (clientX: number) => {
+      const box = svg.getBoundingClientRect(), sx = ((clientX - box.left) / box.width) * W;
+      const t = Math.max(0, Math.min(DAY - 1, Math.round(((sx - L) / (W - L - R)) * DAY)));
+      cursor.setAttribute('x1', String(px(t))); cursor.setAttribute('x2', String(px(t))); cursor.setAttribute('visibility', 'visible');
+      out.hidden = false; out.style.left = `${(px(t) / W) * 100}%`;
+      out.innerHTML = `<b>${fmtT(t)}</b>` + windows.map((w) => `<span>${w.k}: ${burn[w.k][t].toFixed(1)}×</span>`).join('');
+    };
+    hit.addEventListener('pointermove', (e) => move(e.clientX));
+    hit.addEventListener('pointerdown', (e) => move(e.clientX));
+    hit.addEventListener('pointerleave', () => { cursor.setAttribute('visibility', 'hidden'); out.hidden = true; });
+
+    fig.querySelectorAll<HTMLButtonElement>('[data-preset]').forEach((b) => b.addEventListener('click', () => {
+      const p = presets[b.dataset.preset!];
+      $('err').value = String(sliderFromErr(p.err)); $('dur').value = String(p.dur); exact = p.err;
+      fig.querySelectorAll('[data-preset]').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+      update();
+    }));
+    fig.querySelectorAll('input, select').forEach((x) => x.addEventListener('input', () => {
+      if (x.matches('[data-in="err"]')) exact = null;
+      fig.querySelectorAll('[data-preset]').forEach((y) => y.setAttribute('aria-pressed', 'false'));
+      update();
+    }));
+    update();
+  }
+</script>
+
+<style>
+  .slo-burn { container-type: inline-size; }
+  .controls { display: grid; gap: 12px; margin-bottom: 12px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chips button { font: inherit; font-size: 13px; padding: 4px 11px; border-radius: 999px; border: 1px solid var(--dg-line); background: var(--dg-node); color: var(--dg-ink-2); cursor: pointer; }
+  .chips button[aria-pressed='true'] { border-color: var(--dg-accent); color: var(--dg-accent); font-weight: 700; }
+  .sliders { display: grid; grid-template-columns: minmax(0, 0.6fr) minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+  .sliders label { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 8px; font-size: 13px; font-weight: 600; color: var(--dg-ink-2); align-content: start; }
+  .sliders output { font-weight: 700; color: var(--dg-ink); font-variant-numeric: tabular-nums; }
+  .sliders input, .sliders select { grid-column: 1 / -1; width: 100%; min-width: 0; }
+  .sliders input { accent-color: var(--dg-accent); }
+  select { font: inherit; font-size: 14px; padding: 5px 8px; border-radius: 8px; border: 1px solid var(--dg-line); background: var(--dg-node); color: var(--dg-ink); }
+  .plot { position: relative; }
+  svg { width: 100%; height: auto; display: block; overflow: visible; touch-action: pan-y; }
+  svg :global(text) { font-size: 11px; fill: var(--dg-ink-3); }
+  svg :global(.g) { stroke: var(--dg-line); }
+  svg :global(.thr) { stroke: var(--dg-ink-3); stroke-dasharray: 4 4; opacity: .6; }
+  svg :global(.thr-t) { font-weight: 600; }
+  svg :global(.ln) { fill: none; stroke-width: 2; stroke-linejoin: round; }
+  .incident { fill: color-mix(in srgb, var(--dg-bad) 12%, transparent); }
+  .cursor { stroke: var(--dg-ink-3); }
+  .readout[hidden] { display: none; }
+  .readout { position: absolute; top: 0; transform: translateX(-50%); display: grid; gap: 1px; padding: 6px 10px; border-radius: 8px; background: var(--dg-node); border: 1px solid var(--dg-line); font-size: 12px; pointer-events: none; white-space: nowrap; box-shadow: 0 4px 16px rgba(0,0,0,.15); }
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; margin: 6px 0 14px; font-size: 12px; color: var(--dg-ink-2); }
+  .legend :global(i) { display: inline-block; width: 12px; height: 3px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+  .strips { display: grid; gap: 8px; }
+  .strip { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.6fr) minmax(0, 1.2fr); gap: 10px; align-items: center; font-size: 12px; }
+  .who small { display: block; color: var(--dg-ink-3); }
+  .sev { display: inline-block; padding: 0 6px; border-radius: 4px; font-weight: 700; font-size: 11px; text-transform: uppercase; color: #fff; background: var(--dg-warn); }
+  .sev.page { background: var(--dg-bad); }
+  .track { position: relative; height: 14px; border-radius: 4px; background: var(--dg-node); border: 1px solid var(--dg-line); overflow: hidden; }
+  .spans :global(i) { position: absolute; top: 0; bottom: 0; background: var(--dg-bad); opacity: .85; }
+  .strip:nth-child(n+3) .spans :global(i) { background: var(--dg-warn); }
+  .spans :global(b) { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--dg-ink); }
+  .when { color: var(--dg-ink-2); font-variant-numeric: tabular-nums; }
+  .summary { margin: 14px 0 0; font-weight: 600; }
+  @container (max-width: 600px) {
+    .sliders { grid-template-columns: minmax(0, 1fr); }
+    .strip { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  }
+</style>

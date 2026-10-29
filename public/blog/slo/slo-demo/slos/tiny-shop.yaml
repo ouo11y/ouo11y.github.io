@@ -12,7 +12,11 @@ slos:
     description: "99.5% of checkout requests in 30 days do not fail with a 5xx."
     sli:
       events:
-        error_query: sum(rate(http_server_request_duration_seconds_count{job="shop",http_route="/checkout",http_response_status_code=~"5.."}[{{.window}}]))
+        # `or vector(0)`: until the first 5xx there is no error series at all, and the SLI
+        # would be "no data" instead of 100%.
+        error_query: |
+          sum(rate(http_server_request_duration_seconds_count{job="shop",http_route="/checkout",http_response_status_code=~"5.."}[{{.window}}]))
+          or vector(0)
         total_query: sum(rate(http_server_request_duration_seconds_count{job="shop",http_route="/checkout"}[{{.window}}]))
     alerting:
       name: CheckoutAvailability
