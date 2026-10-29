@@ -1,0 +1,73 @@
+---
+// A dated history on one vertical line, one colour per track, with a track filter.
+// Each entry links its primary source. Works without JS (all tracks stay visible).
+// <BrowserHistory tracks={[{ id: 'js', label: 'OTel JS', tone: 'accent' }]} items={[{ date: '2019-10-08', track: 'js', title: '...', body: '...', href: '...' }]} />
+import '../../styles/diagram.css';
+
+type Tone = 'accent' | 'ok' | 'warn' | 'bad' | 'info';
+interface Track { id: string; label: string; tone: Tone; }
+interface Item { date: string; track: string; title: string; body?: string; href: string; }
+interface Props { tracks: Track[]; items: Item[]; caption?: string; }
+const { tracks, items, caption } = Astro.props;
+
+const toneOf = Object.fromEntries(tracks.map((t) => [t.id, t.tone]));
+const sorted = [...items].sort((a, b) => a.date.localeCompare(b.date));
+const fmt = (d: string) => {
+  const [y, m, day] = d.split('-');
+  const month = new Date(Date.UTC(+y, +m - 1, 1)).toLocaleString('en', { month: 'short', timeZone: 'UTC' });
+  return day ? `${+day} ${month} ${y}` : `${month} ${y}`;
+};
+---
+<figure class="dg bh not-content" data-bh>
+  <div class="bar" role="group" aria-label="Show tracks">
+    {tracks.map((t) => (
+      <label class={`tone-${t.tone}`}>
+        <input type="checkbox" checked data-track={t.id} />
+        <i aria-hidden="true" />{t.label}
+      </label>
+    ))}
+  </div>
+  <ol class="line">
+    {sorted.map((it, i) => (
+      <>
+      {(i === 0 || sorted[i - 1].date.slice(0, 4) !== it.date.slice(0, 4)) && <li class="year" aria-hidden="true">{it.date.slice(0, 4)}</li>}
+      <li data-track={it.track} class={`tone-${toneOf[it.track] ?? 'accent'}`}>
+        <time datetime={it.date}>{fmt(it.date)}</time>
+        <a class="title" href={it.href}>{it.title}</a>
+        {it.body && <p set:html={it.body} />}
+      </li>
+      </>
+    ))}
+  </ol>
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+  for (const root of document.querySelectorAll<HTMLElement>('[data-bh]')) {
+    const boxes = root.querySelectorAll<HTMLInputElement>('input[data-track]');
+    const items = root.querySelectorAll<HTMLElement>('li[data-track]');
+    const apply = () => {
+      const on = new Set([...boxes].filter((b) => b.checked).map((b) => b.dataset.track));
+      items.forEach((li) => (li.hidden = !on.has(li.dataset.track)));
+    };
+    boxes.forEach((b) => b.addEventListener('change', apply));
+  }
+</script>
+
+<style>
+  .bar { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
+  .bar label { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border: 1px solid var(--dg-line); border-radius: 999px; background: var(--dg-node); color: var(--dg-ink-2); font-size: 13px; cursor: pointer; }
+  .bar input { margin: 0; accent-color: var(--tone); }
+  .bar i { width: 8px; height: 8px; border-radius: 50%; background: var(--tone); }
+  .line { list-style: none; margin: 0; padding: 0 0 0 22px; position: relative; }
+  .line::before { content: ''; position: absolute; left: 6px; top: 6px; bottom: 6px; border-left: 2px solid var(--dg-line); }
+  .line li { position: relative; padding: 0 0 16px; min-width: 0; }
+  .line li[hidden] { display: none; }
+  .line li[data-track]::before { content: ''; position: absolute; left: -21px; top: 5px; width: 12px; height: 12px; border-radius: 50%; background: var(--tone); box-shadow: 0 0 0 3px var(--dg-bg); }
+  .line .year { margin: 2px 0 10px -22px; padding: 2px 8px; display: inline-block; border-radius: 6px; background: var(--dg-bg); border: 1px solid var(--dg-line); font-weight: 800; font-size: 14px; color: var(--dg-ink); }
+  time { display: block; font-size: 12px; color: var(--dg-ink-3); font-variant-numeric: tabular-nums; }
+  .title { display: inline-block; color: var(--dg-ink); font-weight: 600; text-decoration: none; overflow-wrap: anywhere; }
+  .title:hover { color: var(--tone); text-decoration: underline; }
+  .line p { margin: 2px 0 0; color: var(--dg-ink-2); overflow-wrap: anywhere; }
+  .line :global(code) { background: none; padding: 0; }
+</style>

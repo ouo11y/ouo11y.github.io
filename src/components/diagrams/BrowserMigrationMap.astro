@@ -1,0 +1,100 @@
+---
+// "If you use X, move to Y" for OpenTelemetry browser packages, with a status filter.
+// Each row opens to show why and the primary source. Works without JS (filters just stay on "All").
+// <BrowserMigrationMap asOf="2026-10-29" rows={[{ from: '@opentelemetry/sdk-trace-web', to: '...', status: 'removed', why: '...', source: { label: 'PR #1', href: '...' } }]} />
+import '../../styles/diagram.css';
+
+type Status = 'removed' | 'deprecated' | 'superseded' | 'none' | 'keep';
+interface Source { label: string; href: string; }
+interface Row { from: string; to: string; status: Status; signal?: string; why: string; sources: Source[]; }
+interface Props { rows: Row[]; asOf: string; caption?: string; }
+const { rows, asOf, caption } = Astro.props;
+
+const labels: Record<Status, string> = {
+  removed: 'Removed',
+  deprecated: 'Deprecated on npm',
+  superseded: 'Superseded',
+  none: 'No replacement',
+  keep: 'Still supported',
+};
+const tones: Record<Status, string> = { removed: 'bad', deprecated: 'warn', superseded: 'info', none: 'accent', keep: 'ok' };
+const present = (Object.keys(labels) as Status[]).filter((s) => rows.some((r) => r.status === s));
+---
+<figure class="dg bmm not-content" data-bmm>
+  <div class="bar" role="group" aria-label="Filter by status">
+    <button type="button" data-filter="all" aria-pressed="true">All <span>{rows.length}</span></button>
+    {present.map((s) => (
+      <button type="button" data-filter={s} aria-pressed="false" class={`tone-${tones[s]}`}>
+        <i aria-hidden="true" />{labels[s]} <span>{rows.filter((r) => r.status === s).length}</span>
+      </button>
+    ))}
+  </div>
+  <ul class="rows">
+    {rows.map((r) => (
+      <li data-status={r.status} class={`tone-${tones[r.status]}`}>
+        <details>
+          <summary>
+            <span class="from"><code>{r.from}</code></span>
+            <span class="arrow" aria-hidden="true">→</span>
+            <span class="to" set:html={r.to} />
+            <span class="badge">{labels[r.status]}</span>
+          </summary>
+          <div class="why">
+            {r.signal && <p class="signal">{r.signal}</p>}
+            <p set:html={r.why} />
+            <p class="src">Source: {r.sources.map((s, i) => <>{i > 0 && ', '}<a href={s.href}>{s.label}</a></>)}</p>
+          </div>
+        </details>
+      </li>
+    ))}
+  </ul>
+  <figcaption>{caption ?? 'Click a row for the reason and the source.'} Checked {asOf}.</figcaption>
+</figure>
+
+<script>
+  for (const root of document.querySelectorAll<HTMLElement>('[data-bmm]')) {
+    const buttons = root.querySelectorAll<HTMLButtonElement>('[data-filter]');
+    const items = root.querySelectorAll<HTMLElement>('li[data-status]');
+    buttons.forEach((b) =>
+      b.addEventListener('click', () => {
+        const f = b.dataset.filter;
+        buttons.forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+        items.forEach((li) => (li.hidden = f !== 'all' && li.dataset.status !== f));
+      }),
+    );
+  }
+</script>
+
+<style>
+  .bar { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+  .bar button { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border: 1px solid var(--dg-line); border-radius: 999px; background: var(--dg-node); color: var(--dg-ink-2); font: inherit; font-size: 13px; cursor: pointer; }
+  .bar button span { color: var(--dg-ink-3); font-variant-numeric: tabular-nums; }
+  .bar button i { width: 8px; height: 8px; border-radius: 50%; background: var(--tone); }
+  .bar button[aria-pressed='true'] { border-color: var(--dg-accent); color: var(--dg-ink); background: var(--dg-accent-soft); }
+  .rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+  .rows li { border: 1px solid var(--dg-line); border-left: 4px solid var(--tone); border-radius: 10px; background: var(--dg-node); min-width: 0; }
+  .rows li[hidden] { display: none; }
+  summary { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 10px 12px; cursor: pointer; list-style: none; }
+  summary::-webkit-details-marker { display: none; }
+  summary:hover { background: color-mix(in srgb, var(--tone) 7%, transparent); }
+  .from code, .to :global(code) { background: none; padding: 0; overflow-wrap: anywhere; }
+  .from code { color: var(--dg-ink-2); }
+  .to { color: var(--dg-ink); font-weight: 600; overflow-wrap: anywhere; }
+  .to :global(code) { color: var(--dg-ink); }
+  .arrow { color: var(--tone); font-weight: 700; }
+  .badge { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--tone); white-space: nowrap; }
+  .why { padding: 0 12px 12px; color: var(--dg-ink-2); }
+  .why p { margin: .4em 0; }
+  .why .signal { font-size: 12px; color: var(--dg-ink-3); text-transform: uppercase; letter-spacing: .04em; }
+  .why .src { font-size: 13px; }
+  .why a { color: var(--dg-accent); }
+  .bmm { container-type: inline-size; }
+  @container (max-width: 560px) {
+    summary { grid-template-columns: minmax(0, 1fr) auto; row-gap: 4px; }
+    .arrow { display: none; }
+    .from { grid-column: 1; }
+    .badge { grid-column: 2; grid-row: 1; }
+    .to { grid-column: 1 / -1; }
+    .to::before { content: '→ '; color: var(--tone); }
+  }
+</style>
