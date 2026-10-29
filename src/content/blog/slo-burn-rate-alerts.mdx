@@ -1,0 +1,87 @@
+---
+title: "SLOs from first principles, part 3: burn rates and multi-window alerts"
+description: Why "error rate above 1%" pages at the wrong times, what a burn rate is, and how the SRE workbook's multi-window, multi-burn-rate alerts trade detection time against budget spent. With a simulator.
+date: 2026-10-31
+tags: [slo, sre, alerting, prometheus]
+series: "SLOs from first principles"
+part: 3
+---
+import Note from '../../components/Note.astro';
+import SloBurnSimulator from '../../components/diagrams/SloBurnSimulator.astro';
+
+An SLO from [part 1](/blog/slo-sli-slo-sla-error-budget/) gives you a budget, and [part 2](/blog/slo-choosing-slis/) gives you an SLI to spend it against. Now the on-call question: when should a person be woken up? The answer the industry settled on comes from chapter 5 of Google's [*Site Reliability Workbook*](https://sre.google/workbook/alerting-on-slos/) (2018), "Alerting on SLOs". This part explains it from the ground up, and the simulator below lets you try it on incidents of your own.
+
+## How to judge an alert
+
+The workbook judges every alerting strategy on four properties. They are worth remembering, because every option below trades one for another:
+
+- **Precision:** of the alerts that fired, how many were about something significant.
+- **Recall:** of the significant events, how many fired an alert.
+- **Detection time:** how long from the start of the problem to the alert.
+- **Reset time:** how long the alert keeps firing after the problem is fixed.
+
+## Simple alerts, and why they fail
+
+**"Error ratio over the SLO threshold, right now."** For a 99.9% SLO, page when more than 0.1% of requests in the last 5 minutes fail. Detection is fast, but precision is terrible: a five-minute blip at 0.2% spends a tiny slice of a 30-day budget and still pages. You get woken for things the SLO says are fine.
+
+**"Error ratio over the threshold, for an hour."** Use a 1-hour window. Precision improves, but now a total outage takes several minutes to move a 1-hour average, and after the fix the alert keeps firing for up to an hour, because the window still remembers the outage. Long windows have long reset times.
+
+**"Budget below 50%."** Alert on the budget itself. That fires once, late, and then never stops until the 30-day window has rolled past.
+
+What all three lack is a sense of speed. A failure that would spend the whole month's budget in a day needs a person now; one that would spend it in three weeks needs a ticket.
+
+## Burn rate
+
+The **burn rate** is how fast you are spending the budget, relative to spending it evenly over the window:
+
+> burn rate = error ratio in a window ÷ (1 − SLO)
+
+At burn rate 1, you spend exactly the whole budget in the SLO window. At 2, you are out in half the window. For a 99.9% SLO, a 2% error ratio is a burn rate of 20: a 30-day budget gone in a day and a half.
+
+The useful identity is this one. If an alert looks back over a window *w* and fires above burn rate *b*, then when it fires, the incident has spent at least
+
+> b × w ÷ SLO window
+
+of the budget. A 1-hour window at burn rate 14.4, on a 30-day SLO: 14.4 × 1 h ÷ 720 h = **2%**. The threshold is not a magic number. It is "page me once an incident has eaten 2% of the month", written as a rate.
+
+## Multi-window, multi-burn-rate
+
+The workbook's recommendation for a 99.9% SLO combines four ideas.
+
+1. **Several burn rates, several windows.** A fast, severe burn should page quickly; a slow, long burn should file a ticket. Each pair of (window, burn rate) is set to fire at a chosen share of the budget.
+2. **A short window next to each long one.** The alert fires only if the burn rate is over the threshold in both the long window and a short window one twelfth as long. The long window brings precision. The short window brings reset time: once the problem is fixed, the 5-minute burn rate drops within minutes and the alert stops, even though the 1-hour window still remembers.
+3. **Pages for fast burns, tickets for slow ones.**
+4. **No `for:` durations on the alerts.** The windows already smooth out noise; a duration only adds detection time. Sloth's generated alerts have none.
+
+| Severity | Long window | Short window | Burn rate | Budget spent when it fires |
+|---|---|---|---|---|
+| page | 1 hour | 5 minutes | 14.4 | 2% |
+| page | 6 hours | 30 minutes | 6 | 5% |
+| ticket | 3 days | 6 hours | 1 | 10% |
+
+The table is the workbook's recommendation. [Sloth](https://sloth.dev/), the generator we use in part 4, uses the same two page conditions and adds a fourth, ticket, condition: 1 day and 2 hours over 3×, which also spends 10% but in a day instead of three.
+
+## Try it
+
+The simulator draws one day, minute by minute, for an SLO with three quiet days of history before it. The red band is the incident. The lines are the burn rate that each window sees, on a log scale. Below, each strip is one alert condition, true where it is coloured.
+
+<SloBurnSimulator
+  preset="deploy"
+  caption="Hover or tap the chart for the burn rate in every window at that minute. The 'spent' figure is the share of a 30-day budget gone when the alert first fires."
+/>
+
+Things to try:
+
+- **Bad deploy** (5% errors for 90 minutes on 99.9%, a burn rate of 50): the 1-hour page fires after 18 minutes, when 2% of the budget is gone. Raise the error rate and the page comes sooner, but the budget spent at that moment stays near 2%. That is the identity above. After the deploy is rolled back, the page clears within about 3 minutes: that is the 5-minute window doing its job.
+- **Hard outage** (100% for 15 minutes, a burn rate of 1,000): the page fires in the first minute, because at 1,000× even one minute of failures is enough to fill the 1-hour window. Look at the strips after the outage ends instead: the 1-hour page clears in minutes, while the tickets stay on for hours. That is why part 4 suppresses tickets while a page for the same SLO is firing.
+- **Short blip** (10% for 4 minutes): no alert at all. It spends under 1% of the budget, which is what the budget is for. Push it to 30% and the page does fire, after 3 minutes: at 300× the budget goes fast.
+- **Slow leak** (0.4% for 12 hours, burn rate 4): nothing fires, though 7% of the budget is gone. Lengthen it to 18 hours and both tickets fire: the 1-day window crosses 3× and the 3-day window crosses 1× at about the same moment. A slow leak is a ticket, never a page.
+- **Change the SLO** to 99.5% with the bad deploy: the budget is five times larger, the burn rate five times smaller, and nothing fires.
+
+## What it does not solve
+
+- **Low traffic.** With a few requests a minute, one failure in the 5-minute window is a huge burn rate, and the long window decides alone. The workbook's section on low-traffic services suggests generating artificial traffic, grouping several small services into one SLO, or changing the service or the SLO itself.
+- **Fresh data.** A burn rate over 3 days needs 3 days of samples. On a newly started Prometheus, every long window holds only what exists, so long-window alerts fire much sooner than they will in steady state. We hit exactly this in part 4.
+- **Many SLOs, many alerts.** Each SLO gets its own set of conditions. Route by severity, group by SLO, and suppress the ticket while the page for the same SLO is firing. Part 4's Alertmanager config does all three.
+
+[Part 4](/blog/slo-hands-on-sloth-prometheus/) generates these rules for a real service, runs them on Prometheus, and shows them fire.

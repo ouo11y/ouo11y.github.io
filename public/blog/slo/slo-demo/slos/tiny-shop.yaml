@@ -1,0 +1,56 @@
+# Two SLOs for Tiny Shop checkout, in Sloth's prometheus/v1 spec.
+# Generate the Prometheus rules with:
+#   docker run --rm -v "$PWD:/work" -w /work ghcr.io/slok/sloth:v0.16.0 \
+#     generate -i slos/tiny-shop.yaml -o prometheus/rules/tiny-shop.rules.yml
+version: "prometheus/v1"
+service: "tiny-shop"
+labels:
+  owner: "shop-team"
+slos:
+  - name: "checkout-availability"
+    objective: 99.5
+    description: "99.5% of checkout requests in 30 days do not fail with a 5xx."
+    sli:
+      events:
+        # `or vector(0)`: until the first 5xx there is no error series at all, and the SLI
+        # would be "no data" instead of 100%.
+        error_query: |
+          sum(rate(http_server_request_duration_seconds_count{job="shop",http_route="/checkout",http_response_status_code=~"5.."}[{{.window}}]))
+          or vector(0)
+        total_query: sum(rate(http_server_request_duration_seconds_count{job="shop",http_route="/checkout"}[{{.window}}]))
+    alerting:
+      name: CheckoutAvailability
+      labels:
+        category: availability
+      annotations:
+        summary: "Checkout is burning its availability error budget."
+      page_alert:
+        labels:
+          severity: page
+      ticket_alert:
+        labels:
+          severity: ticket
+
+  - name: "checkout-latency"
+    objective: 99
+    description: "99% of checkout requests in 30 days finish in 250 ms or less."
+    sli:
+      events:
+        # Slow = all requests minus the ones in the 250 ms bucket.
+        error_query: |
+          sum(rate(http_server_request_duration_seconds_count{job="shop",http_route="/checkout"}[{{.window}}]))
+          -
+          sum(rate(http_server_request_duration_seconds_bucket{job="shop",http_route="/checkout",le="0.25"}[{{.window}}]))
+        total_query: sum(rate(http_server_request_duration_seconds_count{job="shop",http_route="/checkout"}[{{.window}}]))
+    alerting:
+      name: CheckoutLatency
+      labels:
+        category: latency
+      annotations:
+        summary: "Checkout is burning its latency error budget."
+      page_alert:
+        labels:
+          severity: page
+      ticket_alert:
+        labels:
+          severity: ticket

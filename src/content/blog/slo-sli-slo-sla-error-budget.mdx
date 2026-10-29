@@ -1,0 +1,93 @@
+---
+title: "SLOs from first principles, part 1: SLI, SLO, SLA and the error budget"
+description: Where service level objectives came from, what the four terms mean, and how an error budget turns "is it reliable enough?" into a number you can plan with. With an error budget calculator.
+date: 2026-10-29
+tags: [slo, sre, reliability, error-budget]
+series: "SLOs from first principles"
+part: 1
+---
+import Note from '../../components/Note.astro';
+import Stages from '../../components/diagrams/Stages.astro';
+import SloBudgetCalculator from '../../components/diagrams/SloBudgetCalculator.astro';
+
+Every team says its service should be reliable. Few can say how reliable, measured how, and what they will do when it is not. Service level objectives are the tool for those three questions. This series builds them up from nothing: this part defines the terms and the error budget, [part 2](/blog/slo-choosing-slis/) chooses what to measure, [part 3](/blog/slo-burn-rate-alerts/) alerts on it, and [part 4](/blog/slo-hands-on-sloth-prometheus/) runs all of it on Prometheus, Sloth and Grafana on a laptop.
+
+## Where SLOs came from
+
+**SLAs came first.** A service level agreement is a contract: the provider promises a level of service and says what it owes when it misses, usually service credits. Hosting companies and telecom carriers wrote them long before anyone said "SRE". An SLA is a legal and commercial document. It tells you what a miss costs, not how to run the service.
+
+**Google turned the idea inward.** Google started its Site Reliability Engineering team in 2003. In 2016 it published [*Site Reliability Engineering*](https://sre.google/sre-book/table-of-contents/) (O'Reilly, edited by Betsy Beyer, Chris Jones, Jennifer Petoff and Niall Richard Murphy), free to read online. Two chapters set the vocabulary most of the industry now uses: [Embracing Risk](https://sre.google/sre-book/embracing-risk/) introduced the error budget, and [Service Level Objectives](https://sre.google/sre-book/service-level-objectives/) defined SLIs and SLOs as internal targets that sit inside, and tighter than, any SLA.
+
+**The workbook made it practical.** Two years later [*The Site Reliability Workbook*](https://sre.google/workbook/table-of-contents/) (O'Reilly, 2018) answered the questions readers had sent in: how do I [implement SLOs](https://sre.google/workbook/implementing-slos/), write an error budget policy, and [alert on SLOs](https://sre.google/workbook/alerting-on-slos/) without paging on noise. Part 3 of this series is built on that last chapter.
+
+**One book put it all in one place.** Alex Hidalgo, who had worked as an SRE at Google, wrote [*Implementing Service Level Objectives*](https://www.oreilly.com/library/view/implementing-service-level/9781492076803/) (O'Reilly, 2020): a whole book about the SLO-based approach, for teams that are not Google. It covers how to pick SLIs, how to choose targets, the statistics behind them, how to get buy-in, and how to keep the whole thing alive. Since then the [OpenSLO](https://openslo.com/) project (2021) has written SLOs down as a vendor-neutral YAML spec, and open-source generators such as [Sloth](https://github.com/slok/sloth) and [Pyrra](https://github.com/pyrra-dev/pyrra) turn them into Prometheus rules. We use Sloth in part 4.
+
+<Note title="What we take from Hidalgo's book">
+These are the ideas from *Implementing Service Level Objectives* that shaped this series, in our words. The examples in this series are ours, not the book's. If SLOs are going to be part of how your team works, read the book itself: it goes much further than four blog posts can.
+
+- **The reliability stack.** SLIs at the bottom, SLOs built on them, error budgets built on the SLOs. Each layer is only as good as the one under it, so most of the work is in the SLI.
+- **An SLI is the user's view.** Measure what a user of the service would call working, at the point where they would notice. CPU, queue depth and pod restarts are useful signals, but they are not SLIs.
+- **The error budget is a decision tool.** It is not a score. Its job is to settle arguments before they happen: while there is budget, ship and take risks; when it is gone, the agreed policy says what changes.
+- **Targets are never finished.** Start with a target you can defend, look at how it matched real user pain, and change it. An SLO nobody revisits drifts away from what users feel.
+- **100% is the wrong target** for nearly everything: users cannot tell the difference past a point, and every extra nine costs more than the last.
+</Note>
+
+## The four terms
+
+<Stages
+  caption="The reliability stack, with our checkout flow as the example. Each layer is built on the one before it."
+  stages={[
+    { who: 'SLI', title: 'what you measure', body: 'share of checkout requests that succeed in under 1 s', carries: 'a ratio, 0 to 100%', tone: 'info' },
+    { who: 'SLO', title: 'the target', body: '99.9% of them, over a rolling 28 days', carries: 'a budget of bad events', tone: 'accent' },
+    { who: 'Error budget', title: 'what you may spend', body: '0.1% of checkouts may fail or be slow', carries: 'decisions', tone: 'ok' },
+    { who: 'SLA', title: 'what you promise', body: '99.5% a month, or credits back', tone: 'warn' },
+  ]}
+/>
+
+**SLI, service level indicator.** A measurement of one thing users care about, written as good events divided by valid events. "The share of checkout requests that return a non-5xx response within one second." It is a ratio between 0 and 100%, and higher is better. Writing every SLI in that shape makes them comparable and lets you add them up across servers, regions and time.
+
+**SLO, service level objective.** A target for an SLI over a time window. "99.9% of checkout requests are good, over a rolling 28 days." The window matters as much as the number: 99.9% over a day and 99.9% over a quarter allow very different incidents.
+
+**SLA, service level agreement.** A promise to someone outside the team, with consequences. Make it looser than the SLO (99.5% if the SLO is 99.9%), so the team reacts long before a customer can claim credits. Many internal services have SLOs and no SLA at all, and that is fine.
+
+**Error budget.** One minus the SLO. At 99.9%, the budget is 0.1% of valid events in the window. It is the amount of unreliability you have agreed is acceptable, so you can spend it: on deploys that go wrong, on planned maintenance, on experiments.
+
+## The error budget as a number
+
+The budget is a count. Multiply the traffic in the window by one minus the target. A rate of bad events can also be written as minutes of full outage, which is how most people feel it.
+
+<SloBudgetCalculator
+  target={99.9} days={28} rps={50} bad={40000} elapsed={10}
+  caption="Change the target, window and traffic. The black tick on the bar is how far you are into the window; spending faster than that is a burn rate over 1."
+/>
+
+Two things to notice as you move the inputs:
+
+- **Every nine divides the budget by ten.** At 50 requests a second over 28 days, 99.9% allows about 121,000 bad checkouts, or 40 minutes of full outage. 99.99% allows 4 minutes: less than one slow rollback.
+- **Traffic changes the count, not the share.** A busier service has more bad events to spend, but the same 40 minutes. The share is what the SLO fixes.
+
+How many nines a system of dependencies can reach, and why the minutes add up the way they do, is its own subject: [The math of observability, part 1](/blog/math-nines-and-uptime/) works through it.
+
+A second example, from the other end: a mobile app where the SLI is the share of app sessions that end without a crash or an error. 200,000 sessions a day, target 99.5% over 30 days: 6 million sessions, of which 30,000 may go wrong. One bad release that crashes 2% of sessions for two days spends 8,000 of them, more than a quarter of the month. Part 2 looks at why sessions make a good SLI and where they mislead.
+
+## Running on the budget
+
+A budget is only useful if it changes what people do. The workbook's answer is a written **error budget policy**, agreed before it is needed by the people who would argue about it later: product, engineering, and whoever is on call. Ours for the checkout service would be short:
+
+1. **Budget left:** ship as usual. Use spare budget for risky but useful work: a database upgrade, a chaos test, a faster rollout.
+2. **Spending fast:** if one incident spends more than 20% of the budget, it gets a postmortem with at least one action item that is planned, not just written down.
+3. **Budget gone:** until the 28-day SLI is back above target, releases carry only fixes and reliability work. The product owner can override, in writing.
+4. **Too much left, every month:** the target may be too loose, or the SLI may miss what users feel. Revisit both.
+
+The fourth rule is the one teams forget. A budget that is never spent says either that users would accept less, so you can move faster, or that the SLI is blind to the failures they see. Either is worth knowing.
+
+## Picking the first target
+
+There is no formula, but there is an order:
+
+1. **Measure first.** Run the SLI for a few weeks before setting a target. Your current performance is the starting point, because users already accept it.
+2. **Pick a target slightly below what you achieve,** so the SLO does not fire on today's normal. If you achieve 99.95% and nobody complains, 99.9% is a reasonable start.
+3. **Check it against pain.** Look at the incidents and support tickets in those weeks. Did the SLI drop when users suffered? If not, fix the SLI before you fix the target.
+4. **Write down when you will review it,** and review it. A quarter is common.
+
+[Part 2](/blog/slo-choosing-slis/) is about the hardest step in all of this: choosing an SLI that sees what your users see.

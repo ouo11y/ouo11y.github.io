@@ -1,0 +1,100 @@
+---
+// A latency SLI as "share of requests under a threshold", next to the percentiles of the same
+// requests. 2,000 fixed pseudo-random request durations; a slider moves the threshold and a
+// toggle adds a slow tail (a cache that stopped working for one request in ten). A little JS.
+// <SloLatencySli threshold={300} />
+import '../../styles/diagram.css';
+
+interface Props { threshold?: number; caption?: string; }
+const { threshold = 300, caption } = Astro.props;
+---
+<figure class="dg slo-lat not-content" data-slo-lat data-threshold={threshold} role="group" aria-label={caption ?? 'Latency SLI explorer'}>
+  <div class="controls">
+    <label>Threshold <output data-out="thr">{threshold} ms</output>
+      <input type="range" min="50" max="1500" step="10" value={threshold} data-in="thr" />
+    </label>
+    <label class="check"><input type="checkbox" data-in="tail" /> One request in ten misses the cache (+600 ms)</label>
+  </div>
+  <svg viewBox="0 0 480 180" role="img" aria-label="Histogram of request durations with the threshold marked">
+    <g data-bars></g>
+    <line class="thr" data-thr y1="8" y2="150" />
+    <g data-axis></g>
+  </svg>
+  <div class="stats" aria-live="polite">
+    <div class="sli"><b data-out="good">…</b><small>of requests under the threshold: this is the SLI</small></div>
+    <dl>
+      <dt>p50</dt><dd data-out="p50">…</dd>
+      <dt>p95</dt><dd data-out="p95">…</dd>
+      <dt>p99</dt><dd data-out="p99">…</dd>
+    </dl>
+  </div>
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+  const rand = (i: number, salt: number) => {
+    let h = (i + 1) * 2654435761 + salt * 40503;
+    h = Math.imul(h ^ (h >>> 16), 0x85ebca6b);
+    h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
+    return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+  };
+  // Log-normal around 120 ms (Box-Muller from two fixed uniforms).
+  const base = Array.from({ length: 2000 }, (_, i) => {
+    const z = Math.sqrt(-2 * Math.log(rand(i, 1) || 1e-9)) * Math.cos(2 * Math.PI * rand(i, 2));
+    return Math.exp(Math.log(120) + 0.45 * z);
+  });
+  const W = 480, L = 14, R = 22, B = 150, MAX = 1500, BIN = 30;
+  for (const fig of document.querySelectorAll<HTMLElement>('[data-slo-lat]')) {
+    const thr = fig.querySelector<HTMLInputElement>('[data-in="thr"]')!;
+    const tail = fig.querySelector<HTMLInputElement>('[data-in="tail"]')!;
+    const out = (k: string) => fig.querySelector<HTMLElement>(`[data-out="${k}"]`)!;
+    const px = (ms: number) => L + (Math.min(ms, MAX) / MAX) * (W - L - R);
+    const axis = fig.querySelector('[data-axis]')!;
+    axis.innerHTML = [0, 250, 500, 1000, 1500].map((v) => `<text x="${px(v)}" y="${B + 18}" text-anchor="middle">${v}${v === 1500 ? '+' : ''} ms</text>`).join('');
+    const update = () => {
+      const t = +thr.value;
+      const d = base.map((v, i) => (tail.checked && rand(i, 3) < 0.1 ? v + 600 : v));
+      const sorted = [...d].sort((a, b) => a - b);
+      const q = (p: number) => sorted[Math.min(sorted.length - 1, Math.ceil(p * sorted.length) - 1)];
+      const bins = new Array(Math.ceil(MAX / BIN)).fill(0);
+      for (const v of d) bins[Math.min(bins.length - 1, Math.floor(v / BIN))]++;
+      const top = Math.max(...bins);
+      const bw = (W - L - R) / bins.length;
+      fig.querySelector('[data-bars]')!.innerHTML = bins.map((c, i) => {
+        const h = (c / top) * (B - 10);
+        return `<rect x="${L + i * bw + 0.5}" y="${B - h}" width="${bw - 1}" height="${h}" class="${(i + 1) * BIN <= t ? 'good' : 'bad'}" />`;
+      }).join('');
+      const line = fig.querySelector('[data-thr]')!;
+      line.setAttribute('x1', String(px(t))); line.setAttribute('x2', String(px(t)));
+      const good = d.filter((v) => v <= t).length / d.length;
+      out('thr').textContent = `${t} ms`;
+      out('good').textContent = `${(good * 100).toFixed(1)}%`;
+      out('p50').textContent = `${Math.round(q(0.5))} ms`;
+      out('p95').textContent = `${Math.round(q(0.95))} ms`;
+      out('p99').textContent = `${Math.round(q(0.99))} ms`;
+    };
+    thr.addEventListener('input', update); tail.addEventListener('change', update);
+    update();
+  }
+</script>
+
+<style>
+  .controls { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px 20px; align-items: end; margin-bottom: 10px; }
+  .controls label { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 8px; font-size: 13px; font-weight: 600; color: var(--dg-ink-2); }
+  .controls label.check { display: flex; gap: 8px; align-items: center; font-weight: 500; }
+  .controls input[type='range'] { grid-column: 1 / -1; width: 100%; accent-color: var(--dg-accent); }
+  .controls output { color: var(--dg-ink); font-variant-numeric: tabular-nums; }
+  svg { width: 100%; height: auto; display: block; overflow: visible; }
+  svg :global(rect.good) { fill: color-mix(in srgb, var(--dg-ok) 70%, transparent); }
+  svg :global(rect.bad) { fill: color-mix(in srgb, var(--dg-bad) 70%, transparent); }
+  svg :global(text) { font-size: 12px; fill: var(--dg-ink-3); }
+  .thr { stroke: var(--dg-ink); stroke-width: 2; stroke-dasharray: 5 4; }
+  .stats { display: flex; flex-wrap: wrap; gap: 16px 28px; align-items: center; margin-top: 10px; }
+  .sli b { display: block; font-size: 28px; font-weight: 800; color: var(--dg-accent); font-variant-numeric: tabular-nums; }
+  .sli small { color: var(--dg-ink-3); font-size: 13px; }
+  dl { display: grid; grid-template-columns: auto auto; gap: 2px 12px; margin: 0; font-size: 13px; }
+  dt { color: var(--dg-ink-2); }
+  dd { margin: 0; font-weight: 700; font-variant-numeric: tabular-nums; text-align: right; }
+  .slo-lat { container-type: inline-size; }
+  @container (max-width: 520px) { .controls { grid-template-columns: minmax(0, 1fr); } }
+</style>

@@ -1,0 +1,40 @@
+# Unit test for the generated alert rules. Run it with:
+#   docker run --rm -v "$PWD/prometheus:/etc/prometheus:ro" --entrypoint promtool \
+#     quay.io/prometheus/prometheus:v3.15.1 test rules /etc/prometheus/tests/tiny-shop.test.yml
+#
+# Three clean days of checkout traffic (400 good requests a minute), then a bad deploy
+# adds 100 failing requests a minute: 20% of checkouts fail, a burn rate of 40x for a 99.5% SLO.
+rule_files:
+  - ../rules/tiny-shop.rules.yml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'http_server_request_duration_seconds_count{job="shop",http_route="/checkout",http_response_status_code="200"}'
+        values: '0+400x4500'
+      - series: 'http_server_request_duration_seconds_count{job="shop",http_route="/checkout",http_response_status_code="503"}'
+        values: '0x4320 100+100x180'
+      - series: 'http_server_request_duration_seconds_bucket{job="shop",http_route="/checkout",le="0.25"}'
+        values: '0+500x4500'
+    alert_rule_test:
+      # 18 minutes in: the 5m window is far over 14.4x, the 1h window is not there yet.
+      - eval_time: 4338m
+        alertname: CheckoutAvailability
+        exp_alerts: []
+      # 20 minutes in: the 1h window is over 14.4x too, and the page fires.
+      # (It crosses at about 18.6 minutes; recording and alert groups run on their own clocks.)
+      - eval_time: 4340m
+        alertname: CheckoutAvailability
+        exp_alerts:
+          - exp_labels:
+              alertname: CheckoutAvailability
+              category: availability
+              owner: shop-team
+              severity: page
+              sloth_id: tiny-shop-checkout-availability
+              sloth_service: tiny-shop
+              sloth_severity: page
+              sloth_slo: checkout-availability
+            exp_annotations:
+              summary: Checkout is burning its availability error budget.
+              title: (page) tiny-shop checkout-availability SLO error budget burn rate is too fast.

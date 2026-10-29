@@ -1,0 +1,27 @@
+# Pages and tickets go to different receivers. Both are the shop's /alerts webhook here,
+# so you can watch them in `docker compose -p slo-demo logs shop`. In real life: a pager and a ticket queue.
+route:
+  receiver: ticket
+  group_by: [alertname, sloth_slo, severity]
+  group_wait: 10s
+  group_interval: 1m
+  repeat_interval: 4h
+  routes:
+    - matchers: [severity="page"]
+      receiver: page
+
+receivers:
+  - name: page
+    webhook_configs:
+      - url: http://shop:8080/alerts
+        send_resolved: true
+  - name: ticket
+    webhook_configs:
+      - url: http://shop:8080/alerts
+        send_resolved: true
+
+inhibit_rules:
+  # While a page is firing for an SLO, hold back the ticket for the same SLO.
+  - source_matchers: [severity="page"]
+    target_matchers: [severity="ticket"]
+    equal: [sloth_slo]

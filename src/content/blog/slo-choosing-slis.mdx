@@ -1,0 +1,121 @@
+---
+title: "SLOs from first principles, part 2: choosing SLIs, including the user's view"
+description: Availability, latency, quality and freshness as good-over-valid ratios; request-based and window-based SLIs; where to measure; and why healthy sessions per release are a strong user-facing SLI, with their traps.
+date: 2026-10-30
+tags: [slo, sre, sli, rum, latency]
+series: "SLOs from first principles"
+part: 2
+---
+import Note from '../../components/Note.astro';
+import Flow from '../../components/diagrams/Flow.astro';
+import SloLatencySli from '../../components/diagrams/SloLatencySli.astro';
+
+[Part 1](/blog/slo-sli-slo-sla-error-budget/) said that most of the work in an SLO is in the SLI, the bottom of the reliability stack. This part is about choosing one. The test for every candidate is the same question: when this number drops, would a user have noticed something wrong?
+
+## The shape: good events over valid events
+
+Write every SLI as a ratio of two counts:
+
+> SLI = good events ÷ valid events
+
+Both halves are decisions. **Good** says what working means. **Valid** says what you count at all: you might leave out health checks, requests from your own load tests, and `4xx` responses that are the client's fault. Get valid wrong and the SLI moves for reasons users never feel.
+
+The ratio form is not a style choice. Counts add up: across pods, regions and time windows, the sums of good and valid events give the right answer. Averages and percentiles do not, which matters for latency below.
+
+## Four kinds of SLI
+
+Most services need two or three of these, not all of them.
+
+**Availability: did it work?** Good = requests that did not fail. For an HTTP API that usually means "not a `5xx`", plus timeouts that never produced a status at all. For a checkout flow: the share of `POST /checkout` requests that did not fail on our side.
+
+**Latency: was it fast enough?** Good = requests that finished under a threshold. "The share of checkout requests that complete within 1 second." Note what this is not: it is not "p99 latency under 1 second". See the next section.
+
+**Quality: was the answer the full answer?** Some services degrade instead of failing: a product page served without recommendations because that service timed out, a search that answered from a stale replica, an image served at low resolution. Good = responses that were not degraded. You need the service to say when it degraded, usually an attribute or label on the response metric.
+
+**Freshness: is the data recent enough?** For pipelines and anything that shows data computed elsewhere. Good = reads of data that was updated less than N minutes ago, or minutes in which the newest record was younger than N. "The order history page showed orders less than 5 minutes old."
+
+Two more come up for storage and batch systems: **correctness** (the share of records that pass a check) and **coverage** (the share of the input a batch job processed). They follow the same shape.
+
+## Latency: thresholds, not percentiles
+
+A percentile answers "how slow were the slowest 1%?". A threshold answers "how many requests were too slow?". SLOs need the second.
+
+- **You can add counts, not percentiles.** The p99 of the whole service is not the average of each pod's p99, and the 28-day p99 is not the average of daily p99s. "Requests under 1 s" sums correctly over any set of pods and any window.
+- **The threshold fixes the question; the percentile moves.** "p99 < 1 s" passes or fails as a whole. "99% of requests under 1 s" gives you a number, a budget, and a burn rate.
+- **With histograms, the threshold must be a bucket boundary.** Prometheus counts requests per bucket, so "under 250 ms" is exact only if there is an `le="0.25"` bucket. Choose the buckets with the SLO in mind. [The math of observability, part 2](/blog/math-percentiles-and-histograms/) explains why histogram percentiles are estimates and how buckets change them.
+
+Move the threshold and switch on the slow tail in the chart below. The SLI and the percentiles describe the same 2,000 requests.
+
+<SloLatencySli
+  threshold={300}
+  caption="Green bars are good events for the chosen threshold. With the cache problem on, p99 jumps by hundreds of milliseconds, while the SLI says exactly how many requests users waited for."
+/>
+
+Pick the threshold from the user's side: how long before a person notices, or before the calling service times out. Many teams use two latency SLOs for one endpoint: a loose one most requests meet (90% under 300 ms) and a strict one for the tail (99% under 1 s).
+
+## Request-based or window-based
+
+There are two ways to count.
+
+**Request-based**: good requests ÷ valid requests over the SLO window. This is what the rest of the series uses. It weights by traffic: a failure at peak costs more budget than the same failure at 4 a.m., which matches how many users it hurt.
+
+**Window-based**: good minutes ÷ minutes, where a minute is good if its own SLI met a bar ("a minute is good if 99% of its requests succeeded"). It reads naturally in SLAs ("no more than 43 bad minutes a month") and treats a quiet hour like a busy one. The cost is that it hides what happened inside a minute, and the result depends on the bar you picked for the minute.
+
+For low-traffic services, window-based SLIs are often easier: with ten requests an hour, one failure is 10% of that hour, and a request-based burn-rate alert will jump around. Another option there is synthetic traffic that keeps the counts meaningful.
+
+## Where to measure
+
+The closer to the user, the more truthful and the noisier the measurement.
+
+<Flow
+  caption="The same checkout, measured at four places. Each sees failures the others miss."
+  columns={[
+    { label: 'Client', arrow: 'HTTPS', nodes: [{ title: 'Browser or app (RUM)', sub: 'sees DNS, TLS, CDN, your API and the page itself<br>misses: users who never loaded the script', tone: 'accent' }] },
+    { label: 'Edge', arrow: 'HTTP', nodes: [{ title: 'Load balancer', sub: 'sees requests that reached you, even when no server answered<br>misses: the page breaking after a 200', tone: 'info' }] },
+    { label: 'Service', arrow: '', nodes: [{ title: 'Server metrics', sub: 'cheapest, finest labels: route, status, version<br>misses: requests that never got here', tone: 'ok' }] },
+  ]}
+/>
+
+- **Server-side metrics** are where most teams start, and the only place with the labels to break an SLI down by route or version. Their blind spot is anything that fails before the request reaches the process: a crashed pod, a full connection queue, a broken load balancer rule. A server that is down reports a perfect SLI.
+- **The load balancer** sees those: it counts a `502` when no backend answered. It still cannot see a page that loaded and then broke.
+- **Synthetic probes** run your user journey on a schedule from outside. They catch outages at 3 a.m. when there is no traffic, but they test the paths you scripted, from places real users are not.
+- **The client** sees what users see: network, CDN, your API, and the JavaScript or app code that uses the answer. That is the RUM view, and it deserves its own section.
+
+## The user's view: sessions as an SLI
+
+A request SLI says one call worked. A user does not experience calls. They experience a visit: open the app, search, add to cart, pay. If the payment call works and the page then throws while rendering the receipt, every server SLI is green and the user is not.
+
+Session-based SLIs measure that. ouo11y gives every [session](/docs/concepts/sessions/) one status, the worst thing that happened in it: **crashed** if there was a fatal exception, **errored** if there was a handled exception or a failed request (network failure or `5xx`), **healthy** otherwise. The share of healthy sessions, per platform and per release (`service.version`), is a ready-made SLI:
+
+> SLI = healthy sessions ÷ sessions that started
+
+It has properties a server SLI lacks:
+
+- **It is per release by construction.** A bad build shows up as its own row as soon as its first sessions arrive, which makes it a strong canary signal and lets you hold a rollout on it.
+- **It covers the client.** Crashes on one Android version, a JavaScript error after a dependency bump, an API that answers 200 with a body the app cannot parse: all of them make sessions errored or crashed, none of them move a server metric.
+- **It is the unit users feel.** "One visit in 200 goes wrong" is a sentence a product manager can act on.
+
+And it has traps. Know them before you set a target:
+
+- **Sessions are not equal.** A five-second bounce and a forty-minute shopping session count the same. A long session has more chances to go wrong, so the SLI drifts when usage patterns change, with no change in quality.
+- **You only hear from clients that can talk.** If your JavaScript fails to load, or the app crashes before the SDK starts, there may be no session at all. Pair the session SLI with a server or load balancer SLI so a total outage cannot look like silence.
+- **Not every error is yours.** Errored includes failed requests caused by the user's network: a train going into a tunnel. Expect a floor of errored sessions you cannot remove, and set the target above it, or define valid events to leave out requests that never left the device.
+- **Results arrive late.** A session's status is known when it ends, and a mobile crash may only be reported on the next launch. Alert windows shorter than a typical session see a partial picture.
+- **Small releases are noisy.** A hotfix with 300 sessions moves by a third of a percent per bad session. Wait for enough sessions before you compare releases, or alert on the whole platform and use per-release numbers for diagnosis.
+- **Sampling and blockers change the denominator.** If some sessions are not sent (sampling, ad blockers, consent), make sure the ones that are sent are not biased toward healthy ones.
+
+<Note type="caution" title="Today, the healthy share lives in ouo11y, not in Prometheus">
+ouo11y shows the share of each status in its Grafana app and from the rum-api endpoint `GET /v1/stats/health`. It does not export session counts as Prometheus counters, so the Sloth rules in [part 4](/blog/slo-hands-on-sloth-prometheus/) cannot read it directly. To run burn-rate alerts on sessions you would need counters of ended sessions by status, for example produced from the `session.end` events in the collector. We have not built or tested that here.
+</Note>
+
+## A starting set for a shop
+
+For a small online shop with a web frontend and an API, we would start with three SLIs and no more:
+
+| SLI | Good | Valid | Measured at | Target, 28 days |
+|---|---|---|---|---|
+| Checkout availability | not `5xx`, not timed out | `POST /checkout`, not from load tests | load balancer | 99.5% |
+| Checkout latency | done in 1 s or less | same | server histogram, `le="1"` bucket | 99% |
+| Healthy web sessions | no crash, no error | sessions that started | browser (RUM) | 99%, per release for canaries |
+
+One availability and one latency SLO on the flow that makes money, and one user-side SLO that catches what the others cannot. [Part 3](/blog/slo-burn-rate-alerts/) turns SLOs like these into alerts that page only when the budget is really at risk.
