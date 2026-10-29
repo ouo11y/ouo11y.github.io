@@ -1,0 +1,29 @@
+---
+import Base from '../../../layouts/Base.astro';
+import PostCard from '../../../components/PostCard.astro';
+import { listPosts, seriesIn } from '../../../lib/site';
+
+export async function getStaticPaths() {
+  const series = seriesIn(await listPosts('blog'));
+  return series.map((s) => ({ params: { slug: s.slug }, props: { series: s } }));
+}
+const { series } = Astro.props;
+const first = series.posts[0];
+---
+<Base title={series.title} description={`${series.title}: a ${series.posts.length}-part series on the ouo11y blog.`}>
+  <section>
+    <div class="wrap narrow">
+      <p class="eyebrow"><a href="/blog/">Blog</a> · series</p>
+      <h1>{series.title}</h1>
+      <p class="lede">{series.posts.length} {series.posts.length === 1 ? 'part' : 'parts'}. Start with part 1; each part builds on the one before.</p>
+      {first && <p><a class="btn primary" href={`/blog/${first.id}/`}>Start with part 1 →</a></p>}
+      <ol class="parts">
+        {series.posts.map((p) => <li><PostCard section="blog" entry={p} /></li>)}
+      </ol>
+    </div>
+  </section>
+</Base>
+
+<style>
+  .parts { list-style: none; padding: 0; margin: 32px 0 0; display: grid; gap: 14px; }
+</style>

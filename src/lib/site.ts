@@ -37,3 +37,23 @@ export async function listPosts(section: Section): Promise<CollectionEntry<Secti
 
 export const fmtDate = (d: Date) =>
   d.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' });
+
+export const slugify = (s: string) =>
+  s.toLowerCase().normalize('NFKD').replace(/[^\w\s-]/g, '').trim().replace(/[\s_]+/g, '-').replace(/-+/g, '-');
+
+// Minutes at 230 words a minute, code and MDX imports included in the count.
+export const readingTime = (body = '') => Math.max(1, Math.round(body.split(/\s+/).filter(Boolean).length / 230));
+
+export interface Series { title: string; slug: string; posts: CollectionEntry<Section>[]; }
+
+export function seriesIn(entries: CollectionEntry<Section>[]): Series[] {
+  const map = new Map<string, Series>();
+  for (const e of entries) {
+    if (!e.data.series) continue;
+    const slug = slugify(e.data.series);
+    if (!map.has(slug)) map.set(slug, { title: e.data.series, slug, posts: [] });
+    map.get(slug)!.posts.push(e);
+  }
+  for (const s of map.values()) s.posts.sort((a, b) => (a.data.part ?? 0) - (b.data.part ?? 0) || a.data.date.valueOf() - b.data.date.valueOf());
+  return [...map.values()];
+}

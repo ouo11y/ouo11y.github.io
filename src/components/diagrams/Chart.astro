@@ -1,0 +1,102 @@
+---
+// A line or area chart as inline SVG, drawn at build time, with a hover/touch readout (a little JS).
+// <Chart title="Error budget left" x={{ label: 'day', values: [0, 7, 14, 21, 28] }}
+//   series={[{ name: 'budget %', values: [100, 82, 61, 40, 12], tone: 'accent', area: true }]}
+//   y={{ label: '%', min: 0, max: 100 }} lines={[{ at: 25, label: 'page the team', tone: 'bad' }]} />
+import '../../styles/diagram.css';
+
+type Tone = 'accent' | 'ok' | 'warn' | 'bad' | 'info';
+interface Series { name: string; values: number[]; tone?: Tone; area?: boolean; dashed?: boolean; }
+interface Line { at: number; label: string; tone?: Tone; }
+interface Props {
+  title?: string; caption?: string;
+  x: { label?: string; values: (number | string)[] };
+  y?: { label?: string; min?: number; max?: number; format?: 'int' | 'pct' | 'dec' };
+  series: Series[]; lines?: Line[]; height?: number;
+}
+const { title, caption, x, y = {}, series, lines = [], height = 260 } = Astro.props;
+const W = 720, H = height, L = 52, R = 16, T = y.label ? 28 : 16, B = 40;
+const all = series.flatMap((s) => s.values).concat(lines.map((l) => l.at));
+const ymin = y.min ?? Math.min(0, ...all);
+const ymax = y.max ?? Math.max(...all) * 1.08;
+const n = x.values.length;
+const px = (i: number) => L + (n === 1 ? 0 : (i / (n - 1)) * (W - L - R));
+const py = (v: number) => T + (1 - (v - ymin) / (ymax - ymin || 1)) * (H - T - B);
+const fmt = (v: number) => y.format === 'pct' ? `${+v.toFixed(2)}%` : y.format === 'int' ? `${Math.round(v)}` : `${+v.toFixed(3)}`;
+const yticks = Array.from({ length: 5 }, (_, i) => ymin + ((ymax - ymin) / 4) * i);
+const xstep = Math.max(1, Math.ceil(n / 8));
+const path = (vals: number[]) => vals.map((v, i) => `${i ? 'L' : 'M'}${px(i).toFixed(1)},${py(v).toFixed(1)}`).join('');
+const data = JSON.stringify({ x: x.values, series: series.map((s) => ({ name: s.name, values: s.values })), fmt: y.format ?? 'dec' });
+---
+<figure class="dg chart not-content" data-chart={data}>
+  {title && <div class="ch-title">{title}</div>}
+  <div class="ch-wrap">
+    <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={title ?? caption}>
+      {yticks.map((t) => (
+        <g class="grid"><line x1={L} x2={W - R} y1={py(t)} y2={py(t)} /><text x={L - 8} y={py(t) + 4} text-anchor="end">{fmt(t)}</text></g>
+      ))}
+      {x.values.map((v, i) => i % xstep === 0 && <text class="xt" x={px(i)} y={H - B + 18} text-anchor="middle">{v}</text>)}
+      {x.label && <text class="xl" x={(L + W - R) / 2} y={H - 4} text-anchor="middle">{x.label}</text>}
+      {y.label && <text class="xl" x={L - 8} y={12} text-anchor="end">{y.label}</text>}
+      {lines.map((l) => (
+        <g class={`ref tone-${l.tone ?? 'warn'}`}><line x1={L} x2={W - R} y1={py(l.at)} y2={py(l.at)} /><text x={W - R - 4} y={py(l.at) - 6} text-anchor="end">{l.label}</text></g>
+      ))}
+      {series.map((s) => (
+        <g class={`s tone-${s.tone ?? 'accent'}`}>
+          {s.area && <path class="area" d={`${path(s.values)}L${px(s.values.length - 1)},${py(ymin)}L${px(0)},${py(ymin)}Z`} />}
+          <path class:list={['line', { dashed: s.dashed }]} d={path(s.values)} />
+        </g>
+      ))}
+      <line class="cursor" x1="0" x2="0" y1={T} y2={H - B} visibility="hidden" />
+      <rect class="hit" x={L} y={T} width={W - L - R} height={H - T - B} fill="transparent" />
+    </svg>
+    <div class="readout" hidden></div>
+  </div>
+  {series.length > 1 && <div class="legend">{series.map((s) => <span class={`tone-${s.tone ?? 'accent'}`}><i />{s.name}</span>)}</div>}
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+  for (const fig of document.querySelectorAll<HTMLElement>('[data-chart]')) {
+    const d = JSON.parse(fig.dataset.chart!);
+    const svg = fig.querySelector('svg')!;
+    const hit = fig.querySelector<SVGRectElement>('.hit')!;
+    const cursor = fig.querySelector<SVGLineElement>('.cursor')!;
+    const out = fig.querySelector<HTMLElement>('.readout')!;
+    const n = d.x.length;
+    const fmt = (v: number) => d.fmt === 'pct' ? `${+v.toFixed(3)}%` : d.fmt === 'int' ? `${Math.round(v)}` : `${+v.toFixed(4)}`;
+    const move = (clientX: number) => {
+      const box = svg.getBoundingClientRect();
+      const vb = svg.viewBox.baseVal;
+      const sx = ((clientX - box.left) / box.width) * vb.width;
+      const x0 = hit.x.baseVal.value, w = hit.width.baseVal.value;
+      const i = Math.max(0, Math.min(n - 1, Math.round(((sx - x0) / w) * (n - 1))));
+      const cx = x0 + (n === 1 ? 0 : (i / (n - 1)) * w);
+      cursor.setAttribute('x1', String(cx)); cursor.setAttribute('x2', String(cx)); cursor.setAttribute('visibility', 'visible');
+      out.hidden = false;
+      out.innerHTML = `<b>${d.x[i]}</b>` + d.series.map((s: { name: string; values: number[] }) => `<span>${s.name}: ${fmt(s.values[i])}</span>`).join('');
+      out.style.left = `${(cx / vb.width) * 100}%`;
+    };
+    hit.addEventListener('pointermove', (e) => move(e.clientX));
+    hit.addEventListener('pointerdown', (e) => move(e.clientX));
+    hit.addEventListener('pointerleave', () => { cursor.setAttribute('visibility', 'hidden'); out.hidden = true; });
+  }
+</script>
+
+<style>
+  .ch-title { font-weight: 700; margin-bottom: 8px; }
+  .ch-wrap { position: relative; }
+  svg { width: 100%; height: auto; display: block; overflow: visible; touch-action: pan-y; }
+  .grid line { stroke: var(--dg-line); stroke-width: 1; }
+  text { font-size: 12px; fill: var(--dg-ink-3); }
+  .xl { font-size: 12px; fill: var(--dg-ink-2); }
+  .line { fill: none; stroke: var(--tone); stroke-width: 2.5; stroke-linejoin: round; stroke-linecap: round; }
+  .line.dashed { stroke-dasharray: 6 5; }
+  .area { fill: color-mix(in srgb, var(--tone) 16%, transparent); }
+  .ref line { stroke: var(--tone); stroke-dasharray: 4 4; stroke-width: 1.5; }
+  .ref text { fill: var(--tone); font-weight: 600; }
+  .cursor { stroke: var(--dg-ink-3); stroke-width: 1; }
+  .readout { position: absolute; top: 0; transform: translateX(-50%); display: grid; gap: 2px; padding: 6px 10px; border-radius: 8px; background: var(--dg-node); border: 1px solid var(--dg-line); font-size: 12px; pointer-events: none; white-space: nowrap; box-shadow: 0 4px 16px rgba(0,0,0,.15); }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px; font-size: 13px; color: var(--dg-ink-2); }
+  .legend i { display: inline-block; width: 12px; height: 3px; border-radius: 2px; background: var(--tone); margin-right: 6px; vertical-align: middle; }
+</style>

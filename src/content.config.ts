@@ -12,6 +12,10 @@ const post = z.object({
   authors: z.array(z.string()).default(['ouo11y team']),
   tags: z.array(z.string()).default([]),
   draft: z.boolean().default(false),
+  // A series groups posts that build on each other: same `series` title, `part` 1, 2, 3...
+  series: z.string().optional(),
+  part: z.number().int().positive().optional(),
+  updated: z.coerce.date().optional(),
 });
 
 const posts = (dir: string) =>

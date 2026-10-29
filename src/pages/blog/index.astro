@@ -1,4 +1,104 @@
 ---
-import SectionIndex from '../../layouts/SectionIndex.astro';
+import Base from '../../layouts/Base.astro';
+import PostCard from '../../components/PostCard.astro';
+import { listPosts, sections, seriesIn } from '../../lib/site';
+
+const posts = await listPosts('blog');
+const series = seriesIn(posts);
+const [featured, ...rest] = posts;
+const tags = [...new Set(posts.flatMap((p) => p.data.tags))].sort();
 ---
-<SectionIndex section="blog" />
+<Base title="Blog" description={sections.blog.blurb}>
+  <section class="blog-head">
+    <div class="wrap">
+      <p class="eyebrow">ouo11y blog</p>
+      <h1>Observability, <em>hands-on</em>.</h1>
+      <p class="lede">{sections.blog.blurb}</p>
+      <p class="meta">Every post that shows a command was run before it was published. Follow with <a href="/blog/rss.xml">RSS</a>.</p>
+    </div>
+  </section>
+
+  {featured && (
+    <section class="tight">
+      <div class="wrap"><PostCard section="blog" entry={featured} big /></div>
+    </section>
+  )}
+
+  {series.length > 0 && (
+    <section class="tight">
+      <div class="wrap">
+        <h2 class="sub">Series</h2>
+        <div class="series-grid">
+          {series.map((s) => (
+            <a class="series-card" href={`/blog/series/${s.slug}/`}>
+              <b>{s.title}</b>
+              <span>{s.posts.length} {s.posts.length === 1 ? 'part' : 'parts'}</span>
+              <ol>{s.posts.slice(0, 4).map((p) => <li>{p.data.title}</li>)}</ol>
+            </a>
+          ))}
+        </div>
+      </div>
+    </section>
+  )}
+
+  <section class="tight">
+    <div class="wrap">
+      <div class="all-head">
+        <h2 class="sub">All posts</h2>
+        {tags.length > 1 && (
+          <div class="filters" role="group" aria-label="Filter by tag">
+            <button type="button" class="on" data-tag="">All</button>
+            {tags.map((t) => <button type="button" data-tag={t}>{t}</button>)}
+          </div>
+        )}
+      </div>
+      <div class="post-grid" id="posts">
+        {rest.map((e) => <PostCard section="blog" entry={e} />)}
+      </div>
+      <p class="meta empty" hidden>No posts with that tag yet.</p>
+    </div>
+  </section>
+</Base>
+
+<script>
+  const buttons = [...document.querySelectorAll<HTMLButtonElement>('.filters button')];
+  const cards = [...document.querySelectorAll<HTMLElement>('#posts .pc')];
+  const empty = document.querySelector<HTMLElement>('.empty');
+  function apply(tag: string) {
+    buttons.forEach((b) => b.classList.toggle('on', b.dataset.tag === tag));
+    let shown = 0;
+    for (const c of cards) {
+      const hit = !tag || (c.dataset.tags ?? '').split('|').includes(tag);
+      c.hidden = !hit;
+      if (hit) shown++;
+    }
+    if (empty) empty.hidden = shown > 0;
+  }
+  buttons.forEach((b) => b.addEventListener('click', () => {
+    const tag = b.dataset.tag ?? '';
+    apply(tag);
+    const url = new URL(location.href);
+    tag ? url.searchParams.set('tag', tag) : url.searchParams.delete('tag');
+    history.replaceState(null, '', url);
+  }));
+  const initial = new URL(location.href).searchParams.get('tag');
+  if (initial) apply(initial);
+</script>
+
+<style>
+  .blog-head { padding: 72px 0 32px; }
+  .blog-head h1 { margin-top: 8px; }
+  section.tight { padding: 16px 0 32px; }
+  .sub { font-size: 22px; margin: 0 0 16px; }
+  .series-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+  .series-card { display: grid; gap: 6px; padding: 18px 20px; border-radius: 14px; border: 1px solid var(--line); background: linear-gradient(135deg, var(--accent-soft), var(--bg-2) 70%); color: var(--ink); }
+  .series-card:hover { text-decoration: none; border-color: var(--accent); }
+  .series-card span { font-size: 13px; color: var(--ink-3); }
+  .series-card ol { margin: 4px 0 0; padding-left: 18px; color: var(--ink-2); font-size: 14px; display: grid; gap: 2px; }
+  .all-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 4px; }
+  .filters { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
+  .filters button { font: inherit; font-size: 13px; padding: 4px 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--bg-2); color: var(--ink-2); cursor: pointer; }
+  .filters button.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+  .post-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+  .post-grid [hidden] { display: none; }
+</style>
