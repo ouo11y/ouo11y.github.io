@@ -1,0 +1,167 @@
+---
+title: "The math of observability, part 3: sampling, rare errors and adjusted counts"
+description: What a 1% trace sample keeps and loses, how sure you can be of an error rate measured from a sample, and how OpenTelemetry writes the sampling probability into tracestate so counts stay right. With a simulator, a threshold calculator, and a collector we ran.
+date: 2026-10-31
+tags: [math, sampling, tracing, opentelemetry, collector, hands-on]
+series: "The math of observability"
+part: 3
+---
+import MathSampling from '../../components/diagrams/MathSampling.astro';
+import MathThreshold from '../../components/diagrams/MathThreshold.astro';
+import MathFormula from '../../components/diagrams/MathFormula.astro';
+import Note from '../../components/Note.astro';
+
+[Part 2](/blog/math-percentiles-and-histograms/) was about metrics, where every request is counted and only the detail is lost. Traces are the opposite: each one keeps every detail, so keeping all of them is expensive, and most teams keep a sample. This part is about what a sample can tell you, and what it cannot.
+
+## A short history of throwing traces away
+
+Sampling is as old as distributed tracing. Google's [Dapper paper](https://research.google/pubs/dapper-a-large-scale-distributed-systems-tracing-infrastructure/) (Sigelman et al., 2010) describes how the first production version traced every service at Google with one uniform probability, on average one trace in every 1,024, and why: in high-volume services anything interesting happens thousands of times, so a small sample still catches it, at almost no overhead. The paper also notes the limit: low-volume services lose too much, which pushed Google toward adaptive rates. Two ideas from that era are still the ones we use:
+
+- **Decide once, at the root, and propagate the decision.** If every service decided on its own, you would keep fragments of traces. The decision travels with the trace context, in the `sampled` flag of the W3C `traceparent` header.
+- **Decide from the trace ID.** If the decision is a function of the trace ID, any service that sees the ID makes the same decision. This is *consistent* sampling.
+
+OpenTelemetry took both and added the piece Dapper's design did not need inside one company: writing the probability down, so that a backend fed by many SDKs and collectors can still count. The [W3C Trace Context Level 2](https://www.w3.org/TR/trace-context-2/) draft adds a `random` flag that promises the last 7 bytes of the trace ID are random, and OpenTelemetry's [probability sampling spec](https://opentelemetry.io/docs/specs/otel/trace/tracestate-probability-sampling/) (status: Development) builds on it. We come back to both below.
+
+## Head and tail sampling
+
+**Head sampling** decides when the trace starts, before anyone knows whether it will be slow or fail. It is cheap (dropped spans are never even created) and it is fair: every trace has the same chance. That fairness is also its problem: errors are kept at the same rate as everything else.
+
+**Tail sampling** decides after the trace is complete, so it can keep every trace with an error or a slow span and a small share of the rest. It needs every span of a trace in one place: in the OpenTelemetry Collector that means the [`tail_sampling` processor](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/processor/tailsamplingprocessor), with a [`loadbalancing` exporter](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/exporter/loadbalancingexporter) in front that routes spans by trace ID when there is more than one collector. It also needs memory for every trace while it waits (`decision_wait`, 30 seconds by default) and it cannot sample away the cost of creating and sending the spans, only the cost of storing them.
+
+## What a 1% head sample keeps
+
+Each trace is kept with probability <var>p</var>, independently. Out of <var>k</var> traces with an error, the number kept follows a binomial distribution with mean <var>k</var> × <var>p</var>, and the chance of keeping none of them is:
+
+<MathFormula label="P of keeping no error trace equals one minus p, to the power k">
+  P(no error trace kept) = (1 − <var>p</var>)<sup><var>k</var></sup>
+</MathFormula>
+
+A service with 60,000 traces an hour and a 0.2% error rate has 120 failing traces an hour. A 1% sample keeps 1.2 of them on average, and (0.99)<sup>120</sup> = 30% of hours keep **none**. An error that happens 10 times a day has a (0.99)<sup>10</sup> = 90% chance of leaving no trace at all. If you want to debug rare errors from traces, head sampling at 1% is the wrong tool: use tail sampling, or rely on metrics and logs for the rare case.
+
+Try other volumes and rates. The lower half shows 24 hours, each estimated from that hour's sample:
+
+<MathSampling perHour={60000} errIdx={4} p={0.01} caption="Each row is one hour: errors kept out of traces kept, the error rate estimated from them (dot) and its 95% Wilson interval (line). The dashed line is the true rate." />
+
+At the defaults, most hourly estimates are 0, 0.17% or 0.33%, and the intervals are wider than the rate itself. Change the sample to 10% and the estimates cluster around the truth. Change the volume to 6,000,000 an hour and even 1% gives tight intervals. The rule behind it:
+
+## How sure is a sampled rate?
+
+The precision of an estimated rate depends on the **number of events you kept**, not on the share you sampled. If you kept <var>n</var> traces and <var>k</var> of them failed, the usual 95% interval for the true rate is the Wilson score interval ([Wilson, 1927](https://doi.org/10.1080/01621459.1927.10502953)), which behaves well even when <var>k</var> is 0 or 1:
+
+<MathFormula label="Wilson interval: center p hat plus z squared over 2n, plus or minus z times the square root of p hat times one minus p hat over n plus z squared over 4 n squared, all divided by 1 plus z squared over n">
+  ( <var>p̂</var> + <var>z</var>²/2<var>n</var> ± <var>z</var>√(<var>p̂</var>(1 − <var>p̂</var>)/<var>n</var> + <var>z</var>²/4<var>n</var>²) ) / (1 + <var>z</var>²/<var>n</var>), &nbsp; <var>p̂</var> = <var>k</var>/<var>n</var>, <var>z</var> = 1.96
+</MathFormula>
+
+1 error in 600 kept traces gives 0.17%, with an interval from 0.03% to 0.94%: a factor of 30. 120 errors in 60,000 gives 0.17% to 0.24%. For a rare event, the relative width is roughly ±1.96/√<var>k</var>, so to know a rate within ±10% you need about (1.96 / 0.1)² = 384 kept events, and within ±20% about 96. That is a useful number to keep in mind when someone asks for "the error rate of this endpoint for this customer" from a sampled trace store.
+
+<Note type="tip" title="Rates come from metrics">
+Compute request and error rates from metrics, which count every request before any sampling (the OpenTelemetry SDK records `http.server.request.duration` for every request, sampled or not). Use traces to explain the rate, not to measure it. Our [SLO series](/blog/series/slos-from-first-principles/) builds its SLIs the same way.
+</Note>
+
+## Adjusted counts: each kept span stands for 1/p
+
+If a trace was kept with probability <var>p</var>, it stands for 1/<var>p</var> traces. Counting kept traces weighted by 1/<var>p</var> gives an unbiased estimate of the total, the classic [Horvitz–Thompson estimator](https://doi.org/10.1080/01621459.1952.10483446) (1952). OpenTelemetry calls the weight the **adjusted count**.
+
+This only works if the backend knows <var>p</var> for every span, and that is where mixed sampling goes wrong. A common tail-sampling policy is "keep every error, and 1% of the rest". With 60,000 traces an hour and 120 errors, you store 120 errors and about 599 others. If the backend counts stored traces as equal, the error rate it shows is 120 / 719 = 17%, not 0.2%: errors have an adjusted count of 1, the rest of 100.
+
+We ran this policy on OpenTelemetry Collector Contrib 0.164.0 with `telemetrygen`: 20 traces with an error and a few thousand without. The collector kept all 20 error traces and 10 of the others, so two thirds of the stored traces were errors. The spans it wrote had an empty `tracestate`: in our run the tail sampler recorded no probability, so a backend has no way to reweight them.
+
+```yaml
+processors:
+  tail_sampling:
+    decision_wait: 5s
+    policies:
+      - name: keep-errors
+        type: status_code
+        status_code:
+          status_codes: [ERROR]
+      - name: one-percent-of-the-rest
+        type: probabilistic
+        probabilistic:
+          sampling_percentage: 1
+```
+
+The lesson is not "do not tail sample"; it is "do not compute rates from what a tail sampler kept".
+
+## How OpenTelemetry writes the probability down
+
+The probability sampling spec makes consistent sampling and adjusted counts work across SDKs and collectors with two numbers, both 56 bits:
+
+- **R**, the randomness: the last 56 bits (14 hex digits) of the trace ID when the W3C `random` flag says they are random, or an explicit value in `tracestate` as `ot=rv:…`.
+- **T**, the rejection threshold: T = (1 − <var>p</var>) × 2<sup>56</sup>. A span is kept when R ≥ T.
+
+The threshold travels in `tracestate` as `ot=th:` followed by T in hex with trailing zeros dropped: 50% is `th:8`, 25% is `th:c`, 10% is `th:e666` at the spec's recommended 4 digits of precision. Because the rule is R ≥ T, a stage with a higher threshold keeps a subset of what a stage with a lower one kept, so an SDK at 50% and a collector at 10% downstream compose cleanly, and the final `th` gives the final probability. The adjusted count is 2<sup>56</sup> / (2<sup>56</sup> − T).
+
+<MathThreshold p={10} traceId="4bf92f3577b34da6a3ce929d0e0e4736" caption="T rounded to 4 significant hex digits of the kept share, as the spec recommends. The default trace ID is the example from the W3C Trace Context spec." />
+
+The rounding is visible: 10% becomes `e666`, which keeps 10.0006% of traces, so the adjusted count is 9.99939 rather than 10. Try 1%: the spec's 4-digit precision counts after the leading `f`s, giving `fd70a`.
+
+### We ran it
+
+The Collector's `probabilistic_sampler` implements this in `proportional` mode:
+
+```yaml
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+processors:
+  probabilistic_sampler:
+    mode: proportional
+    sampling_percentage: 10
+exporters:
+  file/sampled:
+    path: /out/sampled.json
+  file/all:
+    path: /out/all.json
+service:
+  pipelines:
+    traces/sampled:
+      receivers: [otlp]
+      processors: [probabilistic_sampler]
+      exporters: [file/sampled]
+    traces/all:
+      receivers: [otlp]
+      exporters: [file/all]
+```
+
+```bash
+mkdir -m 777 out
+```
+
+```bash
+docker network create sampling
+```
+
+```bash
+docker run -d --rm --name otelcol --network sampling -v "$PWD/config.yaml:/etc/otelcol-contrib/config.yaml" -v "$PWD/out:/out" otel/opentelemetry-collector-contrib:0.164.0
+```
+
+```bash
+docker run --rm --network sampling ghcr.io/open-telemetry/opentelemetry-collector-contrib/telemetrygen:latest traces --otlp-endpoint otelcol:4317 --otlp-insecure --traces 10000 --rate 0 --child-spans 0
+```
+
+Save the YAML as `config.yaml`; the `out` folder is writable by the collector's non-root user. The second pipeline stores everything so we can compare. In our run the collector received 1,830 traces (`--rate 0` sends as fast as it can, and not all 10,000 arrived before the generator stopped; the comparison holds for whatever arrives). Of those, 167 were kept, 9.1%, against an expected 183 ± 13. Every kept span carried `tracestate: ot=th:e666`, and the kept set was **exactly** the set of trace IDs whose last 14 hex digits are ≥ `e666…`, which we checked with a short script over `all.json`. Weighting the 167 by the adjusted count gives an estimate of 1,670 traces against the real 1,830, inside the interval the Wilson formula gives for 167 in 1,830 (7.9% to 10.5%).
+
+## What to take away
+
+- Head sampling keeps rare errors at the same rate as everything else. At 1%, an error that happens ten times a day usually leaves no trace.
+- The precision of a sampled rate depends on how many events you kept: about 384 for ±10%.
+- Every kept span stands for 1/<var>p</var> spans. A backend can count only if it knows <var>p</var>; OpenTelemetry writes it in `tracestate` as `ot=th`.
+- Mixing policies (all errors, some of the rest) breaks naive counting. Take rates from metrics.
+
+[Part 4](/blog/math-queues-and-littles-law/) is about queues: Little's law, why latency explodes as utilization approaches 100%, and a simulator to watch it happen.
+
+## How we checked the numbers
+
+The probabilities, intervals and adjusted counts were computed with the same functions the widgets use, in Node 24. The `th` encoding reproduces every example we checked from the spec (50%, 25%, 10%, 1/3 and 1%). We checked that the Wilson interval covers the true rate about 95% of the time in this setting by simulation (96.8% over 20,000 simulated hours at 60,000 traces, 0.2% errors, 1%). The collector runs above used OpenTelemetry Collector Contrib 0.164.0 and the `telemetrygen` image from the same repository, pulled on 2026-10-29.
+
+## Sources
+
+- B. H. Sigelman et al., "[Dapper, a Large-Scale Distributed Systems Tracing Infrastructure](https://research.google/pubs/dapper-a-large-scale-distributed-systems-tracing-infrastructure/)", Google Technical Report, 2010.
+- W3C, [Trace Context Level 2](https://www.w3.org/TR/trace-context-2/) (the `random` trace flag).
+- OpenTelemetry, [TraceState: Probability Sampling](https://opentelemetry.io/docs/specs/otel/trace/tracestate-probability-sampling/) (Development).
+- OpenTelemetry Collector Contrib, [`probabilisticsamplerprocessor`](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/processor/probabilisticsamplerprocessor), [`tailsamplingprocessor`](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/processor/tailsamplingprocessor), [`loadbalancingexporter`](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/exporter/loadbalancingexporter).
+- E. B. Wilson, "Probable Inference, the Law of Succession, and Statistical Inference", *Journal of the American Statistical Association* 22(158), 1927.
+- D. G. Horvitz, D. J. Thompson, "A Generalization of Sampling Without Replacement from a Finite Universe", *Journal of the American Statistical Association* 47(260), 1952.

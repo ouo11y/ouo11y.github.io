@@ -1,0 +1,148 @@
+---
+title: "The math of observability, part 4: queues, Little's law and the hockey stick"
+description: L = λW, the one law of queues that needs no assumptions, and why latency explodes as utilization approaches 100%. With a queue simulator you can run in the browser.
+date: 2026-11-01
+tags: [math, queues, latency, capacity, sre]
+series: "The math of observability"
+part: 4
+---
+import MathQueue from '../../components/diagrams/MathQueue.astro';
+import MathFormula from '../../components/diagrams/MathFormula.astro';
+import Note from '../../components/Note.astro';
+
+Every service is a queue. Requests arrive, wait for a worker, a connection or a CPU, get served, and leave. The math of queues explains three things on-call engineers see all the time: why in-flight requests, rate and latency move together, why a service at 90% CPU is so much slower than one at 70%, and why adding one more server sometimes fixes everything.
+
+## From telephone exchanges to web servers
+
+Queueing theory was born in a telephone company. Agner Krarup Erlang, working for the Copenhagen Telephone Company, asked how many lines an exchange needs so that few callers find them all busy. His 1917 paper gave the formulas still named after him: Erlang B for calls that are lost, Erlang C for calls that wait. In 1953 David Kendall gave the field its shorthand ([Annals of Mathematical Statistics 24(3)](https://doi.org/10.1214/aoms/1177728975)): M/M/1 is a queue with random (**M**arkovian) arrivals, random service times and **1** server; M/M/c has c servers.
+
+Two results from 1961 matter most for us. John Little proved that L = λW holds for almost any queue ([Operations Research 9(3)](https://doi.org/10.1287/opre.9.3.383)). John Kingman showed how waiting time behaves as a queue gets close to full ([Proc. Cambridge Philosophical Society 57(4)](https://doi.org/10.1017/S0305004100036094)).
+
+## Little's law
+
+<MathFormula label="L equals lambda times W">
+  <var>L</var> = <var>λ</var> × <var>W</var>
+</MathFormula>
+
+- <var>L</var>: the average number of requests in the system (waiting or being served);
+- <var>λ</var>: the average arrival rate;
+- <var>W</var>: the average time a request spends in the system.
+
+It holds for long-run averages of any stable system: any arrival pattern, any service-time distribution, any number of servers, any order of service. That generality is what makes it useful.
+
+**It sizes things.** At 200 requests per second and 50 ms mean latency, there are on average 200 × 0.05 = 10 requests in flight. A connection pool, a thread pool or a concurrency limit of 10 runs at 100% on average, which, as the next section shows, means long waits. Little's law gives you the average; leave room above it.
+
+**It checks your telemetry.** OpenTelemetry's HTTP semantic conventions define both `http.server.request.duration` (a histogram, so you have its rate and its mean) and `http.server.active_requests` (an up-down counter of requests in flight). Over the same window, the mean of active requests should be close to rate × mean duration. If it is not, something is not being measured: requests that time out before they are recorded, a proxy that queues in front of the server, or instrumentation that misses a route.
+
+**It turns one number into another.** If a queue reports its depth and its throughput, Little's law gives its mean wait without timing a single message: W = L / λ. That is how you estimate consumer lag in seconds from a Kafka lag in messages.
+
+<Note type="caution" title="Where Little's law needs care">
+All three are averages over the same window, and the system must be stable: arrivals must not outgrow capacity, or L and W grow without limit and there is no long-run average. Over short windows it is approximate because requests that started before the window or end after it are counted on one side only. And it says nothing about percentiles: it is a law of means.
+</Note>
+
+## Utilization and the hockey stick
+
+The **utilization** ρ is the share of time the servers are busy. With mean service time <var>S</var> and <var>c</var> servers:
+
+<MathFormula label="rho equals lambda times S over c">
+  <var>ρ</var> = <var>λ</var> × <var>S</var> / <var>c</var>
+</MathFormula>
+
+For the simplest queue, M/M/1, the mean time in the system is:
+
+<MathFormula label="W equals S over one minus rho">
+  <var>W</var> = <var>S</var> / (1 − <var>ρ</var>)
+</MathFormula>
+
+| utilization ρ | 50% | 70% | 80% | 90% | 95% | 99% |
+|---|---|---|---|---|---|---|
+| W / S, 1 server | 2.0 | 3.3 | 5.0 | 10 | 20 | 100 |
+| W / S, 4 servers | 1.09 | 1.36 | 1.75 | 2.97 | 5.5 | 25 |
+| W / S, 16 servers | 1.00 | 1.03 | 1.10 | 1.37 | 2.0 | 7.0 |
+
+Going from 80% to 90% busy doubles the latency of a single-server queue, and 90% to 95% doubles it again. That is the hockey stick, and it is why "we are only at 90% CPU" is not good news. The rows with more servers come from Erlang C: a pool of servers that share one queue absorbs bursts much better, so it can run hotter for the same latency. That is the math behind "one big pool beats many small ones".
+
+The tail is worse than the mean. In an M/M/1 queue served in order, the time in system is exponentially distributed, so its p99 is ln(100) ≈ 4.6 times its mean: with 100 ms of work and 90% utilization, the mean is 1 s and the p99 is 4.6 s.
+
+Kingman's approximation for a single server with any distributions shows what drives the curve:
+
+<MathFormula label="W q approximately equals rho over one minus rho, times c a squared plus c s squared over 2, times S" note="ca and cs: coefficients of variation (standard deviation / mean) of the time between arrivals and of the service time.">
+  <var>W</var><sub>q</sub> ≈ <var>ρ</var> / (1 − <var>ρ</var>) × (<var>c</var><sub>a</sub>² + <var>c</var><sub>s</sub>²) / 2 × <var>S</var>
+</MathFormula>
+
+The first factor is the hockey stick. The second is **variability**: random arrivals have <var>c</var><sub>a</sub> = 1; if every request took exactly the same time (<var>c</var><sub>s</sub> = 0), the wait would be half of what M/M/1 predicts. Bursty traffic and a few very slow requests both push the curve up. Smoothing arrivals (rate limits, jittered retries) and cutting the slow tail (timeouts, separate pools for heavy requests) lower it without adding capacity.
+
+## Watch a queue
+
+Pick a number of servers and a utilization, then press Play. Orange dots are requests waiting; filled squares are busy servers. The panel measures λ, W and L from the simulation; watch L and λ × W agree. "Run 100,000 requests" jumps ahead in simulated time so the averages settle.
+
+<MathQueue servers={1} rho={0.8} caption="M/M/c: random arrivals, exponential service times with a 100 ms mean, one shared queue, first come first served. The curve is the theory; the simulation is random, so short runs wander around it." />
+
+Things to try:
+
+- At 1 server and 80%, the queue comes and goes in bursts even though the server has 20% spare capacity. Move to 95% and watch the queue wander for seconds before it drains.
+- Keep 90% and switch from 1 to 4 servers. Same utilization, a third of the latency.
+- Whatever you set, L and λ × W agree. That is Little's law at work.
+
+## What to do with it on call
+
+- **Alert on saturation before it hurts.** If latency is fine at 70% and doubles from 80% to 90%, a CPU or pool-utilization alert at 80% gives you warning while the error budget is still intact. Burn-rate alerts on latency SLOs (see our [SLO series](/blog/series/slos-from-first-principles/)) catch it from the user's side.
+- **Autoscale on a target well below 100%.** A 60 to 70% target is not waste; it is the flat part of the curve.
+- **Watch queue depth and in-flight requests.** They react before latency does, and Little's law converts them into time.
+- **Fix variability, not only capacity.** Retries without jitter and a few huge requests make a queue behave as if it were busier than it is.
+
+That closes the series for now: nines and dependencies in [part 1](/blog/math-nines-and-uptime/), percentiles and histograms in [part 2](/blog/math-percentiles-and-histograms/), sampling in [part 3](/blog/math-sampling/), and queues here. If you want a part on cardinality (how labels multiply series and what that costs), tell us at hello@ouo11y.com.
+
+## Check the numbers yourself
+
+The table and the widget use the Erlang C formula; this script (Node 24, no packages) reproduces the table and simulates the queue to check both the theory and Little's law.
+
+```js
+// queues.mjs: run with `node queues.mjs`
+function erlangC(c, a) { // probability that an arrival waits, c servers, offered load a = lambda * S
+  let term = 1, sum = 1;
+  for (let k = 1; k < c; k++) { term *= a / k; sum += term; }
+  const top = (term * a) / c / (1 - a / c);
+  return top / (sum + top);
+}
+const wOverS = (c, rho) => 1 + erlangC(c, rho * c) / (c * (1 - rho));
+for (const c of [1, 4, 16]) console.log(c, [0.5, 0.7, 0.8, 0.9, 0.95, 0.99].map((r) => wOverS(c, r).toFixed(2)).join(' '));
+
+// simulate one M/M/c queue: S = 100 ms, 400,000 arrivals
+function simulate(c, rho, S = 0.1, N = 400000) {
+  const lam = (rho * c) / S, exp = (rate) => -Math.log(1 - Math.random()) / rate;
+  let now = 0, next = exp(lam), area = 0, arrivals = 0, done = 0, sumW = 0;
+  const busy = new Array(c).fill(Infinity), start = new Array(c).fill(0), queue = [], end = N / lam;
+  for (;;) {
+    const inSystem = queue.length + busy.filter((b) => b !== Infinity).length;
+    let k = 0;
+    for (let i = 1; i < c; i++) if (busy[i] < busy[k]) k = i;
+    const t = Math.min(next, busy[k], end);
+    area += inSystem * (t - now); now = t;
+    if (t === end) break;
+    if (t === busy[k]) {
+      done++; sumW += now - start[k];
+      if (queue.length) { start[k] = queue.shift(); busy[k] = now + exp(1 / S); } else busy[k] = Infinity;
+    } else {
+      arrivals++;
+      const free = busy.indexOf(Infinity);
+      if (free >= 0) { start[free] = now; busy[free] = now + exp(1 / S); } else queue.push(now);
+      next = now + exp(lam);
+    }
+  }
+  const L = area / now, lambda = arrivals / now, W = sumW / done;
+  console.log(`c=${c} rho=${rho}: W=${W.toFixed(3)} s (theory ${(wOverS(c, rho) * S).toFixed(3)}), L=${L.toFixed(2)}, lambda*W=${(lambda * W).toFixed(2)}`);
+}
+simulate(1, 0.8);
+simulate(4, 0.9);
+```
+
+In our runs the simulated W was within 2% of theory for one server at 80%, and within 8% for four servers at 90% (busy queues converge slowly, so even 400,000 requests leave noise), and the printed L and λ × W were identical every time.
+
+## Sources
+
+- A. K. Erlang, "Solution of some problems in the theory of probabilities of significance in automatic telephone exchanges", *Elektroteknikeren* 13, 1917; in English in E. Brockmeyer, H. L. Halstrøm, A. Jensen, *The Life and Works of A. K. Erlang*, Copenhagen Telephone Company, 1948.
+- D. G. Kendall, "[Stochastic Processes Occurring in the Theory of Queues and their Analysis by the Method of the Imbedded Markov Chain](https://doi.org/10.1214/aoms/1177728975)", *Annals of Mathematical Statistics* 24(3), 1953.
+- J. D. C. Little, "[A Proof for the Queuing Formula: L = λW](https://doi.org/10.1287/opre.9.3.383)", *Operations Research* 9(3), 1961.
+- J. F. C. Kingman, "[The single server queue in heavy traffic](https://doi.org/10.1017/S0305004100036094)", *Mathematical Proceedings of the Cambridge Philosophical Society* 57(4), 1961.
+- OpenTelemetry semantic conventions, [HTTP metrics](https://opentelemetry.io/docs/specs/semconv/http/http-metrics/) (`http.server.request.duration`, `http.server.active_requests`).

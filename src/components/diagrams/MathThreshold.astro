@@ -1,0 +1,80 @@
+---
+// OpenTelemetry probability sampling, by hand: a probability becomes a 56-bit rejection threshold
+// and a `th` value; a trace ID's last 56 bits decide keep or drop. Inputs (a little JS); without JS
+// the figure shows the props, computed at build time.
+// <MathThreshold p={10} traceId="4bf92f3577b34da6a3ce929d0e0e4736" />
+import '../../styles/diagram.css';
+import { probabilityOf, thresholdFor } from './MathLib';
+
+interface Props { p?: number; traceId?: string; caption?: string; }
+const { p = 10, traceId = '4bf92f3577b34da6a3ce929d0e0e4736', caption } = Astro.props;
+const th = thresholdFor(p / 100);
+const actual = probabilityOf(th)!;
+const R = traceId.slice(-14);
+const T = th.padEnd(14, '0');
+const keep = BigInt('0x' + R) >= BigInt('0x' + T);
+---
+<figure class="dg mth not-content" data-mth>
+  <div class="ctl">
+    <label>Sampling probability <span><input type="number" min="0.000001" max="100" step="any" value={p} data-in="p" /> %</span></label>
+    <label>Trace ID <input type="text" maxlength="32" spellcheck="false" autocomplete="off" value={traceId} data-in="t" /></label>
+  </div>
+  <dl class="steps" aria-live="polite">
+    <div><dt>Rejection threshold T = (1 − p) × 2<sup>56</sup></dt><dd><code data-o="T">0x{T}</code></dd></div>
+    <div><dt>Written in <code>tracestate</code> (4 digits of precision, trailing zeros dropped)</dt><dd><code>ot=th:<span data-o="th">{th}</span></code></dd></div>
+    <div><dt>Probability actually used, and adjusted count 1/p</dt><dd><span data-o="pr">{+(actual * 100).toPrecision(6)}%</span>, each kept span counts as <b data-o="adj">{+(1 / actual).toPrecision(6)}</b></dd></div>
+    <div><dt>Randomness R = last 56 bits of the trace ID</dt><dd><code>0x<span data-o="R">{R}</span></code></dd></div>
+    <div class="verdict"><dt>R ≥ T ?</dt><dd data-o="v" class={keep ? 'keep' : 'drop'}>{keep ? 'yes: keep' : 'no: drop'}</dd></div>
+  </dl>
+  <p class="bad" data-bad hidden></p>
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+  import { probabilityOf, thresholdFor } from './MathLib';
+  for (const fig of document.querySelectorAll<HTMLElement>('[data-mth]')) {
+    const pIn = fig.querySelector<HTMLInputElement>('[data-in="p"]')!;
+    const tIn = fig.querySelector<HTMLInputElement>('[data-in="t"]')!;
+    const bad = fig.querySelector<HTMLElement>('[data-bad]')!;
+    const set = (k: string, t: string) => { fig.querySelector(`[data-o="${k}"]`)!.textContent = t; };
+    const update = () => {
+      const p = Number(pIn.value) / 100, id = tIn.value.trim().toLowerCase();
+      const problems: string[] = [];
+      if (!(p > 0 && p <= 1)) problems.push('The probability must be above 0% and at most 100%.');
+      if (!/^[0-9a-f]{32}$/.test(id)) problems.push('A trace ID is 32 hex digits.');
+      bad.hidden = problems.length === 0;
+      bad.textContent = problems.join(' ');
+      if (!(p > 0 && p <= 1)) return;
+      const th = thresholdFor(p), T = th.padEnd(14, '0'), actual = probabilityOf(th)!;
+      set('T', `0x${T}`); set('th', th);
+      set('pr', `${+(actual * 100).toPrecision(6)}%`); set('adj', String(+(1 / actual).toPrecision(6)));
+      if (!/^[0-9a-f]{32}$/.test(id)) return;
+      const R = id.slice(-14), keep = BigInt('0x' + R) >= BigInt('0x' + T);
+      set('R', R);
+      const v = fig.querySelector<HTMLElement>('[data-o="v"]')!;
+      v.textContent = keep ? 'yes: keep' : 'no: drop';
+      v.className = keep ? 'keep' : 'drop';
+    };
+    pIn.addEventListener('input', update);
+    tIn.addEventListener('input', update);
+  }
+</script>
+
+<style>
+  .ctl { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 10px 20px; margin-bottom: 14px; }
+  .ctl label { display: grid; gap: 4px; font-size: 13px; font-weight: 600; min-width: 0; }
+  .ctl label span { display: flex; align-items: center; gap: 4px; }
+  .ctl input { font: inherit; font-weight: 400; width: 100%; min-width: 0; padding: 5px 8px; border: 1px solid var(--dg-line); border-radius: 6px; background: var(--dg-node); color: var(--dg-ink); }
+  .ctl input[type='text'] { font-family: var(--sl-font-mono, ui-monospace, monospace); font-size: 13px; }
+  .steps { margin: 0; display: grid; gap: 8px; }
+  .steps div { display: grid; gap: 2px; padding: 8px 12px; border-left: 3px solid var(--dg-line); }
+  .steps dt { font-size: 12px; color: var(--dg-ink-3); }
+  .steps dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .steps code { font-size: 14px; }
+  .verdict { border-left-color: var(--dg-accent) !important; }
+  .keep { color: var(--dg-ok); font-weight: 700; } .drop { color: var(--dg-bad); font-weight: 700; }
+  .bad { color: var(--dg-bad); margin: 8px 0 0; }
+  .mth { container-type: inline-size; }
+  @container (max-width: 480px) { .ctl { grid-template-columns: minmax(0, 1fr); } }
+  input:focus-visible { outline: 2px solid var(--dg-accent); outline-offset: 2px; }
+</style>
