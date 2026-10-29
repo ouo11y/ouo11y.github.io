@@ -1,0 +1,998 @@
+---
+title: "Kubernetes observability without a vendor, part 2: the collectors"
+description: A three-node kind cluster, the opentelemetry-kube-stack chart with the blueprint's presets, Prometheus, Loki, Tempo and Grafana, and an app with OpenTelemetry. Every file, every command, and the three things we had to fix.
+date: 2026-10-30
+tags: [kubernetes, opentelemetry, collector, hands-on]
+series: "Kubernetes observability without a vendor"
+part: 2
+---
+import Note from '../../components/Note.astro';
+import Flow from '../../components/diagrams/Flow.astro';
+import Sequence from '../../components/diagrams/Sequence.astro';
+import K8sLeaderGap from '../../components/diagrams/K8sLeaderGap.astro';
+import K8sMetricMap from '../../components/diagrams/K8sMetricMap.astro';
+
+[Part 1](/blog/k8s-without-a-vendor-1-blueprint/) described the OpenTelemetry Kubernetes blueprint. This part runs it. At the end you have a three-node cluster on your laptop whose node, pod and container metrics, logs, Kubernetes events and application traces all land in Prometheus, Loki and Tempo, with the same `k8s.*` names on every signal.
+
+We followed the blueprint and the chart's defaults first, looked at what came out, and found three problems. Each one shows up as a wrong label, an empty panel or an app with no traces, and none of them throws an error. The files below are the versions with the fixes, and each fix says what we saw before it.
+
+<Flow
+  caption="What you build. Every arrow is OTLP except the agent's reads from its own node."
+  columns={[
+    { label: 'Sources', arrow: 'reads', nodes: [
+      { title: 'shop-web, shop-api', sub: 'Node.js, auto-instrumented by the Operator' },
+      { title: 'kubelet, /proc, /var/log/pods', sub: 'on every node' },
+      { title: 'API server', sub: 'objects and events' },
+    ] },
+    { label: 'Collectors (namespace otel)', arrow: 'OTLP', nodes: [
+      { title: 'agent', sub: 'DaemonSet: kubelet_stats, host_metrics, file_log, otlp, prometheus', tone: 'accent' },
+      { title: 'cluster collector', sub: 'Deployment: k8s_cluster, k8s_objects', tone: 'accent' },
+    ] },
+    { label: 'Stores (namespace observability)', arrow: 'queries', nodes: [
+      { title: 'Prometheus 3', sub: 'metrics, OTLP at /api/v1/otlp', tone: 'ok' },
+      { title: 'Loki', sub: 'logs and events, OTLP at /otlp', tone: 'ok' },
+      { title: 'Tempo', sub: 'traces, OTLP gRPC', tone: 'ok' },
+    ] },
+    { label: 'UI', nodes: [{ title: 'Grafana', sub: 'localhost:3300', tone: 'info' }] },
+  ]}
+/>
+
+## Versions
+
+We ran everything below on 29 October 2026, from an empty Docker, on a MacBook with Apple silicon. Docker 29.3.1 had 10 CPUs and 19.5 GiB of memory. The whole stack used about 1.2 GiB in working set (about 860 MiB for Prometheus, Loki, Tempo and Grafana, about 300 MiB for the Operator and the four collectors); the three kind nodes together used about 3.7 GiB of memory once it was running.
+
+| Part | Chart | Version inside |
+|---|---|---|
+| kind | | 0.33.0, Kubernetes v1.37.0 |
+| Helm | | 4.3.0 |
+| <code style={{overflowWrap: 'anywhere'}}>open-telemetry/opentelemetry-kube-stack</code> | 0.26.0 | collector <code style={{overflowWrap: 'anywhere'}}>otel/opentelemetry-collector-k8s</code> 0.162.0, Operator, Node.js auto-instrumentation 0.82.0 |
+| <code style={{overflowWrap: 'anywhere'}}>prometheus-community/prometheus</code> | 29.39.0 | Prometheus 3.15.1 |
+| `grafana-community/loki` | 20.0.3 | Loki 3.7.9 |
+| `grafana-community/tempo` | 3.2.1 | Tempo 3.1.1 |
+| `grafana-community/grafana` | 14.2.0 | Grafana 13.3.0 |
+
+Grafana's Helm charts moved to the `grafana-community` repository. The `grafana/grafana` chart in the old repository still installs Grafana 12.
+
+All the files on this page are also [downloadable as one zip](/blog/k8s/k8s-without-a-vendor.zip).
+
+## 1. A three-node cluster with kind
+
+We use [kind](https://kind.sigs.k8s.io/) rather than minikube for three reasons. It runs on the Docker you already have. A multi-node cluster is three lines of YAML. And the node names stay stable (`blog-k8s-worker`, `blog-k8s-worker2`), which matters for the node level in the dashboards. minikube can run several nodes too; nothing below depends on kind except this file.
+
+Three nodes, not one, because several things in this post only go wrong when pods sit on different nodes.
+
+```yaml title="kind.yaml"
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: blog-k8s
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - containerPort: 30300
+        hostPort: 3300
+  - role: worker
+  - role: worker
+```
+
+The port mapping lets you reach Grafana at `localhost:3300` later without a port-forward.
+
+```bash
+kind create cluster --config kind.yaml
+```
+
+```bash
+kubectl get nodes
+```
+
+```text
+NAME                     STATUS   ROLES           AGE   VERSION
+blog-k8s-control-plane   Ready    control-plane   16m   v1.37.0
+blog-k8s-worker          Ready    <none>          16m   v1.37.0
+blog-k8s-worker2         Ready    <none>          16m   v1.37.0
+```
+
+## 2. The chart repositories
+
+```bash
+helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
+```
+
+```bash
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+```
+
+```bash
+helm repo add grafana-community https://grafana-community.github.io/helm-charts
+```
+
+```bash
+helm repo update
+```
+
+## 3. The stores: Prometheus, Loki, Tempo
+
+All three take OTLP directly, so the collectors need no Prometheus remote-write or Loki-specific exporter.
+
+```bash
+kubectl create namespace observability
+```
+
+### Prometheus
+
+Prometheus 3 has an OTLP receiver behind the `web.enable-otlp-receiver` flag. Two settings in the `otlp` block decide how OpenTelemetry data looks once it is stored:
+
+- **`translation_strategy`** turns OpenTelemetry names into Prometheus names. <code style={{overflowWrap: 'anywhere'}}>UnderscoreEscapingWithSuffixes</code> replaces dots with underscores and adds the unit and `_total`, so `k8s.pod.cpu.time` (a counter in seconds) becomes <code style={{overflowWrap: 'anywhere'}}>k8s_pod_cpu_time_seconds_total</code>. This is the classic behaviour and works with every Grafana version. Prometheus 3 can also keep the dots, but then every query has to quote the name.
+- **`promote_resource_attributes`** turns resource attributes into labels. Without it, `k8s.pod.name` and the rest go only to a separate `target_info` series, and every query needs a join. We promote the `k8s.*` names the dashboards filter on.
+
+The chart's own scrape jobs are switched off: the collectors push everything.
+
+```yaml title="prometheus.yaml"
+# Prometheus 3 as the metrics store. It takes OTLP directly at /api/v1/otlp.
+alertmanager:
+  enabled: false
+kube-state-metrics:
+  enabled: false
+prometheus-node-exporter:
+  enabled: false
+prometheus-pushgateway:
+  enabled: false
+
+server:
+  extraFlags:
+    - web.enable-lifecycle
+    - web.enable-otlp-receiver
+  retention: 2d
+  persistentVolume:
+    enabled: false
+  tsdb:
+    out_of_order_time_window: 30m
+  otlp:
+    translation_strategy: UnderscoreEscapingWithSuffixes
+    promote_resource_attributes:
+      - k8s.cluster.name
+      - k8s.node.name
+      - k8s.namespace.name
+      - k8s.deployment.name
+      - k8s.statefulset.name
+      - k8s.daemonset.name
+      - k8s.replicaset.name
+      - k8s.job.name
+      - k8s.cronjob.name
+      - k8s.pod.name
+      - k8s.pod.uid
+      - k8s.container.name
+      - k8s.volume.name
+      - service.namespace
+      - service.name
+
+# Nothing is scraped by Prometheus itself: the collectors push everything.
+scrapeConfigs:
+  kubernetes-api-servers: {enabled: false}
+  kubernetes-nodes: {enabled: false}
+  kubernetes-nodes-cadvisor: {enabled: false}
+  kubernetes-service-endpoints: {enabled: false}
+  kubernetes-service-endpoints-slow: {enabled: false}
+  prometheus-pushgateway: {enabled: false}
+  kubernetes-services: {enabled: false}
+  kubernetes-pods: {enabled: false}
+  kubernetes-pods-slow: {enabled: false}
+```
+
+```bash
+helm install prometheus prometheus-community/prometheus --version 29.39.0 -n observability -f prometheus.yaml --wait --timeout 20m
+```
+
+### Loki
+
+One Loki process with its data on the pod's disk. Loki 3 accepts OTLP at `/otlp` and makes some resource attributes into index labels by default, among them `k8s.namespace.name`, `k8s.pod.name`, `k8s.container.name`, `k8s.deployment.name` and `service.name`. The rest, including a log record's trace id, is kept as structured metadata, which is why `allow_structured_metadata` is on.
+
+```yaml title="loki.yaml"
+# Loki as one process with its data on the pod's disk. Fine for a laptop, not for production.
+deploymentMode: Monolithic
+loki:
+  auth_enabled: false
+  commonConfig:
+    replication_factor: 1
+  storage:
+    type: filesystem
+  schemaConfig:
+    configs:
+      - from: "2026-01-01"
+        store: tsdb
+        object_store: filesystem
+        schema: v13
+        index:
+          prefix: index_
+          period: 24h
+  limits_config:
+    allow_structured_metadata: true
+    volume_enabled: true
+  pattern_ingester:
+    enabled: true
+singleBinary:
+  replicas: 1
+  persistence:
+    enabled: false
+read:
+  replicas: 0
+write:
+  replicas: 0
+backend:
+  replicas: 0
+gateway:
+  enabled: false
+chunksCache:
+  enabled: false
+resultsCache:
+  enabled: false
+lokiCanary:
+  enabled: false
+test:
+  enabled: false
+```
+
+```bash
+helm install loki grafana-community/loki --version 20.0.3 -n observability -f loki.yaml --wait --timeout 20m
+```
+
+### Tempo
+
+```yaml title="tempo.yaml"
+# Tempo as one process, OTLP in, traces kept on the pod's disk.
+tempo:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+persistence:
+  enabled: false
+```
+
+```bash
+helm install tempo grafana-community/tempo --version 3.2.1 -n observability -f tempo.yaml --wait --timeout 20m
+```
+
+### Grafana
+
+Grafana gets the three data sources with fixed UIDs (the dashboards in part 3 refer to them), and the links between them:
+
+- **Loki → Tempo:** the `trace_id` derived field reads the trace id from each log record's structured metadata and turns it into an "Open trace" link.
+- **Tempo → Loki:** from a span, "Logs for this span" queries Loki for the same pod and namespace, filtered by trace id.
+- **Tempo → Prometheus:** from a span, the pod's CPU and memory around that time.
+
+A sidecar loads every ConfigMap labelled `grafana_dashboard=1` as a dashboard. That is how part 3 installs its dashboards.
+
+```yaml title="grafana.yaml"
+# Grafana on http://localhost:3300 (kind maps host port 3300 to node port 30300).
+service:
+  type: NodePort
+  nodePort: 30300
+
+# A laptop-only shortcut: no login, every visitor is an admin.
+grafana.ini:
+  auth.anonymous:
+    enabled: true
+    org_role: Admin
+  auth:
+    disable_login_form: true
+
+# Load every ConfigMap labelled grafana_dashboard=1 as a dashboard.
+sidecar:
+  dashboards:
+    enabled: true
+    label: grafana_dashboard
+    labelValue: "1"
+    searchNamespace: ALL
+    folderAnnotation: grafana_folder
+    provider:
+      foldersFromFilesStructure: true
+
+datasources:
+  datasources.yaml:
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        uid: prometheus
+        type: prometheus
+        url: http://prometheus-server.observability.svc
+        isDefault: true
+        jsonData:
+          exemplarTraceIdDestinations:
+            - name: trace_id
+              datasourceUid: tempo
+      - name: Loki
+        uid: loki
+        type: loki
+        url: http://loki.observability.svc:3100
+        jsonData:
+          derivedFields:
+            # OTLP logs keep the trace id as structured metadata, not in the line.
+            - name: trace_id
+              matcherType: label
+              matcherRegex: trace_id
+              url: "$${__value.raw}"
+              datasourceUid: tempo
+              urlDisplayLabel: Open trace
+      - name: Tempo
+        uid: tempo
+        type: tempo
+        url: http://tempo.observability.svc:3200
+        jsonData:
+          tracesToLogsV2:
+            datasourceUid: loki
+            spanStartTimeShift: -5m
+            spanEndTimeShift: 5m
+            filterByTraceID: true
+            tags:
+              - key: k8s.namespace.name
+                value: k8s_namespace_name
+              - key: k8s.pod.name
+                value: k8s_pod_name
+          tracesToMetrics:
+            datasourceUid: prometheus
+            spanStartTimeShift: -5m
+            spanEndTimeShift: 5m
+            tags:
+              - key: k8s.pod.name
+                value: k8s_pod_name
+            queries:
+              - name: Pod CPU
+                query: 'sum(rate(k8s_pod_cpu_time_seconds_total{$$__tags}[1m]))'
+              - name: Pod memory
+                query: 'sum(k8s_pod_memory_working_set_bytes{$$__tags})'
+          nodeGraph:
+            enabled: true
+```
+
+```bash
+helm install grafana grafana-community/grafana --version 14.2.0 -n observability -f grafana.yaml --wait --timeout 20m
+```
+
+```bash
+kubectl get pods -n observability
+```
+
+```text
+NAME                                 READY   STATUS    RESTARTS   AGE
+grafana-77c56b5f6-zr5fv              2/2     Running   0          8m50s
+loki-0                               2/2     Running   0          23m
+prometheus-server-5dcf9f58cd-rwggj   2/2     Running   0          25m
+tempo-0                              1/1     Running   0          20m
+```
+
+<Note type="caution" title="If Helm says Progress deadline exceeded">
+The Grafana 13.3.0 image is 450 MB. On our connection the node took 9 minutes 26 seconds to pull it, after the sidecar image, and the Deployment passed Kubernetes' default 10-minute progress deadline. Helm then reported `resource Deployment/observability/grafana not ready ... Progress deadline exceeded` and marked the release failed, while the pull carried on. Wait until `kubectl -n observability rollout status deployment/grafana` succeeds, then run the same command with `helm upgrade` instead of `helm install`. The release turns `deployed`.
+</Note>
+
+## 4. The collectors: opentelemetry-kube-stack
+
+The chart installs the OpenTelemetry Operator and asks it to run collectors, described as `OpenTelemetryCollector` resources. Its defaults already follow the blueprint: one DaemonSet with the `kubeletMetrics`, `hostMetrics`, `logsCollection`, `kubernetesAttributes`, `clusterMetrics` and `kubernetesEvents` presets, and leader election for the last two. Every collector only has a `debug` exporter until you add your own.
+
+Here is the values file we ended with. The sections after it explain the parts that differ from the defaults.
+
+```yaml title="kube-stack.yaml"
+# opentelemetry-kube-stack 0.26.0: the OpenTelemetry Operator plus two collectors.
+clusterName: blog-k8s
+resourceAttributes:
+  k8s.cluster.name: blog-k8s
+
+# The operator's webhook needs a TLS certificate. Let the chart make one
+# instead of installing cert-manager.
+opentelemetry-operator:
+  admissionWebhooks:
+    certManager:
+      enabled: false
+    autoGenerateCert:
+      enabled: true
+
+# Every collector inherits these exporters: OTLP to the three stores.
+defaultCRConfig:
+  config:
+    exporters:
+      otlp_http/prometheus:
+        endpoint: http://prometheus-server.observability.svc/api/v1/otlp
+      otlp_http/loki:
+        endpoint: http://loki.observability.svc:3100/otlp
+      otlp_grpc/tempo:
+        endpoint: tempo.observability.svc:4317
+        tls:
+          insecure: true
+
+collectors:
+  # The agent: one per node. Reads its own node's kubelet, host, pod logs and
+  # annotated Prometheus endpoints, and receives OTLP from the pods on its node.
+  daemon:
+    scrape_configs_file: ""
+    tolerations:
+      - operator: Exists
+    presets:
+      logsCollection:
+        enabled: true
+      kubeletMetrics:
+        enabled: true
+      hostMetrics:
+        enabled: true
+      kubernetesAttributes:
+        enabled: true
+      prometheus:
+        podAnnotations:
+          enabled: true
+      # Cluster-wide receivers run in the "cluster" collector below.
+      clusterMetrics:
+        enabled: false
+      kubernetesEvents:
+        enabled: false
+      # Resource detection describes the collector itself: its pod, namespace
+      # and node. On an agent that reports on other things it fills gaps with
+      # the wrong values. Every receiver here already says where its data is from.
+      resourceDetection:
+        env:
+          enabled: false
+        k8s_api:
+          enabled: false
+    config:
+      processors:
+        # host_metrics and pod-annotation scrapes do not say which node they
+        # came from. This agent only reads its own node, so name it. insert
+        # never overwrites a k8s.node.name a receiver already set.
+        resource/node:
+          attributes:
+            - key: k8s.node.name
+              value: ${env:OTEL_K8S_NODE_NAME}
+              action: insert
+        # The sample app writes JSON lines with trace_id and span_id. Copy them
+        # into the log record's own trace context so Loki and Grafana see them.
+        transform/trace_ids:
+          error_mode: ignore
+          log_statements:
+            - conditions:
+                - IsMatch(log.body, "^\\{.*\"trace_id\"")
+              statements:
+                - set(log.cache, ParseJSON(log.body))
+                - set(log.trace_id.string, log.cache["trace_id"]) where log.cache["trace_id"] != nil
+                - set(log.span_id.string, log.cache["span_id"]) where log.cache["span_id"] != nil
+      service:
+        pipelines:
+          # Listing processors replaces the chart's list; the presets still
+          # put k8s_attributes first and resource/global last.
+          metrics:
+            processors: [resource/node, resource/hostname, batch]
+            exporters: [otlp_http/prometheus]
+          logs:
+            processors: [resource/node, resource/hostname, transform/trace_ids, batch]
+            exporters: [otlp_http/loki]
+          traces:
+            processors: [resource/node, resource/hostname, batch]
+            exporters: [otlp_grpc/tempo]
+
+  # The cluster collector: one replica. Watches the API server for object state
+  # (k8s_cluster) and events (k8s_objects). Its k8s_attributes sees every pod,
+  # so pod metrics get their deployment, statefulset or daemonset name.
+  cluster:
+    enabled: true
+    suffix: cluster
+    mode: deployment
+    replicas: 1
+    presets:
+      clusterMetrics:
+        enabled: true
+      kubernetesEvents:
+        enabled: true
+      kubernetesAttributes:
+        enabled: true
+    config:
+      receivers:
+        # Merged into the preset's k8s_cluster receiver. Why a container last
+        # stopped (OOMKilled, Error...) and what it is waiting on now.
+        k8s_cluster:
+          metrics:
+            k8s.container.status.reason:
+              enabled: true
+          resource_attributes:
+            k8s.container.status.last_terminated_reason:
+              enabled: true
+      processors:
+        batch: {}
+        # Events have no service. Name them so Loki indexes them under one
+        # service_name instead of "unknown_service".
+        resource/events:
+          attributes:
+            - key: service.name
+              value: k8s-events
+              action: insert
+      service:
+        pipelines:
+          metrics:
+            receivers: []
+            processors: [batch]
+            exporters: [otlp_http/prometheus]
+          logs:
+            receivers: []
+            processors: [resource/events, batch]
+            exporters: [otlp_http/loki]
+```
+
+```bash
+helm install kube-stack open-telemetry/opentelemetry-kube-stack --version 0.26.0 -n otel --create-namespace -f kube-stack.yaml --wait --timeout 20m
+```
+
+```bash
+kubectl get pods -n otel -o wide
+```
+
+```text
+NAME                                                 READY   STATUS    RESTARTS   AGE     IP           NODE                     NOMINATED NODE   READINESS GATES
+kube-stack-cluster-collector-556578946b-wf7tx        1/1     Running   0          2m7s    10.244.1.5   blog-k8s-worker          <none>           <none>
+kube-stack-daemon-collector-4mhvk                    1/1     Running   0          2m7s    10.244.1.6   blog-k8s-worker          <none>           <none>
+kube-stack-daemon-collector-glhmg                    1/1     Running   0          2m7s    10.244.2.4   blog-k8s-worker2         <none>           <none>
+kube-stack-daemon-collector-xr2df                    1/1     Running   0          2m7s    10.244.0.5   blog-k8s-control-plane   <none>           <none>
+kube-stack-opentelemetry-operator-5b7f44b8db-5cwdv   1/1     Running   0          2m35s   10.244.1.4   blog-k8s-worker          <none>           <none>
+```
+
+One agent per node, the control plane included (that is what the `tolerations` are for), one cluster collector, and the Operator.
+
+### No cert-manager
+
+The Operator's admission webhook needs a TLS certificate. The chart's default is to ask cert-manager for one, and the install fails with `no matches for kind "Certificate"` if cert-manager is not there. `autoGenerateCert` makes Helm generate a certificate instead. That has a side effect we come back to in step 5.
+
+### Fix 1: resource detection names the collector, not the data
+
+The chart turns on the `resource_detection` processor with the `env` and `k8s_api` detectors on the agent. The `env` detector reads the collector's own `OTEL_RESOURCE_ATTRIBUTES`, which the chart fills with the collector pod's name, namespace and node. With `override: false` it only fills attributes that are missing, which sounds safe. It is not: node metrics have no `k8s.pod.name`, so they got the collector's. This is what Prometheus held for a node condition with the defaults:
+
+```text
+k8s_node_condition_ready{k8s_cluster_name="blog-k8s", k8s_namespace_name="otel",
+  k8s_node_name="blog-k8s-worker2", k8s_pod_name="kube-stack-daemon-collector-slwst"} 1
+```
+
+That node is not in the `otel` namespace, and the pod named is a collector on a different node. Any query that groups by namespace or pod counts it in the wrong place. With only the `k8s_api` detector left, deployment metrics still got the elected agent's node name. Resource detection is meant to describe the process that runs it, so we turned it off on the agent. The receivers already say where their data came from, and `resourceAttributes` sets `k8s.cluster.name` on everything.
+
+Two receivers do not name their node: `host_metrics` and the Prometheus scrape of annotated pods. The `resource/node` processor inserts the agent's own node name, which is right because an agent only reads its own node. `insert` never overwrites a value a receiver set.
+
+### Fix 2: cluster metrics need a cluster-wide view
+
+With the blueprint's layout, `k8s_cluster` runs inside whichever agent holds the lease. That agent's `k8s_attributes` processor only watches pods on its own node, to keep each agent's memory small. So `k8s.pod.phase` and the other per-pod cluster metrics only got their `k8s.deployment.name` (or StatefulSet, or DaemonSet) when the pod happened to share a node with the leader. This is real data from our first run. Switch between the two layouts:
+
+<K8sLeaderGap
+  leader="blog-k8s-worker2"
+  caption="Eighteen of the pods in our first run, and whether their k8s_pod_phase series carried a workload name. Static pods like etcd have no owner at all."
+  nodes={[
+    { name: 'blog-k8s-control-plane', pods: [
+      { name: 'coredns-559f6c778d-lzvgc', workload: 'coredns' },
+      { name: 'coredns-559f6c778d-n98x6', workload: 'coredns' },
+      { name: 'kindnet-92pv8', workload: 'kindnet' },
+      { name: 'kube-proxy-w52vq', workload: 'kube-proxy' },
+      { name: 'local-path-provisioner-75f7…', workload: 'local-path-provisioner' },
+      { name: 'etcd-blog-k8s-control-plane' },
+    ] },
+    { name: 'blog-k8s-worker', pods: [
+      { name: 'shop-api-6dc679f974-sdxgg', workload: 'shop-api' },
+      { name: 'shop-web-59d68c574c-9pm4q', workload: 'shop-web' },
+      { name: 'loadgen-66d5d95955-w98r7', workload: 'loadgen' },
+      { name: 'loki-0', workload: 'loki' },
+      { name: 'kindnet-ts4hv', workload: 'kindnet' },
+      { name: 'kube-proxy-9cv96', workload: 'kube-proxy' },
+    ] },
+    { name: 'blog-k8s-worker2', pods: [
+      { name: 'shop-api-6dc679f974-5msfm', workload: 'shop-api' },
+      { name: 'shop-web-59d68c574c-hrbxk', workload: 'shop-web' },
+      { name: 'prometheus-server-54797885db-nznth', workload: 'prometheus-server' },
+      { name: 'grafana-594f9b9c6c-n227r', workload: 'grafana' },
+      { name: 'tempo-0', workload: 'tempo' },
+      { name: 'kindnet-dnvlm', workload: 'kindnet' },
+    ] },
+  ]}
+/>
+
+A dashboard that counts running pods per Deployment would show `shop-api` with one pod instead of two, and the number would change whenever the lease moved. You could remove the node filter from every agent, but then each agent watches every pod in the cluster. We used the chart's second collector instead, the layout the blueprint offers for clusters without leader election: a one-replica Deployment named `cluster` that runs `k8s_cluster` and `k8s_objects`, with a `k8s_attributes` that sees every pod. It keeps the leader-election extension, so you can raise `replicas` to 2 for failover.
+
+The same collector turns on two optional parts of `k8s_cluster`: the `k8s.container.status.reason` metric and the <code style={{overflowWrap: 'anywhere'}}>k8s.container.status.last_terminated_reason</code> resource attribute. Together they say why a container is waiting and why it last stopped, for example `OOMKilled`. Part 3 uses both.
+
+### Smaller things in the file
+
+- **Listing processors replaces the chart's list.** Once you write `processors:` for a pipeline, the chart's defaults for that pipeline are gone. The presets still put `k8s_attributes` first and `resource/global` last.
+- **`transform/trace_ids`.** The sample app writes JSON log lines that carry `trace_id` and `span_id`. This OTTL statement copies them into the log record's own trace context, so Loki stores them as structured metadata and Grafana can link the line to its trace. An app that sends logs over OTLP with an OpenTelemetry logging bridge does not need it.
+- **`resource/events`.** Kubernetes events have no service, so Loki filed them under `unknown_service`. We name them `k8s-events`.
+- **The `container.image.tag` warning.** Collector 0.162.0 logs that `k8s_attributes` will not emit `container.image.tag` because of the <code style={{overflowWrap: 'anywhere'}}>processor.k8sattributes.DontEmitV0K8sConventions</code> feature gate; it emits `container.image.tags` instead. The chart still asks for the old name. It is harmless.
+- **`hostmetrics` on kind** reads the Docker VM's kernel, so every node reports the same 10 CPUs, the same load (including every other container on that VM) and the VM's uptime. On real nodes each agent sees its own machine.
+- **A pod with an init container briefly has two series.** While the Operator's init container runs, `k8s_attributes` names it as the pod's container on pod-level metrics. Once the app starts, a second series appears without it. The old one stays visible in Prometheus for five minutes, so a naive `count(k8s_pod_phase == 1)` shows the pod as both Pending and Running. The dashboards in part 3 take the newest value per pod.
+
+## 5. An app with OpenTelemetry
+
+The sample app is two Node.js services and a load generator. `shop-web` calls `shop-api` for a price. `shop-api` is slow for one SKU, fails 5 % of requests, and keeps every response in a cache that never shrinks, so it runs out of memory about every 25 minutes. That gives part 3 something to find. The code lives in a ConfigMap and runs on the stock `node:24-slim` image, so there is nothing to build.
+
+There is no OpenTelemetry code in the app. The `Instrumentation` resource tells the Operator what to inject, and the annotation <code style={{overflowWrap: 'anywhere'}}>instrumentation.opentelemetry.io/inject-nodejs</code> on each pod asks for it. The Operator's webhook then adds an init container that copies the Node.js auto-instrumentation into the pod, and sets `NODE_OPTIONS`, the exporter endpoint and resource attributes (`k8s.pod.name`, `k8s.deployment.name` and more). The one line of logging code reaches the injected OpenTelemetry API to put the trace id on each log line.
+
+```yaml title="shop.yaml"
+# A two-service sample: shop-web calls shop-api. No image to build: the code is in a
+# ConfigMap and runs on the stock node image. The OpenTelemetry Operator injects the
+# Node.js auto-instrumentation into both pods.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shop
+---
+apiVersion: opentelemetry.io/v1alpha1
+kind: Instrumentation
+metadata:
+  name: nodejs
+  namespace: shop
+spec:
+  # The node-local agent. Its Service has internalTrafficPolicy: Local,
+  # so a pod always talks to the collector on its own node.
+  exporter:
+    endpoint: http://kube-stack-daemon-collector.otel.svc:4318
+  propagators: [tracecontext, baggage]
+  sampler:
+    type: parentbased_always_on
+  nodejs:
+    env:
+      # Logs go to stdout and the agent reads them from the node, so no OTLP logs here.
+      - name: OTEL_LOGS_EXPORTER
+        value: none
+      - name: OTEL_METRICS_EXPORTER
+        value: otlp
+      # Export every 15 s, not the default 60 s, so a 1-minute rate() has points.
+      - name: OTEL_METRIC_EXPORT_INTERVAL
+        value: "15000"
+      # Skip the cloud detectors: on a laptop they only time out and warn.
+      - name: OTEL_NODE_RESOURCE_DETECTORS
+        value: env,host,os,serviceinstance
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shop-code
+  namespace: shop
+data:
+  log.js: |
+    // One JSON line per request, with the active trace id, so logs and traces join.
+    let api;
+    try { api = require('/otel-auto-instrumentation-nodejs/node_modules/@opentelemetry/api'); } catch {}
+    module.exports = (level, msg, extra = {}) => {
+      const ctx = api && api.trace.getActiveSpan()?.spanContext();
+      console.log(JSON.stringify({
+        time: new Date().toISOString(), level, msg, ...extra,
+        trace_id: ctx?.traceId, span_id: ctx?.spanId,
+      }));
+    };
+  web.js: |
+    const http = require('http');
+    const log = require('./log');
+    const API = process.env.API_URL;
+    http.createServer(async (req, res) => {
+      if (req.url !== '/') { res.writeHead(404).end(); return; }
+      try {
+        const r = await fetch(`${API}/price?sku=${1 + Math.floor(Math.random() * 20)}`);
+        const body = await r.text();
+        log(r.ok ? 'info' : 'error', 'rendered home', { status: r.status });
+        res.writeHead(r.ok ? 200 : 502, { 'content-type': 'application/json' }).end(body);
+      } catch (e) {
+        log('error', 'api unreachable', { error: String(e) });
+        res.writeHead(502).end();
+      }
+    }).listen(8080, () => log('info', 'shop-web listening on 8080'));
+  api.js: |
+    const http = require('http');
+    const log = require('./log');
+    // A cache that never shrinks: memory climbs until the container limit stops it.
+    const cache = [];
+    http.createServer((req, res) => {
+      const url = new URL(req.url, 'http://x');
+      if (url.pathname !== '/price') { res.writeHead(404).end(); return; }
+      const sku = url.searchParams.get('sku');
+      cache.push(Buffer.alloc(64 * 1024, 1));
+      const delay = 20 + Math.random() * 80 + (sku === '13' ? 400 : 0);
+      setTimeout(() => {
+        if (Math.random() < 0.05) {
+          log('error', 'price lookup failed', { sku });
+          res.writeHead(500).end();
+          return;
+        }
+        log('info', 'price lookup', { sku, ms: Math.round(delay) });
+        res.writeHead(200, { 'content-type': 'application/json' })
+          .end(JSON.stringify({ sku, price: (Number(sku) * 3.5).toFixed(2) }));
+      }, delay);
+    }).listen(8080, () => log('info', 'shop-api listening on 8080'));
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shop-api
+  namespace: shop
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: shop-api}
+  template:
+    metadata:
+      labels: {app: shop-api}
+      annotations:
+        instrumentation.opentelemetry.io/inject-nodejs: "nodejs"
+    spec:
+      containers:
+        - name: api
+          image: node:24-slim
+          command: ["node", "/app/api.js"]
+          env:
+            - name: OTEL_SERVICE_NAME
+              value: shop-api
+          ports:
+            - containerPort: 8080
+          resources:
+            requests: {cpu: 50m, memory: 96Mi}
+            limits: {cpu: 250m, memory: 192Mi}
+          volumeMounts:
+            - {name: code, mountPath: /app}
+      volumes:
+        - name: code
+          configMap: {name: shop-code}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shop-api
+  namespace: shop
+spec:
+  selector: {app: shop-api}
+  ports:
+    - port: 80
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shop-web
+  namespace: shop
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: shop-web}
+  template:
+    metadata:
+      labels: {app: shop-web}
+      annotations:
+        instrumentation.opentelemetry.io/inject-nodejs: "nodejs"
+    spec:
+      containers:
+        - name: web
+          image: node:24-slim
+          command: ["node", "/app/web.js"]
+          env:
+            - name: OTEL_SERVICE_NAME
+              value: shop-web
+            - name: API_URL
+              value: http://shop-api
+          ports:
+            - containerPort: 8080
+          resources:
+            requests: {cpu: 50m, memory: 96Mi}
+            limits: {cpu: 250m, memory: 256Mi}
+          volumeMounts:
+            - {name: code, mountPath: /app}
+      volumes:
+        - name: code
+          configMap: {name: shop-code}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shop-web
+  namespace: shop
+spec:
+  selector: {app: shop-web}
+  ports:
+    - port: 80
+      targetPort: 8080
+---
+# One request about every 0.3 s, forever.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadgen
+  namespace: shop
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: loadgen}
+  template:
+    metadata:
+      labels: {app: loadgen}
+    spec:
+      containers:
+        - name: curl
+          image: curlimages/curl:8.17.0
+          command: ["sh", "-c", "while true; do curl -s -o /dev/null http://shop-web/; sleep 0.2; done"]
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {cpu: 100m, memory: 32Mi}
+```
+
+```bash
+kubectl apply -f shop.yaml
+```
+
+Check that the webhook filled in the image before the pods start:
+
+```bash
+kubectl -n shop get instrumentation nodejs -o jsonpath='{.spec.nodejs.image}'
+```
+
+```text
+ghcr.io/open-telemetry/opentelemetry-operator/autoinstrumentation-nodejs:0.82.0-1
+```
+
+```bash
+kubectl -n shop get pod -l app=shop-api -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.initContainers[*].name}{"\n"}{end}'
+```
+
+```text
+shop-api-6dc679f974-8b4qv opentelemetry-auto-instrumentation-nodejs
+shop-api-6dc679f974-lv8qb opentelemetry-auto-instrumentation-nodejs
+```
+
+Each pod must list <code style={{overflowWrap: 'anywhere'}}>opentelemetry-auto-instrumentation-nodejs</code>. If it lists nothing, read the next section.
+
+### Fix 3: pods created during a Helm upgrade are not instrumented
+
+This one cost us the most time. Each `helm upgrade` of the kube-stack chart generates a new webhook certificate (that is what `autoGenerateCert` does). The webhook configuration gets the new CA at once. The Operator keeps serving the old certificate until the kubelet refreshes the mounted Secret, which took about a minute for us. The webhook's `failurePolicy` is `Ignore`, so during that minute the API server lets everything through without asking the Operator:
+
+<Sequence
+  actors={['You', 'API server', 'Operator webhook']}
+  caption="What happened to a pod created right after helm upgrade."
+  steps={[
+    { from: 0, to: 1, label: 'helm upgrade', note: 'new CA in the webhook configuration' },
+    { from: 0, to: 1, label: 'create pod / Instrumentation' },
+    { from: 1, to: 2, label: 'admission request', note: 'Operator still serves the old certificate' },
+    { from: 2, to: 1, label: 'TLS: bad certificate', tone: 'bad' },
+    { from: 1, to: 0, label: 'accepted anyway (failurePolicy: Ignore)', note: 'no init container, no defaults', tone: 'warn' },
+  ]}
+/>
+
+We saw two symptoms. Pods started without the init container and sent no telemetry, with no error anywhere except `tls: bad certificate` in the Operator's log. Worse, an `Instrumentation` created in that window never got its defaults, so every later pod was rejected with <code style={{overflowWrap: 'anywhere'}}>spec.initContainers[0].image: Required value</code>.
+
+What works:
+
+1. Install or upgrade kube-stack, then wait until the Operator's log has no new `bad certificate` lines before you create instrumented pods.
+2. If `.spec.nodejs.image` on your `Instrumentation` is empty, delete it and apply it again.
+3. Restart pods that are missing the init container: <code style={{overflowWrap: 'anywhere'}}>kubectl -n shop rollout restart deployment/shop-api deployment/shop-web</code>.
+
+With cert-manager instead of `autoGenerateCert`, the certificate does not change on every upgrade.
+
+### Two settings in the Instrumentation
+
+- **<code style={{overflowWrap: 'anywhere'}}>OTEL_METRIC_EXPORT_INTERVAL: "15000"</code>.** The SDK exports metrics every 60 seconds by default. Grafana's `$__rate_interval` on a 15-second scrape interval is one minute, which then holds one point, and `rate()` needs two. Request-rate panels stayed empty until we exported every 15 seconds.
+- **`OTEL_NODE_RESOURCE_DETECTORS`.** The default set includes cloud detectors that try metadata endpoints. On a laptop they time out and print `MetadataLookupWarning`.
+
+## 6. See the data
+
+Open a port-forward to Prometheus in a second terminal:
+
+```bash
+kubectl -n observability port-forward svc/prometheus-server 9090:80
+```
+
+Ask for one node metric, one pod metric and one cluster metric:
+
+```bash
+curl -s localhost:9090/api/v1/query --data-urlencode 'query=k8s_node_cpu_usage' | jq -c '.data.result[] | [.metric.k8s_node_name, .value[1]]'
+```
+
+```text
+["blog-k8s-worker","0.11177800000000104"]
+["blog-k8s-worker2","0.17719359999999967"]
+["blog-k8s-control-plane","0.1594348999999994"]
+```
+
+Usage is in cores. The whole cluster, stores and collectors included, idles at under half a core.
+
+```bash
+curl -s localhost:9090/api/v1/query --data-urlencode 'query=k8s_pod_phase{k8s_namespace_name="shop"}' | jq -c '.data.result[].metric | [.k8s_pod_name, .k8s_node_name, .k8s_deployment_name]'
+```
+
+```text
+["loadgen-66d5d95955-2ntjb","blog-k8s-worker2","loadgen"]
+["shop-web-59d68c574c-mgxrg","blog-k8s-worker","shop-web"]
+["shop-web-59d68c574c-cq64p","blog-k8s-worker2","shop-web"]
+["shop-api-6dc679f974-lv8qb","blog-k8s-worker","shop-api"]
+["shop-api-6dc679f974-8b4qv","blog-k8s-worker2","shop-api"]
+```
+
+Every pod has its node and its Deployment, whichever node it is on. That is fix 2 at work.
+
+The app's own HTTP metric comes through the same agent, with the same labels:
+
+```bash
+curl -s localhost:9090/api/v1/query --data-urlencode 'query=sum by (k8s_deployment_name, http_response_status_code) (rate(http_server_request_duration_seconds_count[1m]))' | jq -c '.data.result[] | [.metric.k8s_deployment_name, .metric.http_response_status_code, .value[1]]'
+```
+
+```text
+["shop-web","502","0.2221975336073769"]
+["shop-web","200","3.155204977224752"]
+["shop-api","200","3.1775358244147904"]
+["shop-api","500","0.19998370525086862"]
+```
+
+The load generator manages about three and a half requests a second, not five, because each `curl` start and each request take time on top of the 0.2 s sleep, and every `shop-web` request calls `shop-api`. The 500s from `shop-api` come back as 502s from `shop-web`.
+
+Then logs. Port-forward Loki:
+
+```bash
+kubectl -n observability port-forward svc/loki 3100:3100
+```
+
+```bash
+curl -s -G localhost:3100/loki/api/v1/query_range --data-urlencode 'query={k8s_deployment_name="shop-api"} | trace_id != ""' --data-urlencode limit=1 | jq -c '.data.result[0] | {pod: .stream.k8s_pod_name, node: .stream.k8s_node_name, trace_id: .stream.trace_id, line: .values[0][1]}'
+```
+
+```text
+{"pod":"shop-api-6dc679f974-8b4qv","node":"blog-k8s-worker2","trace_id":"ed2ba541504049f4bd9e6c0128ff558a","line":"{\"time\":\"2026-10-29T19:15:26.603Z\",\"level\":\"info\",\"msg\":\"price lookup\",\"sku\":\"3\",\"ms\":92,\"trace_id\":\"ed2ba541504049f4bd9e6c0128ff558a\",\"span_id\":\"8a07d8e05c32b84b\"}"}
+```
+
+The line was read from the node's log file by the agent, and the trace id came out of the JSON through `transform/trace_ids`. Take that trace id to Tempo:
+
+```bash
+kubectl -n observability port-forward svc/tempo 3200:3200
+```
+
+```bash
+curl -s localhost:3200/api/v2/traces/ed2ba541504049f4bd9e6c0128ff558a | jq -c '.trace.resourceSpans[] | [(.resource.attributes[] | select(.key == "service.name" or .key == "k8s.pod.name" or .key == "k8s.node.name") | .value.stringValue), [.scopeSpans[].spans[].name]]'
+```
+
+```text
+
+```
+
+One request, two pods, joined by one trace. If Tempo answers `{"trace":{}}`, wait ten seconds and ask again: a span takes a few seconds to become searchable. In Grafana the same thing is two clicks, which is part 3.
+
+## What the names look like
+
+The collectors use OpenTelemetry names, and Prometheus stores them with <code style={{overflowWrap: 'anywhere'}}>UnderscoreEscapingWithSuffixes</code>. The table holds the metrics part 3 uses, as we found them in Prometheus, next to the kube-state-metrics, cAdvisor or node-exporter series that people usually know. Type to filter.
+
+<K8sMetricMap
+  caption="Names as stored by Prometheus 3.15.1 from collector 0.162.0. The right column is the closest equivalent, not always the same measurement."
+  rows={[
+    { otel: 'k8s.node.cpu.usage', unit: '{cpu}', type: 'gauge', from: 'kubelet_stats', prom: 'k8s_node_cpu_usage', old: 'rate(node_cpu_seconds_total{mode!="idle"}[5m])' },
+    { otel: 'k8s.node.memory.working_set', unit: 'By', type: 'gauge', from: 'kubelet_stats', prom: 'k8s_node_memory_working_set_bytes', old: 'container_memory_working_set_bytes{id="/"}' },
+    { otel: 'k8s.node.network.io', unit: 'By', type: 'counter', from: 'kubelet_stats', prom: 'k8s_node_network_io_bytes_total', old: 'node_network_receive_bytes_total' },
+    { otel: 'k8s.node.filesystem.usage', unit: 'By', type: 'gauge', from: 'kubelet_stats', prom: 'k8s_node_filesystem_usage_bytes', old: 'node_filesystem_size_bytes - node_filesystem_avail_bytes' },
+    { otel: 'k8s.pod.cpu.usage', unit: '{cpu}', type: 'gauge', from: 'kubelet_stats', prom: 'k8s_pod_cpu_usage', old: 'sum by (pod) (rate(container_cpu_usage_seconds_total[5m]))' },
+    { otel: 'k8s.pod.cpu.time', unit: 's', type: 'counter', from: 'kubelet_stats', prom: 'k8s_pod_cpu_time_seconds_total', old: 'container_cpu_usage_seconds_total' },
+    { otel: 'k8s.pod.memory.working_set', unit: 'By', type: 'gauge', from: 'kubelet_stats', prom: 'k8s_pod_memory_working_set_bytes', old: 'container_memory_working_set_bytes' },
+    { otel: 'k8s.pod.network.io', unit: 'By', type: 'counter', from: 'kubelet_stats', prom: 'k8s_pod_network_io_bytes_total', old: 'container_network_receive_bytes_total' },
+    { otel: 'k8s.pod.memory.page_faults', unit: '1', type: 'gauge', from: 'kubelet_stats', prom: 'k8s_pod_memory_page_faults_ratio', old: 'container_memory_failures_total' },
+    { otel: 'container.cpu.usage', unit: '{cpu}', type: 'gauge', from: 'kubelet_stats', prom: 'container_cpu_usage', old: 'rate(container_cpu_usage_seconds_total{container!=""}[5m])' },
+    { otel: 'container.memory.working_set', unit: 'By', type: 'gauge', from: 'kubelet_stats', prom: 'container_memory_working_set_bytes', old: 'container_memory_working_set_bytes{container!=""}' },
+    { otel: 'k8s.volume.available', unit: 'By', type: 'gauge', from: 'kubelet_stats', prom: 'k8s_volume_available_bytes', old: 'kubelet_volume_stats_available_bytes' },
+    { otel: 'k8s.pod.phase', unit: '', type: 'gauge (1 Pending … 5 Unknown)', from: 'k8s_cluster', prom: 'k8s_pod_phase', old: 'kube_pod_status_phase{phase="Running"}' },
+    { otel: 'k8s.container.restarts', unit: '{restart}', type: 'gauge', from: 'k8s_cluster', prom: 'k8s_container_restarts', old: 'kube_pod_container_status_restarts_total' },
+    { otel: 'k8s.container.ready', unit: '', type: 'gauge', from: 'k8s_cluster', prom: 'k8s_container_ready', old: 'kube_pod_container_status_ready' },
+    { otel: 'k8s.container.cpu_request', unit: '{cpu}', type: 'gauge', from: 'k8s_cluster', prom: 'k8s_container_cpu_request', old: 'kube_pod_container_resource_requests{resource="cpu"}' },
+    { otel: 'k8s.container.memory_limit', unit: 'By', type: 'gauge', from: 'k8s_cluster', prom: 'k8s_container_memory_limit_bytes', old: 'kube_pod_container_resource_limits{resource="memory"}' },
+    { otel: 'k8s.container.status.reason', unit: '{container}', type: 'updown counter', from: 'k8s_cluster', prom: 'k8s_container_status_reason', old: 'kube_pod_container_status_waiting_reason' },
+    { otel: 'k8s.deployment.available', unit: '{pod}', type: 'gauge', from: 'k8s_cluster', prom: 'k8s_deployment_available', old: 'kube_deployment_status_replicas_available' },
+    { otel: 'k8s.deployment.desired', unit: '{pod}', type: 'gauge', from: 'k8s_cluster', prom: 'k8s_deployment_desired', old: 'kube_deployment_spec_replicas' },
+    { otel: 'k8s.statefulset.ready_pods', unit: '{pod}', type: 'gauge', from: 'k8s_cluster', prom: 'k8s_statefulset_ready_pods', old: 'kube_statefulset_status_replicas_ready' },
+    { otel: 'k8s.daemonset.ready_nodes', unit: '{node}', type: 'gauge', from: 'k8s_cluster', prom: 'k8s_daemonset_ready_nodes', old: 'kube_daemonset_status_number_ready' },
+    { otel: 'k8s.node.condition_ready', unit: '', type: 'gauge', from: 'k8s_cluster', prom: 'k8s_node_condition_ready', old: 'kube_node_status_condition{condition="Ready",status="true"}' },
+    { otel: 'k8s.node.allocatable_cpu', unit: '{cpu}', type: 'gauge', from: 'k8s_cluster', prom: 'k8s_node_allocatable_cpu', old: 'kube_node_status_allocatable{resource="cpu"}' },
+    { otel: 'k8s.namespace.phase', unit: '', type: 'gauge', from: 'k8s_cluster', prom: 'k8s_namespace_phase', old: 'kube_namespace_status_phase' },
+    { otel: 'system.cpu.load_average.1m', unit: '{thread}', type: 'gauge', from: 'host_metrics', prom: 'system_cpu_load_average_1m', old: 'node_load1' },
+    { otel: 'system.network.io', unit: 'By', type: 'counter', from: 'host_metrics', prom: 'system_network_io_bytes_total', old: 'node_network_receive_bytes_total' },
+    { otel: 'http.server.request.duration', unit: 's', type: 'histogram', from: 'app (OTLP)', prom: 'http_server_request_duration_seconds_bucket' },
+  ]}
+/>
+
+Three things to notice. A unit in braces such as `{cpu}` adds no suffix, so CPU usage in cores is `k8s_pod_cpu_usage`, not `..._cores`. A gauge with unit `1` gets `_ratio`, which is how page-fault counts end up as <code style={{overflowWrap: 'anywhere'}}>k8s_pod_memory_page_faults_ratio</code> even though they are not ratios. And `k8s.pod.phase` is one series whose value is the phase number, where kube-state-metrics has one series per phase with value 0 or 1.
+
+## Clean up
+
+Part 3 uses this cluster, so keep it for now. When you are done:
+
+```bash
+kind delete cluster --name blog-k8s
+```
+
+Next: [part 3, the dashboards and the drill-down](/blog/k8s-without-a-vendor-3-dashboards/).

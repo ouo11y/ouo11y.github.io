@@ -1,0 +1,62 @@
+---
+// The drill-down path through the dashboards, one level at a time.
+// Click a level in the breadcrumb (or Next) to see what that dashboard shows, the query behind its
+// key panel and where its links go. Works without JS (the first level stays open).
+// <K8sDrilldown levels={[{ id: 'cluster', label: 'Cluster', uid: 'k8s-cluster', shows: ['...'], query: '...', from: ['k8s_cluster'], next: 'Click a node' }]} />
+import '../../styles/diagram.css';
+
+interface Level { id: string; label: string; uid: string; vars: string; shows: string[]; query: string; from: string[]; next?: string; }
+interface Props { levels: Level[]; caption?: string; }
+const { levels, caption } = Astro.props;
+---
+<figure class="dg kdd not-content" data-kdd>
+  <ol class="crumbs" role="group" aria-label="Drill-down level">
+    {levels.map((l, i) => (
+      <li><button type="button" data-level={l.id} aria-pressed={String(i === 0)}>{l.label}</button></li>
+    ))}
+  </ol>
+  {levels.map((l, i) => (
+    <div data-panel={l.id} hidden={i !== 0}>
+      <p class="uid">Dashboard <code>{l.uid}</code> · variables <code>{l.vars}</code></p>
+      <ul class="shows">{l.shows.map((s) => <li set:html={s} />)}</ul>
+      <p class="q-label">Key query</p>
+      <pre><code>{l.query}</code></pre>
+      <p class="from">Fed by {l.from.map((f, j) => <>{j > 0 && ', '}<code>{f}</code></>)}</p>
+      {l.next && (
+        <p class="next">
+          <span set:html={l.next} />
+          {i < levels.length - 1 && <button type="button" data-go={levels[i + 1].id}>Next: {levels[i + 1].label} →</button>}
+        </p>
+      )}
+    </div>
+  ))}
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+  for (const root of document.querySelectorAll<HTMLElement>('[data-kdd]')) {
+    const crumbs = root.querySelectorAll<HTMLButtonElement>('[data-level]');
+    const show = (id: string) => {
+      root.querySelectorAll<HTMLElement>('[data-panel]').forEach((p) => (p.hidden = p.dataset.panel !== id));
+      crumbs.forEach((c) => c.setAttribute('aria-pressed', String(c.dataset.level === id)));
+    };
+    crumbs.forEach((c) => c.addEventListener('click', () => show(c.dataset.level!)));
+    root.querySelectorAll<HTMLButtonElement>('[data-go]').forEach((b) => b.addEventListener('click', () => show(b.dataset.go!)));
+  }
+</script>
+
+<style>
+  .crumbs { list-style: none; margin: 0 0 14px; padding: 0; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+  .crumbs li { display: flex; align-items: center; gap: 4px; }
+  .crumbs li + li::before { content: '›'; color: var(--dg-ink-3); }
+  .crumbs button { padding: 5px 10px; border: 1px solid var(--dg-line); border-radius: 8px; background: var(--dg-node); color: var(--dg-ink-2); font: inherit; cursor: pointer; }
+  .crumbs button[aria-pressed='true'] { border-color: var(--dg-accent); background: var(--dg-accent-soft); color: var(--dg-ink); font-weight: 600; }
+  .uid { margin: 0 0 8px; color: var(--dg-ink-3); font-size: 12px; overflow-wrap: anywhere; }
+  .shows { margin: 0 0 12px; padding-left: 18px; color: var(--dg-ink-2); display: grid; gap: 3px; }
+  .q-label { margin: 0 0 4px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--dg-ink-3); }
+  pre { margin: 0; padding: 10px 12px; border-radius: 8px; background: var(--dg-node); border: 1px solid var(--dg-line); white-space: pre-wrap; overflow-wrap: anywhere; }
+  pre code { font-size: 12px; background: none; padding: 0; }
+  .from { margin: 8px 0 0; font-size: 13px; color: var(--dg-ink-2); }
+  .next { margin: 12px 0 0; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; color: var(--dg-ink-2); }
+  .next button { padding: 6px 12px; border: 1px solid var(--dg-accent); border-radius: 8px; background: var(--dg-accent-soft); color: var(--dg-ink); font: inherit; cursor: pointer; }
+</style>

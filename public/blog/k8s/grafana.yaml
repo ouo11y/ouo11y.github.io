@@ -1,0 +1,79 @@
+# Grafana on http://localhost:3300 (kind maps host port 3300 to node port 30300).
+service:
+  type: NodePort
+  nodePort: 30300
+
+# A laptop-only shortcut: no login, every visitor is an admin.
+grafana.ini:
+  auth.anonymous:
+    enabled: true
+    org_role: Admin
+  auth:
+    disable_login_form: true
+
+# Load every ConfigMap labelled grafana_dashboard=1 as a dashboard.
+sidecar:
+  dashboards:
+    enabled: true
+    label: grafana_dashboard
+    labelValue: "1"
+    searchNamespace: ALL
+    folderAnnotation: grafana_folder
+    provider:
+      foldersFromFilesStructure: true
+
+datasources:
+  datasources.yaml:
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        uid: prometheus
+        type: prometheus
+        url: http://prometheus-server.observability.svc
+        isDefault: true
+        jsonData:
+          exemplarTraceIdDestinations:
+            - name: trace_id
+              datasourceUid: tempo
+      - name: Loki
+        uid: loki
+        type: loki
+        url: http://loki.observability.svc:3100
+        jsonData:
+          derivedFields:
+            # OTLP logs keep the trace id as structured metadata, not in the line.
+            - name: trace_id
+              matcherType: label
+              matcherRegex: trace_id
+              url: "$${__value.raw}"
+              datasourceUid: tempo
+              urlDisplayLabel: Open trace
+      - name: Tempo
+        uid: tempo
+        type: tempo
+        url: http://tempo.observability.svc:3200
+        jsonData:
+          tracesToLogsV2:
+            datasourceUid: loki
+            spanStartTimeShift: -5m
+            spanEndTimeShift: 5m
+            filterByTraceID: true
+            tags:
+              - key: k8s.namespace.name
+                value: k8s_namespace_name
+              - key: k8s.pod.name
+                value: k8s_pod_name
+          tracesToMetrics:
+            datasourceUid: prometheus
+            spanStartTimeShift: -5m
+            spanEndTimeShift: 5m
+            tags:
+              - key: k8s.pod.name
+                value: k8s_pod_name
+            queries:
+              - name: Pod CPU
+                query: 'sum(rate(k8s_pod_cpu_time_seconds_total{$$__tags}[1m]))'
+              - name: Pod memory
+                query: 'sum(k8s_pod_memory_working_set_bytes{$$__tags})'
+          nodeGraph:
+            enabled: true
