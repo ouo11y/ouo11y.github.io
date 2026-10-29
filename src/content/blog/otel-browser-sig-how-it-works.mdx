@@ -1,0 +1,164 @@
+---
+title: "How the OpenTelemetry Browser SIG works, and how to follow it"
+description: Where browser support in OpenTelemetry came from, why it got its own SIG and repository, who maintains what, when they meet, what they decided this autumn, and how to keep up in an hour a week.
+date: 2026-10-30
+tags: [opentelemetry, browser, community]
+series: "OpenTelemetry in the browser"
+part: 2
+---
+import Note from '../../components/Note.astro';
+import Flow from '../../components/diagrams/Flow.astro';
+import BrowserHistory from '../../components/diagrams/BrowserHistory.astro';
+
+[Part 1](/blog/otel-browser-state-2026-10/) said which packages to use today. This part is about the people and the process behind them: if you want to know what the browser packages will look like in six months, you read what the Browser SIG discussed last Thursday.
+
+A SIG (special interest group) is how OpenTelemetry organises work: a group with a charter, a weekly call, public notes, a Slack channel and one or more repositories. Anyone can join the call.
+
+<Note title="Sources for this post">
+We used the SIG's public [meeting notes](https://docs.google.com/document/d/1G3yBAV5SzWBO3mmsBUos5bsn4yxsqkS1MLWl1urVojQ) (read on 29 October 2026, meetings from 3 July 2025 to 22 October 2026), the [`open-telemetry/community`](https://github.com/open-telemetry/community) repository, GitHub issues, PRs and releases in the browser and JS repositories, and the npm registry. We opened the [LFX meetings page](https://zoom-lfx.platform.linuxfoundation.org/meetings/opentelemetry) where recordings are listed, but without signing in it listed no meetings for us, so we used no recordings, and no Slack or YouTube content. Where this post says "decided", the notes say so.
+</Note>
+
+## From a corner of opentelemetry-js to its own SIG
+
+Browser tracing is as old as OpenTelemetry JS itself. The [repository](https://github.com/open-telemetry/opentelemetry-js) opened in May 2019, and the first browser tracer was on npm five months later. For six years the browser packages lived next to the Node.js ones, reviewed by the same people, following the same specification. A [Client Instrumentation SIG](https://github.com/open-telemetry/community/blob/main/sigs.md#client-instrumentation) worked on shared ideas for browsers and mobile, such as sessions and events, and still meets.
+
+The pressure that split things out shows in two places. The [Browser Phase 1 proposal](https://github.com/open-telemetry/community/blob/main/projects/browser-phase-1.md), merged in June 2025, argues that the browser differs from Node.js enough to need its own work: unloading a page, scarce CPU and network, no gRPC, bundle size, one user per runtime, sessions that span page loads, and no async context. And the JS repository was planning a 3.0 that would merge its tracing SDKs into one package with no browser helpers, which forced the question of where fetch, XHR and the web utilities should live.
+
+The proposal took a narrow first step on purpose: stabilise instrumentation and the data model first, keep using the existing JS SDK, and decide on a browser SDK later. It named Ted Young (Grafana Labs) as project lead and listed implementers from ServiceNow, Honeycomb, Microsoft, Embrace, Elastic and Cisco.
+
+The notes then show the repository decision step by step. On 21 August 2025 a new repository was first raised; on 28 August the goal of the meeting was to decide on one; on 4 September the SIG asked who would maintain it. The repository was [created on 11 September 2025](https://github.com/open-telemetry/opentelemetry-browser). In November 2025 the JS maintainers proposed making browser maintainers code owners for the browser packages still in the JS repositories, and today the [JS `CODEOWNERS`](https://github.com/open-telemetry/opentelemetry-js/blob/main/.github/CODEOWNERS) lists `@open-telemetry/browser-maintainers` for fetch, XHR, `web-common`, the browser detector and `context-zone`.
+
+In May 2026 the notes record a principle that explains many later choices: as long as the APIs match and correct OTLP comes out the other side, the browser may make its own design decisions, and in return the SIG should write down its reasons. The [event catalog](https://github.com/open-telemetry/opentelemetry-browser/blob/main/docs/browser-observability-model.md) and the [roadmap](https://github.com/open-telemetry/opentelemetry-browser/blob/main/docs/roadmap.md) are where those reasons live.
+
+<BrowserHistory
+  caption="Every entry links its primary source. Untick a track to hide it."
+  tracks={[
+    { id: 'js', label: 'OTel JS packages', tone: 'accent' },
+    { id: 'sig', label: 'SIG and community', tone: 'info' },
+    { id: 'repo', label: 'opentelemetry-browser', tone: 'ok' },
+    { id: 'semconv', label: 'Semantic conventions', tone: 'warn' },
+  ]}
+  items={[
+    { date: '2019-05-10', track: 'js', title: 'opentelemetry-js repository created', href: 'https://github.com/open-telemetry/opentelemetry-js' },
+    { date: '2019-10-08', track: 'js', title: '@opentelemetry/web published', body: 'The first browser tracer. Later renamed <code>sdk-trace-web</code>.', href: 'https://www.npmjs.com/package/@opentelemetry/web' },
+    { date: '2020-03-16', track: 'js', title: '@opentelemetry/context-zone published', body: 'Zone.js carries context across async browser code.', href: 'https://www.npmjs.com/package/@opentelemetry/context-zone' },
+    { date: '2021-01-21', track: 'js', title: 'instrumentation-fetch published', body: 'Followed by user-interaction (February) and document-load (March): all span-based.', href: 'https://www.npmjs.com/package/@opentelemetry/instrumentation-fetch' },
+    { date: '2021-08-05', track: 'js', title: '@opentelemetry/sdk-trace-web published', body: 'The renamed <code>@opentelemetry/web</code>, with <code>WebTracerProvider</code>.', href: 'https://www.npmjs.com/package/@opentelemetry/sdk-trace-web' },
+    { date: '2022-06-14', track: 'js', title: 'opentelemetry-sandbox-web-js created', body: 'A home for experimental web packages. Now archived.', href: 'https://github.com/open-telemetry/opentelemetry-sandbox-web-js' },
+    { date: '2023-03-13', track: 'js', title: '@opentelemetry/api-events published', body: 'A separate Events API, removed again in 2025.', href: 'https://www.npmjs.com/package/@opentelemetry/api-events' },
+    { date: '2025-06-17', track: 'sig', title: 'Browser Phase 1 proposal merged', body: 'Charter for the Browser SIG: instrumentation and data model first, SDK later.', href: 'https://github.com/open-telemetry/community/pull/2751' },
+    { date: '2025-07-03', track: 'sig', title: 'First meeting in the SIG notes', body: 'Agenda: organise the backlog, a new repo, archive the web sandbox.', href: 'https://docs.google.com/document/d/1G3yBAV5SzWBO3mmsBUos5bsn4yxsqkS1MLWl1urVojQ' },
+    { date: '2025-07-09', track: 'js', title: 'api-events and sdk-events removed', body: 'Events become log records with <code>eventName</code> (experimental 0.203.0).', href: 'https://github.com/open-telemetry/opentelemetry-js/pull/5737' },
+    { date: '2025-09-11', track: 'repo', title: 'opentelemetry-browser repository created', href: 'https://github.com/open-telemetry/opentelemetry-browser' },
+    { date: '2026-03-12', track: 'repo', title: 'browser-instrumentation 0.1.0', body: 'The first release of the event-based instrumentations.', href: 'https://www.npmjs.com/package/@opentelemetry/browser-instrumentation' },
+    { date: '2026-07-02', track: 'js', title: '@opentelemetry/sdk-trace 2.9.0', body: 'One tracing SDK for Node.js and browsers, replacing three packages.', href: 'https://www.npmjs.com/package/@opentelemetry/sdk-trace' },
+    { date: '2026-07-09', track: 'repo', title: 'browser-sdk 0.1.0', body: '<code>startBrowserSdk()</code>, sessions, browser defaults.', href: 'https://www.npmjs.com/package/@opentelemetry/browser-sdk' },
+    { date: '2026-08-07', track: 'repo', title: 'Roadmap merged', body: 'Phase 1 mostly delivered; next areas by topic, no dates.', href: 'https://github.com/open-telemetry/opentelemetry-browser/pull/361' },
+    { date: '2026-08-26', track: 'semconv', title: 'semantic-conventions-client-side created', body: 'A federated registry for browser, mobile and desktop.', href: 'https://github.com/open-telemetry/semantic-conventions-client-side' },
+    { date: '2026-10-15', track: 'semconv', title: 'Browser conventions added to the client-side registry', body: '<code>browser.navigation</code>, <code>navigation_timing</code>, <code>resource_timing</code>, <code>console</code>, all development.', href: 'https://github.com/open-telemetry/semantic-conventions-client-side/pull/14' },
+    { date: '2026-10-17', track: 'repo', title: 'Versioning and deprecation policy', href: 'https://github.com/open-telemetry/opentelemetry-browser/pull/497' },
+    { date: '2026-10-20', track: 'js', title: 'OTel JS SDK 3.0 and API 1.10', body: '<code>sdk-trace-web</code> removed; Logs API moves into <code>@opentelemetry/api</code>.', href: 'https://github.com/open-telemetry/opentelemetry-js/releases/tag/v3.0.0' },
+    { date: '2026-10-22', track: 'repo', title: 'browser-sdk 0.6.0, browser-instrumentation 0.9.0, migration guide', href: 'https://github.com/open-telemetry/opentelemetry-browser/releases' },
+  ]}
+/>
+
+## Who maintains what
+
+<Flow
+  caption="Where browser code lives on 29 October 2026, and which group approves changes to it."
+  columns={[
+    { label: 'Repository', arrow: 'reviewed by', nodes: [
+      { title: 'opentelemetry-browser', sub: 'browser-sdk, browser-instrumentation, sandbox, docs', tone: 'ok' },
+      { title: 'opentelemetry-js', sub: 'API, sdk-trace, sdk-logs, exporters; fetch, XHR, web-common, context-zone', tone: 'accent' },
+      { title: 'opentelemetry-js-contrib', sub: 'document-load, user-interaction, long-task, web-exception, browser-navigation', tone: 'accent' },
+      { title: 'semantic-conventions(-client-side)', sub: 'browser.*, session.* names', tone: 'warn' },
+    ] },
+    { label: 'Owners', nodes: [
+      { title: 'Browser maintainers and approvers', sub: 'own the browser repo; code owners for browser paths in opentelemetry-js', tone: 'ok' },
+      { title: 'JavaScript maintainers and approvers', sub: 'own the rest of opentelemetry-js and -contrib', tone: 'accent' },
+      { title: 'Semantic conventions approvers', sub: 'with the browser SIG proposing', tone: 'warn' },
+    ] },
+  ]}
+/>
+
+The [browser repository's README](https://github.com/open-telemetry/opentelemetry-browser#maintainers) lists, on 29 October 2026:
+
+| Role | People |
+|---|---|
+| Maintainers | David Luna (Elastic), Jared Freeze (Embrace), Joaquín Díaz (Embrace), Martin Kuba (Grafana Labs), Wolfgang Therrien (Honeycomb) |
+| Approver | Maxime Quentin (Datadog) |
+| Emeritus | Benoît Zugmeyer (approver), Ted Young (maintainer) |
+
+Two names, David Luna and Martin Kuba, also appear in the [opentelemetry-js README](https://github.com/open-telemetry/opentelemetry-js#maintainers), which is part of why changes such as moving `sdk-trace-web` helpers into `web-common` could cross repositories quickly. Affiliations change: the October meeting notes list Jared Freeze and Joaquín Díaz with Palo Alto Networks, while the README still says Embrace.
+
+The SIG's entry in [`sigs.md`](https://github.com/open-telemetry/community/blob/main/sigs.md#browser) names its sponsors: Carlos Alberto Cortez (Technical Committee, escalating), Daniel Dyla and Ted Young (specification), and Ted Young again as Governance Committee liaison.
+
+Recent attendance in the notes, by company, gives a sense of who builds on this work: Grafana Labs, Elastic, Datadog, Microsoft, Google/Firebase, Honeycomb, Palo Alto Networks, Cisco and Northwestern Mutual, plus independent contributors.
+
+## When they meet, and where everything is
+
+| What | Where |
+|---|---|
+| Weekly call | Thursdays at 8:30 Pacific time ([sigs.md](https://github.com/open-telemetry/community/blob/main/sigs.md#browser)); the proposal planned 30 minutes |
+| Calendar invite | join the [calendar-browser](https://groups.google.com/a/opentelemetry.io/g/calendar-browser) group and the invite lands in your calendar |
+| Agenda and notes | one running [Google Doc](https://docs.google.com/document/d/1G3yBAV5SzWBO3mmsBUos5bsn4yxsqkS1MLWl1urVojQ), newest meeting at the top; add your item under the next date |
+| Recordings | [LFX meetings](https://zoom-lfx.platform.linuxfoundation.org/meetings/opentelemetry) |
+| Chat | [#otel-browser](https://cloud-native.slack.com/archives/C093P0AMP0T) on the CNCF Slack ([invite](https://slack.cncf.io/)) |
+| Code | [opentelemetry-browser](https://github.com/open-telemetry/opentelemetry-browser), plus browser paths in opentelemetry-js and -contrib |
+| Plan | [roadmap.md](https://github.com/open-telemetry/opentelemetry-browser/blob/main/docs/roadmap.md) and [project board 146](https://github.com/orgs/open-telemetry/projects/146) |
+| Conventions | [semantic-conventions-client-side](https://github.com/open-telemetry/semantic-conventions-client-side) and [semantic-conventions](https://github.com/open-telemetry/semantic-conventions) |
+
+Related calls, if you care about more than the browser: the [Client Instrumentation SIG](https://github.com/open-telemetry/community/blob/main/sigs.md#client-instrumentation) meets every Tuesday at 09:00 Pacific (weekly since [September 2026](https://github.com/open-telemetry/community/pull/3711)) and is where sessions are aligned across platforms; [Android](https://github.com/open-telemetry/community/blob/main/sigs.md#android-sdk--automatic-instrumentation) meets Thursdays at 08:00 and [Swift](https://github.com/open-telemetry/community/blob/main/sigs.md#swift-sdk) Thursdays at 09:00 Pacific. The Phase 1 proposal said the Client SIG would retire once the Browser SIG began; it has not.
+
+## What was decided this autumn
+
+Notes are short, so we link the issue or PR behind each item and say what has happened since.
+
+**22 October 2026.** The SIG agreed to a proposal to close the open browser convention questions one decision per meeting ([semantic-conventions-client-side#34](https://github.com/open-telemetry/semantic-conventions-client-side/issues/34)), starting with the scope of document load, then INP attribution. Document-load work is to be split into smaller PRs: the span instrumentation, context for resource-timing events, and linking the document-load span to the server's trace through a meta tag. A discussion opened on instrumentation config becoming static, and on when a config change should apply (next session, or next record). Martin Kuba shared a [pull request dashboard](https://github.com/open-telemetry/opentelemetry-browser/issues/517). A release was planned for that week; it [shipped the same day](https://github.com/open-telemetry/opentelemetry-browser/releases).
+
+**15 October 2026.** OTel JS 3.0 was announced for the following Monday (it shipped 20 October). A proposal to move the [OpenTelemetry Demo](https://github.com/open-telemetry/opentelemetry-demo) frontend to the new browser packages was raised with the Demo SIG; the roadmap also asks for this. The browser [migration guide](https://github.com/open-telemetry/opentelemetry-browser/pull/479) was ready for review (merged 22 October), with a request to add a table of key changes. Also on the agenda: a proposal for migrating document load ([#327](https://github.com/open-telemetry/opentelemetry-browser/issues/327)), the [versioning and deprecation policy](https://github.com/open-telemetry/opentelemetry-browser/pull/497) (merged 17 October), resource detectors in the SDK ([#460](https://github.com/open-telemetry/opentelemetry-browser/issues/460)) and moving the browser detector over ([#459](https://github.com/open-telemetry/opentelemetry-browser/pull/459), merged 19 October). On the base instrumentation class, the group asked whether "initialize" and "enable" should be separate, with consent rules such as GDPR in mind, and took an action to open an issue about a global enable and disable for the SDK.
+
+**8 October 2026.** The "with tracing" example still used the classic fetch and XHR instrumentations; the action was to migrate it ([#485](https://github.com/open-telemetry/opentelemetry-browser/pull/485), merged 13 October). Reviews were requested for element timing ([#396](https://github.com/open-telemetry/opentelemetry-browser/pull/396), [semantic-conventions#4011](https://github.com/open-telemetry/semantic-conventions/pull/4011)) and the browser-native instrumentation base ([#278](https://github.com/open-telemetry/opentelemetry-browser/pull/278), merged 24 October).
+
+**1 October 2026.** The browser conventions PR moved from the browser repo to the new client-side registry ([#14](https://github.com/open-telemetry/semantic-conventions-client-side/pull/14), merged 15 October). Actions: an issue for migration documentation, and one to discuss whether a span-based document-load instrumentation is still needed.
+
+**17 September 2026.** By default, the SDK will not record telemetry about its own export requests; a debug mode may allow it later. [#482](https://github.com/open-telemetry/opentelemetry-browser/pull/482) implements this and is still open.
+
+**3 September 2026.** Browser conventions use snake_case keys, converting names that come from browser APIs and libraries (for example `navigationType` from web-vitals). You can see this on the wire in [part 1](/blog/otel-browser-state-2026-10/#what-the-collector-printed).
+
+Earlier decisions that still shape the packages: the XHR span starts at `send()` and keeps no span events (13 August 2026); `quickStartBrowserSdk` should turn sessions on by default (16 July 2026, still not the case in browser-sdk 0.6.0, whose `quickStartBrowserSdk` adds no session processors); and in July 2026 Trent Mick asked to make the Browser SDK the replacement for `WebTracerProvider` so that `sdk-trace-web` could be deprecated, which OTel JS 3.0 then did.
+
+## How to follow it in an hour a week
+
+This is the routine we use for this series. It needs no account except GitHub.
+
+1. **Thursday, after the call:** read the newest entry in the [notes](https://docs.google.com/document/d/1G3yBAV5SzWBO3mmsBUos5bsn4yxsqkS1MLWl1urVojQ). Open every linked issue and PR, because the notes are only pointers.
+2. **Releases:** subscribe to the [browser repo releases feed](https://github.com/open-telemetry/opentelemetry-browser/releases.atom) and the [opentelemetry-js releases feed](https://github.com/open-telemetry/opentelemetry-js/releases.atom) in any feed reader. Releases are cut by release-please, so the open "chore: release main" PR is a preview of the next changelog.
+3. **npm:** check versions, dates and deprecation flags of the packages you use.
+
+```bash
+npm view @opentelemetry/browser-sdk version time.modified dependencies
+```
+
+```bash
+npm view @opentelemetry/instrumentation-fetch version deprecated
+```
+
+4. **Conventions:** watch [semantic-conventions-client-side](https://github.com/open-telemetry/semantic-conventions-client-side/pulls) and PRs touching `model/browser` and `model/session` in [semantic-conventions](https://github.com/open-telemetry/semantic-conventions/pulls).
+5. **Breaking changes:** a `!` in a PR title (for example `feat(sdk)!:`) marks a breaking change under the [versioning policy](https://github.com/open-telemetry/opentelemetry-browser/blob/main/VERSIONING.md#marking-breaking-changes). This lists the open ones (on 29 October it printed #532 and #495):
+
+```bash
+gh pr list -R open-telemetry/opentelemetry-browser --state open --json number,title --jq '.[] | select(.title | test("!:")) | "#\(.number) \(.title)"'
+```
+
+If you want to help, the [contributing guide](https://github.com/open-telemetry/opentelemetry-browser/blob/main/CONTRIBUTING.md) explains how to claim an issue, and PRs now carry an AI-usage disclosure checkbox ([#470](https://github.com/open-telemetry/opentelemetry-browser/pull/470)). Bring an agenda item to the doc before Thursday; the SIG reads it in order.
+
+## What to watch next
+
+- **Document load.** One decision per meeting starts with it ([#327](https://github.com/open-telemetry/opentelemetry-browser/issues/327), [#504](https://github.com/open-telemetry/opentelemetry-browser/pull/504)). It decides whether a page load can be the first span of a trace that continues on your server.
+- **The JS 3.x move** for the browser packages ([#525](https://github.com/open-telemetry/opentelemetry-browser/pull/525)), and the deprecation sweep of the classic packages ([#209](https://github.com/open-telemetry/opentelemetry-browser/issues/209)).
+- **Sessions on by default** in the quick start, and session start and end events.
+- **The OpenTelemetry Demo** moving its frontend to the browser packages: the first large public example.
+- **Mobile.** Sessions and conventions are being aligned across browser, Android and iOS in the Client Instrumentation SIG and the client-side registry. We will cover that alignment in this series.
+
+Part 1: [the state of OpenTelemetry in the browser, October 2026](/blog/otel-browser-state-2026-10/).
