@@ -16,7 +16,10 @@ const provider = new TracerProvider({
     'deployment.environment.name': 'blog-e2e',
   }),
   spanProcessors: [
-    new BatchSpanProcessor(new OTLPTraceExporter({ url: `${window.SHOP.otlp}/v1/traces` }), {
+    // SDK 3.x takes the exporter as an option. The 2.x form, new BatchSpanProcessor(exporter, {...}),
+    // still runs, throws nothing and exports nothing.
+    new BatchSpanProcessor({
+      exporter: new OTLPTraceExporter({ url: `${window.SHOP.otlp}/v1/traces` }),
       scheduledDelayMillis: 1000,
     }),
   ],

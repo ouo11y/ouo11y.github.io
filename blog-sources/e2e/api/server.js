@@ -7,7 +7,13 @@ const amqp = require('amqplib');
 const pino = require('pino');
 
 const log = pino();
-const db = new Pool({ connectionString: process.env.DATABASE_URL, max: 10 });
+// host, port and database as fields, not a connection string: the pg instrumentation names the
+// pool from them (db.client.connection.pool.name), and from a string it gets unknown_host:unknown_port.
+const pg = new URL(process.env.DATABASE_URL);
+const db = new Pool({
+  host: pg.hostname, port: Number(pg.port), database: pg.pathname.slice(1),
+  user: pg.username, password: pg.password, max: 10,
+});
 const redis = new Redis(process.env.REDIS_URL);
 const QUEUE = 'orders';
 

@@ -57,5 +57,8 @@ memberlist:
 limits:
   # Exemplars are off in Mimir until you give them room: the default is 0.
   max_global_exemplars_per_user: 100000
-  # Keep OTel resource attributes such as service.namespace as labels on every series.
-  promote_otel_resource_attributes: "service.namespace,deployment.environment.name"
+  # Resource attributes that become labels on every series. Without rabbitmq.queue.name the
+  # receiver's queue-depth series carry no queue name at all.
+  promote_otel_resource_attributes: "service.namespace,deployment.environment.name,rabbitmq.queue.name,rabbitmq.vhost.name,postgresql.database.name"
+  # Mimir 3 keeps OTel names without unit suffixes: messaging_process_duration_bucket,
+  # not messaging_process_duration_seconds_bucket.
