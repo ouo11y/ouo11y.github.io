@@ -1,0 +1,8 @@
+pika==1.4.4
+psycopg[binary]==3.3.6
+redis==8.1.0
+opentelemetry-distro==0.66b1
+opentelemetry-exporter-otlp==1.45.1
+opentelemetry-instrumentation-psycopg==0.66b1
+opentelemetry-instrumentation-redis==0.66b1
+opentelemetry-instrumentation-logging==0.66b1

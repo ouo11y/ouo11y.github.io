@@ -1,0 +1,86 @@
+---
+// Which ID joins which signal. Pick a key on the left; the cards on the right light up where that
+// key is stored, under which name, and what a click on it opens in Grafana. Works without JS
+// (every card lists all its keys); the buttons only highlight.
+// <E2eCorrelationMap keys={[{ id: 'trace', label: 'trace_id', why: '...' }]} signals={[{ title: 'Span', where: [{ key: 'trace', field: 'traceId', opens: 'the trace' }] }]} />
+import '../../styles/diagram.css';
+
+interface Key { id: string; label: string; why: string; }
+interface Where { key: string; field: string; opens?: string; }
+interface Signal { title: string; sub?: string; where: Where[]; tone?: 'accent' | 'ok' | 'warn' | 'bad' | 'info'; }
+interface Props { keys: Key[]; signals: Signal[]; caption?: string; }
+const { keys, signals, caption } = Astro.props;
+const label = Object.fromEntries(keys.map((k) => [k.id, k.label]));
+---
+<figure class="dg cmap not-content" data-cmap>
+  <div class="grid">
+    <div class="keys" role="group" aria-label="Correlation keys">
+      {keys.map((k, i) => (
+        <button type="button" class="key" data-key={k.id} aria-pressed={i === 0 ? 'true' : 'false'}>
+          <code>{k.label}</code>
+          <small>{k.why}</small>
+        </button>
+      ))}
+    </div>
+    <div class="signals">
+      {signals.map((s) => (
+        <div class:list={['sig', `tone-${s.tone ?? 'accent'}`]} data-keys={s.where.map((w) => w.key).join(' ')}>
+          <div class="sig-head"><b>{s.title}</b>{s.sub && <small>{s.sub}</small>}</div>
+          <ul>
+            {s.where.map((w) => (
+              <li data-key={w.key}>
+                <span class="k">{label[w.key]}</span>
+                <code class="f">{w.field}</code>
+                {w.opens && <span class="o">→ {w.opens}</span>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+    </div>
+  </div>
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+  for (const fig of document.querySelectorAll<HTMLElement>('[data-cmap]')) {
+    const buttons = [...fig.querySelectorAll<HTMLButtonElement>('.key')];
+    const select = (key: string) => {
+      fig.dataset.active = key;
+      for (const b of buttons) b.setAttribute('aria-pressed', String(b.dataset.key === key));
+      for (const s of fig.querySelectorAll<HTMLElement>('.sig')) {
+        s.classList.toggle('on', s.dataset.keys!.split(' ').includes(key));
+        for (const li of s.querySelectorAll<HTMLElement>('li')) li.classList.toggle('on', li.dataset.key === key);
+      }
+    };
+    for (const b of buttons) b.addEventListener('click', () => select(b.dataset.key!));
+    if (buttons[0]) select(buttons[0].dataset.key!);
+  }
+</script>
+
+<style>
+  .cmap { container-type: inline-size; }
+  .grid { display: grid; grid-template-columns: minmax(0, 34%) minmax(0, 1fr); gap: 16px; }
+  .keys { display: flex; flex-direction: column; gap: 8px; }
+  .key { text-align: left; display: grid; gap: 2px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--dg-line); background: var(--dg-node); color: var(--dg-ink); cursor: pointer; font: inherit; }
+  .key code { font-size: 13px; font-weight: 700; background: none; padding: 0; color: var(--dg-ink); overflow-wrap: anywhere; }
+  .key small { color: var(--dg-ink-3); font-size: 12px; }
+  .key[aria-pressed='true'] { border-color: var(--dg-accent); background: var(--dg-accent-soft); }
+  .key:focus-visible { outline: 2px solid var(--dg-accent); outline-offset: 2px; }
+  .signals { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; align-content: start; }
+  .sig { padding: 10px 12px; border-radius: 10px; border: 1px solid var(--dg-line); background: var(--dg-node); transition: opacity .2s, border-color .2s; }
+  [data-active] .sig:not(.on) { opacity: .45; }
+  .sig.on { border-color: var(--tone); box-shadow: inset 3px 0 0 var(--tone); }
+  .sig-head { display: flex; flex-direction: column; margin-bottom: 6px; }
+  .sig-head small { color: var(--dg-ink-3); font-size: 12px; }
+  ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+  li { display: flex; flex-wrap: wrap; gap: 2px 6px; align-items: baseline; font-size: 12px; padding: 3px 6px; border-radius: 6px; }
+  li.on { background: color-mix(in srgb, var(--tone) 14%, transparent); }
+  .k { color: var(--dg-ink-3); }
+  .f { background: none; padding: 0; color: var(--dg-ink); overflow-wrap: anywhere; }
+  .o { flex-basis: 100%; color: var(--tone); font-weight: 600; }
+  @container (max-width: 560px) {
+    .grid { grid-template-columns: 1fr; }
+    .keys { display: grid; grid-template-columns: 1fr 1fr; }
+  }
+</style>

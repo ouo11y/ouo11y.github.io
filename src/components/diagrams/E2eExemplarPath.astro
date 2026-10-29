@@ -1,0 +1,73 @@
+---
+// The hops an exemplar crosses, each with the ways it gets lost there. Tick a failure: the hops
+// after it go dark, and the panel says what you would see in Grafana. Without JS every hop and
+// every failure is listed.
+// <E2eExemplarPath hops={[{ title: 'SDK', sub: 'records it', fails: [{ id: 'filter', label: 'filter always_off', see: 'no dots', ran: true }] }]} />
+import '../../styles/diagram.css';
+
+interface Fail { label: string; see: string; ran?: boolean; }
+interface Hop { title: string; sub?: string; needs?: string; fails: Fail[]; }
+interface Props { hops: Hop[]; caption?: string; }
+const { hops, caption } = Astro.props;
+---
+<figure class="dg ex not-content" data-ex>
+  <ol class="hops">
+    {hops.map((h, i) => (
+      <li class="hop" data-i={i}>
+        <div class="hop-head">
+          <span class="n">{i + 1}</span>
+          <div><b>{h.title}</b>{h.sub && <small>{h.sub}</small>}</div>
+        </div>
+        {h.needs && <p class="needs">{h.needs}</p>}
+        <ul class="fails">
+          {h.fails.map((f) => (
+            <li>
+              <label>
+                <input type="checkbox" data-hop={i} data-see={f.see} />
+                <span>{f.label}{f.ran && <em class="ran" title="We broke this on purpose and watched it fail">ran it</em>}</span>
+              </label>
+            </li>
+          ))}
+        </ul>
+      </li>
+    ))}
+  </ol>
+  <div class="verdict" aria-live="polite"><b data-v>Every hop is healthy: the dot is on the graph and opens the trace.</b></div>
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+  for (const fig of document.querySelectorAll<HTMLElement>('[data-ex]')) {
+    const boxes = [...fig.querySelectorAll<HTMLInputElement>('input[type=checkbox]')];
+    const hops = [...fig.querySelectorAll<HTMLElement>('.hop')];
+    const verdict = fig.querySelector<HTMLElement>('[data-v]')!;
+    const update = () => {
+      const broken = boxes.filter((b) => b.checked);
+      const first = broken.length ? Math.min(...broken.map((b) => +b.dataset.hop!)) : Infinity;
+      hops.forEach((h, i) => { h.classList.toggle('dark', i > first); h.classList.toggle('broken', i === first); });
+      fig.classList.toggle('is-broken', broken.length > 0);
+      const at = broken.filter((b) => +b.dataset.hop! === first)[0];
+      verdict.textContent = at ? at.dataset.see! : 'Every hop is healthy: the dot is on the graph and opens the trace.';
+    };
+    for (const b of boxes) b.addEventListener('change', update);
+  }
+</script>
+
+<style>
+  .hops { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; counter-reset: hop; }
+  .hop { position: relative; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--dg-line); background: var(--dg-node); transition: opacity .2s, border-color .2s; }
+  .hop.dark { opacity: .35; }
+  .hop.broken { border-color: var(--dg-bad); box-shadow: inset 0 3px 0 var(--dg-bad); }
+  .hop-head { display: flex; gap: 8px; align-items: flex-start; }
+  .hop-head div { display: grid; }
+  .hop-head small { color: var(--dg-ink-3); font-size: 12px; }
+  .n { flex: 0 0 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 700; background: var(--dg-accent-soft); color: var(--dg-accent); }
+  .broken .n { background: color-mix(in srgb, var(--dg-bad) 18%, transparent); color: var(--dg-bad); }
+  .needs { margin: 8px 0 0; font-size: 12px; color: var(--dg-ink-2); }
+  .fails { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; }
+  .fails label { display: flex; gap: 6px; align-items: flex-start; font-size: 12px; cursor: pointer; }
+  .fails input { margin-top: 2px; accent-color: var(--dg-bad); }
+  .ran { margin-left: 6px; font-style: normal; font-size: 10px; font-weight: 700; padding: 0 5px; border-radius: 99px; color: var(--dg-ok); border: 1px solid color-mix(in srgb, var(--dg-ok) 50%, transparent); white-space: nowrap; }
+  .verdict { margin-top: 12px; padding: 10px 12px; border-radius: 10px; background: color-mix(in srgb, var(--dg-ok) 10%, transparent); border-left: 4px solid var(--dg-ok); font-size: 13px; }
+  .is-broken .verdict { background: color-mix(in srgb, var(--dg-bad) 10%, transparent); border-left-color: var(--dg-bad); }
+</style>

@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tiny order desk</title>
+  <style>
+    body { font: 16px/1.5 system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 16px; }
+    li { display: flex; justify-content: space-between; align-items: center; padding: .4rem 0; border-bottom: 1px solid #ddd; }
+    button { font: inherit; padding: .3rem .9rem; cursor: pointer; }
+    #status { margin-top: 1rem; padding: .8rem; background: #f3f4f6; border-radius: 8px; white-space: pre-line; }
+    a { word-break: break-all; }
+  </style>
+  <script src="/config.js"></script>
+  <script src="/otel.js"></script>
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <h1>Tiny order desk</h1>
+  <p>Buy something, then follow the order through every service in Grafana.</p>
+  <ul id="products"></ul>
+  <div id="status">No order yet.</div>
+</body>
+</html>

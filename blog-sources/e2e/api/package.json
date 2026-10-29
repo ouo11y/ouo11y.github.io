@@ -1,0 +1,27 @@
+{
+  "name": "shop-api",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "build:web": "esbuild web/otel.js --bundle --minify --format=iife --outfile=public/otel.js"
+  },
+  "dependencies": {
+    "@opentelemetry/api": "1.10.0",
+    "@opentelemetry/auto-instrumentations-node": "0.82.0",
+    "@opentelemetry/sdk-node": "0.300.0",
+    "amqplib": "2.2.0",
+    "express": "5.3.0",
+    "ioredis": "6.0.0",
+    "pg": "8.23.1",
+    "pino": "10.4.0"
+  },
+  "devDependencies": {
+    "@opentelemetry/core": "3.0.0",
+    "@opentelemetry/exporter-trace-otlp-http": "0.300.0",
+    "@opentelemetry/instrumentation": "0.300.0",
+    "@opentelemetry/instrumentation-fetch": "0.300.0",
+    "@opentelemetry/resources": "3.0.0",
+    "@opentelemetry/sdk-trace": "3.0.0",
+    "esbuild": "0.28.2"
+  }
+}

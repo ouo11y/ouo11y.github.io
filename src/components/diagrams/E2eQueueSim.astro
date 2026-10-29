@@ -1,0 +1,122 @@
+---
+// A queue you can break: arrival rate, consumers, time per message and a worker outage.
+// Simulated second by second in the browser (FIFO, constant service time), drawn as two charts:
+// messages waiting (what the broker reports) and age of the oldest message (what users feel).
+// Without JS it shows the starting values as text.
+// <E2eQueueSim rate={4} consumers={1} serviceMs={90} outage={[60, 120]} />
+import '../../styles/diagram.css';
+
+interface Props { rate?: number; consumers?: number; serviceMs?: number; outage?: [number, number]; seconds?: number; caption?: string; }
+const { rate = 4, consumers = 1, serviceMs = 90, outage = [60, 120], seconds = 300, caption } = Astro.props;
+const cfg = JSON.stringify({ seconds, outage });
+---
+<figure class="dg qs not-content" data-qs={cfg}>
+  <div class="controls">
+    <label><span>Orders per second <output data-o="rate">{rate}</output></span>
+      <input type="range" name="rate" min="1" max="30" step="1" value={rate} /></label>
+    <label><span>Workers <output data-o="consumers">{consumers}</output></span>
+      <input type="range" name="consumers" min="1" max="8" step="1" value={consumers} /></label>
+    <label><span>Time per order <output data-o="serviceMs">{serviceMs}</output> ms</span>
+      <input type="range" name="serviceMs" min="10" max="1000" step="10" value={serviceMs} /></label>
+    <label class="check"><input type="checkbox" name="outage" checked /> Workers down from {outage[0]} s to {outage[1]} s</label>
+  </div>
+  <div class="stats" aria-live="polite">
+    <div><small>Utilisation</small><b data-s="rho">–</b></div>
+    <div><small>Peak waiting</small><b data-s="peak">–</b></div>
+    <div><small>Peak oldest age</small><b data-s="age">–</b></div>
+    <div><small>Back to empty</small><b data-s="drain">–</b></div>
+  </div>
+  <div class="plots">
+    <div><div class="pt">Messages waiting <small>rabbitmq_message_current{`{state="ready"}`}</small></div><svg data-p="depth" viewBox="0 0 640 150" role="img" aria-label="Messages waiting over time" /></div>
+    <div><div class="pt">Age of the oldest message <small>what the next user waits, in seconds</small></div><svg data-p="age" viewBox="0 0 640 150" role="img" aria-label="Age of the oldest message over time" /></div>
+  </div>
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+  type Cfg = { seconds: number; outage: [number, number] };
+  for (const fig of document.querySelectorAll<HTMLElement>('[data-qs]')) {
+    const cfg: Cfg = JSON.parse(fig.dataset.qs!);
+    const input = (n: string) => fig.querySelector<HTMLInputElement>(`[name=${n}]`)!;
+    const out = (n: string) => fig.querySelector<HTMLElement>(`[data-o=${n}]`)!;
+    const stat = (n: string) => fig.querySelector<HTMLElement>(`[data-s=${n}]`)!;
+
+    const simulate = () => {
+      const rate = +input('rate').value, c = +input('consumers').value, ms = +input('serviceMs').value;
+      const down = input('outage').checked;
+      const perSec = (c * 1000) / ms; // capacity in messages per second
+      const queue: { t: number; n: number }[] = []; // cohorts: arrival second, count
+      const depth: number[] = [], age: number[] = [];
+      let carry = 0, drain: number | null = null;
+      for (let t = 0; t < cfg.seconds; t++) {
+        queue.push({ t, n: rate });
+        const off = down && t >= cfg.outage[0] && t < cfg.outage[1];
+        let cap = off ? 0 : perSec + carry;
+        while (cap >= 1 && queue.length) {
+          const take = Math.min(queue[0].n, Math.floor(cap));
+          queue[0].n -= take; cap -= take;
+          if (queue[0].n <= 0) queue.shift();
+        }
+        carry = off ? 0 : Math.min(cap, 1);
+        const d = queue.reduce((s, q) => s + q.n, 0);
+        depth.push(d);
+        age.push(queue.length ? t - queue[0].t : 0);
+        if (down && t >= cfg.outage[1] && drain === null && d <= rate) drain = t - cfg.outage[1];
+      }
+      return { depth, age, rho: rate / perSec, drain, down };
+    };
+
+    const draw = (svg: SVGSVGElement, vals: number[], tone: string, unit: string) => {
+      const W = 640, H = 150, L = 44, R = 8, T = 10, B = 22;
+      const max = Math.max(1, ...vals) * 1.1;
+      const x = (i: number) => L + (i / (vals.length - 1)) * (W - L - R);
+      const y = (v: number) => T + (1 - v / max) * (H - T - B);
+      const d = vals.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join('');
+      const o = cfg.outage;
+      const shade = input('outage').checked
+        ? `<rect class="off" x="${x(o[0])}" y="${T}" width="${x(o[1]) - x(o[0])}" height="${H - T - B}"/>` : '';
+      const ticks = [0, max / 2, max].map((v) => `<line class="g" x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}"/><text x="${L - 6}" y="${y(v) + 4}" text-anchor="end">${Math.round(v)}${unit}</text>`).join('');
+      const xt = [0, 60, 120, 180, 240, 300].filter((s) => s < vals.length).map((s) => `<text x="${x(s)}" y="${H - 6}" text-anchor="middle">${s}s</text>`).join('');
+      svg.innerHTML = `${shade}${ticks}${xt}<path class="area ${tone}" d="${d}L${x(vals.length - 1)},${y(0)}L${x(0)},${y(0)}Z"/><path class="ln ${tone}" d="${d}"/>`;
+    };
+
+    const update = () => {
+      for (const n of ['rate', 'consumers', 'serviceMs']) out(n).textContent = input(n).value;
+      const r = simulate();
+      stat('rho').textContent = `${Math.round(r.rho * 100)}%`;
+      stat('rho').className = r.rho >= 1 ? 'bad' : r.rho > 0.8 ? 'warn' : 'ok';
+      stat('peak').textContent = `${Math.round(Math.max(...r.depth))}`;
+      stat('age').textContent = `${Math.max(...r.age)} s`;
+      stat('drain').textContent = r.rho >= 1 ? 'never' : r.down ? (r.drain === null ? '> end' : `${r.drain} s after restart`) : '–';
+      draw(fig.querySelector('[data-p=depth]')!, r.depth, 'acc', '');
+      draw(fig.querySelector('[data-p=age]')!, r.age, 'warm', 's');
+    };
+    for (const el of fig.querySelectorAll('input')) el.addEventListener('input', update);
+    update();
+  }
+</script>
+
+<style>
+  .controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px 18px; margin-bottom: 14px; }
+  label { display: grid; gap: 4px; font-size: 13px; color: var(--dg-ink-2); }
+  label output { font-weight: 700; color: var(--dg-ink); font-variant-numeric: tabular-nums; }
+  input[type=range] { width: 100%; accent-color: var(--dg-accent); }
+  .check { display: flex; align-items: center; gap: 8px; }
+  .check input { accent-color: var(--dg-accent); }
+  .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin-bottom: 12px; }
+  .stats div { padding: 8px 10px; border-radius: 10px; background: var(--dg-node); border: 1px solid var(--dg-line); display: grid; }
+  .stats small { color: var(--dg-ink-3); font-size: 11px; }
+  .stats b { font-size: 17px; font-variant-numeric: tabular-nums; }
+  .stats .ok { color: var(--dg-ok); } .stats .warn { color: var(--dg-warn); } .stats .bad { color: var(--dg-bad); }
+  .plots { display: grid; gap: 10px; }
+  .pt { font-weight: 600; font-size: 13px; margin-bottom: 2px; }
+  .pt small { font-weight: 400; color: var(--dg-ink-3); margin-left: 6px; }
+  svg { width: 100%; height: auto; display: block; }
+  svg :global(text) { font-size: 11px; fill: var(--dg-ink-3); }
+  svg :global(.g) { stroke: var(--dg-line); }
+  svg :global(.off) { fill: color-mix(in srgb, var(--dg-bad) 12%, transparent); }
+  svg :global(.ln) { fill: none; stroke-width: 2.2; stroke-linejoin: round; }
+  svg :global(.ln.acc) { stroke: var(--dg-accent); } svg :global(.area.acc) { fill: color-mix(in srgb, var(--dg-accent) 14%, transparent); }
+  svg :global(.ln.warm) { stroke: var(--dg-warn); } svg :global(.area.warm) { fill: color-mix(in srgb, var(--dg-warn) 14%, transparent); }
+  @media (max-width: 560px) { .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+</style>

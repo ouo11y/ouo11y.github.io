@@ -1,0 +1,121 @@
+---
+// One trace across services, as a waterfall you can click: each row opens its span's attributes.
+// Spans can be grouped into "traces"; with two or more, a toggle switches between the joined view
+// (parent/child across the queue) and the split view (two traces joined by a span link).
+// Pure HTML/CSS for reading; a little JS for selection and the toggle.
+// <E2eTrace duration={1200} spans={[{ id: 'a', name: 'buy', service: 'shop-web', depth: 0, from: 0, to: 1180,
+//   attrs: { 'shop.order.id': '42' } }]} />
+import '../../styles/diagram.css';
+
+type Tone = 'accent' | 'ok' | 'warn' | 'bad' | 'info';
+interface Span {
+  id: string; name: string; service: string; depth: number; from: number; to: number;
+  kind?: string; attrs?: Record<string, string | number>; tone?: Tone; note?: string;
+  // In the "link" view: depth and trace this span gets, and the span it links to.
+  linkDepth?: number; linkTrace?: number; linkTo?: string;
+}
+interface Props { duration: number; spans: Span[]; caption?: string; traceIds?: string[]; toggle?: boolean; }
+const { duration, spans, caption, traceIds = [], toggle = false } = Astro.props;
+const pct = (t: number) => (t / duration) * 100;
+const tones: Record<string, Tone> = { 'shop-web': 'info', 'shop-api': 'accent', 'shop-worker': 'ok' };
+const fmt = (ms: number) => (ms >= 1000 ? `${(ms / 1000).toFixed(2)} s` : `${Math.round(ms * 10) / 10} ms`);
+---
+<figure class="dg et not-content" data-et data-mode="child">
+  {toggle && (
+    <div class="modes" role="group" aria-label="How the consumer joins the producer">
+      <button type="button" data-set="child" aria-pressed="true">Parent/child: one trace</button>
+      <button type="button" data-set="link" aria-pressed="false">Span link: two traces</button>
+    </div>
+  )}
+  {traceIds.length > 0 && (
+    <div class="tids">
+      {traceIds.map((t, i) => <code class:list={['tid', `t${i}`]}>trace {i + 1}: {t}</code>)}
+    </div>
+  )}
+  <ol class="rows">
+    {spans.map((s) => (
+      <li class:list={['row', `tone-${s.tone ?? tones[s.service] ?? 'accent'}`]}
+        style={`--d:${s.depth};--ld:${s.linkDepth ?? s.depth}`} data-trace={s.linkTrace ?? 0}>
+        <button type="button" class="head" aria-expanded="false">
+          <span class="name">
+            <span class="svc">{s.service}</span>
+            <code>{s.name}</code>
+            {s.kind && <small class="kind">{s.kind}</small>}
+            {s.linkTo && <small class="link">🔗 link → {s.linkTo}</small>}
+          </span>
+          <span class="track"><span class="bar" style={`left:${pct(s.from)}%;width:max(3px, ${pct(s.to) - pct(s.from)}%)`} /></span>
+          <span class="dur">{fmt(s.to - s.from)}</span>
+        </button>
+        <div class="attrs" hidden>
+          {s.note && <p>{s.note}</p>}
+          {s.attrs && (
+            <dl>
+              {Object.entries(s.attrs).map(([k, v]) => (<><dt>{k}</dt><dd>{String(v)}</dd></>))}
+            </dl>
+          )}
+        </div>
+      </li>
+    ))}
+  </ol>
+  <p class="hint">Click a span to see its attributes.</p>
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+  for (const fig of document.querySelectorAll<HTMLElement>('[data-et]')) {
+    for (const head of fig.querySelectorAll<HTMLButtonElement>('.head')) {
+      head.addEventListener('click', () => {
+        const open = head.getAttribute('aria-expanded') === 'true';
+        head.setAttribute('aria-expanded', String(!open));
+        (head.nextElementSibling as HTMLElement).hidden = open;
+      });
+    }
+    for (const b of fig.querySelectorAll<HTMLButtonElement>('[data-set]')) {
+      b.addEventListener('click', () => {
+        fig.dataset.mode = b.dataset.set!;
+        for (const o of fig.querySelectorAll('[data-set]')) o.setAttribute('aria-pressed', String(o === b));
+      });
+    }
+  }
+</script>
+
+<style>
+  .et { container-type: inline-size; }
+  .modes { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  .modes button { font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 99px; border: 1px solid var(--dg-line); background: var(--dg-node); color: var(--dg-ink); cursor: pointer; }
+  .modes button[aria-pressed='true'] { border-color: var(--dg-accent); background: var(--dg-accent-soft); font-weight: 600; }
+  .tids { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-bottom: 10px; }
+  .tid { font-size: 11px; overflow-wrap: anywhere; }
+  [data-mode='child'] .tid.t1 { display: none; }
+  [data-mode='child'] .tid.t0::after { content: ' (the whole order)'; color: var(--dg-ink-3); }
+  .rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+  .row { --dd: var(--d); }
+  [data-mode='link'] .row { --dd: var(--ld); }
+  [data-mode='link'] .row[data-trace='1'] { background: color-mix(in srgb, var(--dg-ok) 7%, transparent); border-radius: 8px; }
+  [data-mode='link'] .row[data-trace='1']:first-of-type, [data-mode='link'] .row[data-trace='0'] + .row[data-trace='1'] { margin-top: 10px; border-top: 1px dashed var(--dg-line); }
+  .link { display: none; color: var(--dg-ok); font-weight: 600; }
+  [data-mode='link'] .link { display: inline; }
+  .head { width: 100%; display: grid; grid-template-columns: minmax(0, 48%) minmax(0, 1fr) 58px; gap: 10px; align-items: center; padding: 4px 6px; border: 0; border-radius: 8px; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+  .head:hover, .head[aria-expanded='true'] { background: var(--dg-accent-soft); }
+  .head:focus-visible { outline: 2px solid var(--dg-accent); }
+  .name { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; min-width: 0; padding-left: calc(var(--dd) * 14px); }
+  .name code { background: none; padding: 0; color: var(--dg-ink); overflow-wrap: anywhere; }
+  .svc { font-size: 11px; font-weight: 600; padding: 0 6px; border-radius: 99px; color: var(--tone); border: 1px solid color-mix(in srgb, var(--tone) 45%, transparent); }
+  .kind { font-size: 11px; color: var(--dg-ink-3); }
+  .track { position: relative; height: 20px; border-left: 1px solid var(--dg-line); }
+  .bar { position: absolute; top: 5px; height: 10px; border-radius: 3px; background: var(--tone); opacity: .85; }
+  .dur { font-size: 11px; color: var(--dg-ink-3); text-align: right; font-variant-numeric: tabular-nums; }
+  .attrs { margin: 2px 6px 8px calc(var(--dd) * 14px + 6px); padding: 8px 10px; border-left: 3px solid var(--tone); background: var(--dg-node); border-radius: 0 8px 8px 0; font-size: 12px; }
+  .attrs p { margin: 0 0 6px; color: var(--dg-ink-2); }
+  dl { display: grid; grid-template-columns: minmax(0, max-content) minmax(0, 1fr); gap: 2px 12px; margin: 0; }
+  dt { color: var(--dg-ink-3); font-family: var(--sl-font-mono, ui-monospace, monospace); overflow-wrap: anywhere; }
+  dd { margin: 0; font-family: var(--sl-font-mono, ui-monospace, monospace); overflow-wrap: anywhere; }
+  .hint { margin: 8px 0 0; font-size: 12px; color: var(--dg-ink-3); }
+  @container (max-width: 520px) {
+    .head { grid-template-columns: minmax(0, 1fr) 52px; gap: 2px 8px; }
+    .name { grid-column: 1 / -1; }
+    .track { margin-left: calc(var(--dd) * 14px); }
+    dl { grid-template-columns: 1fr; }
+    dd { margin-bottom: 4px; }
+  }
+</style>

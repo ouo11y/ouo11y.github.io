@@ -1,0 +1,68 @@
+---
+// What a cache hit ratio buys: mean lookup time and queries that still reach PostgreSQL.
+// Starts from measured values (props); the sliders let readers try their own.
+// <E2eCacheCalc hitMs={0.4} missMs={2.1} ratio={0.97} rps={40} />
+import '../../styles/diagram.css';
+
+interface Props { hitMs: number; missMs: number; ratio: number; rps: number; caption?: string; }
+const { hitMs, missMs, ratio, rps, caption } = Astro.props;
+---
+<figure class="dg cc not-content" data-cc>
+  <div class="controls">
+    <label><span>Hit ratio <output data-o="ratio">{Math.round(ratio * 100)}</output>%</span>
+      <input type="range" name="ratio" min="0" max="100" step="1" value={Math.round(ratio * 100)} /></label>
+    <label><span>Hit (Redis GET) <output data-o="hit">{hitMs}</output> ms</span>
+      <input type="range" name="hit" min="0.1" max="5" step="0.1" value={hitMs} /></label>
+    <label><span>Miss (GET + SELECT + SET) <output data-o="miss">{missMs}</output> ms</span>
+      <input type="range" name="miss" min="0.5" max="50" step="0.1" value={missMs} /></label>
+    <label><span>Lookups per second <output data-o="rps">{rps}</output></span>
+      <input type="range" name="rps" min="1" max="2000" step="1" value={rps} /></label>
+  </div>
+  <div class="out" aria-live="polite">
+    <div><small>Mean lookup</small><b data-r="mean">–</b></div>
+    <div><small>Queries to PostgreSQL</small><b data-r="db">–</b></div>
+    <div><small>vs. no cache</small><b data-r="gain">–</b></div>
+  </div>
+  <div class="bar" aria-hidden="true"><span class="h" data-b="h"></span><span class="m" data-b="m"></span></div>
+  <div class="legend"><span class="h"><i></i>time spent on hits</span><span class="m"><i></i>time spent on misses</span></div>
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+  for (const fig of document.querySelectorAll<HTMLElement>('[data-cc]')) {
+    const v = (n: string) => +fig.querySelector<HTMLInputElement>(`[name=${n}]`)!.value;
+    const set = (sel: string, t: string) => { fig.querySelector<HTMLElement>(sel)!.textContent = t; };
+    const update = () => {
+      const h = v('ratio') / 100, hit = v('hit'), miss = v('miss'), rps = v('rps');
+      set('[data-o=ratio]', String(v('ratio'))); set('[data-o=hit]', String(hit));
+      set('[data-o=miss]', String(miss)); set('[data-o=rps]', String(rps));
+      const mean = h * hit + (1 - h) * miss;
+      set('[data-r=mean]', `${mean.toFixed(2)} ms`);
+      set('[data-r=db]', `${Math.round(rps * (1 - h))} /s`);
+      set('[data-r=gain]', `${(miss / mean).toFixed(1)}× faster`);
+      const th = h * hit, tm = (1 - h) * miss, tot = th + tm || 1;
+      fig.querySelector<HTMLElement>('[data-b=h]')!.style.width = `${(th / tot) * 100}%`;
+      fig.querySelector<HTMLElement>('[data-b=m]')!.style.width = `${(tm / tot) * 100}%`;
+    };
+    for (const el of fig.querySelectorAll('input')) el.addEventListener('input', update);
+    update();
+  }
+</script>
+
+<style>
+  .controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px 18px; margin-bottom: 14px; }
+  label { display: grid; gap: 4px; font-size: 13px; color: var(--dg-ink-2); }
+  label output { font-weight: 700; color: var(--dg-ink); font-variant-numeric: tabular-nums; }
+  input[type=range] { width: 100%; accent-color: var(--dg-accent); }
+  .out { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .out div { padding: 8px 10px; border-radius: 10px; background: var(--dg-node); border: 1px solid var(--dg-line); display: grid; }
+  .out small { color: var(--dg-ink-3); font-size: 11px; }
+  .out b { font-size: 17px; font-variant-numeric: tabular-nums; }
+  .bar { display: flex; height: 14px; margin-top: 12px; border-radius: 99px; overflow: hidden; background: var(--dg-line); }
+  .bar span { display: block; height: 100%; transition: width .15s; }
+  .bar .h, .legend .h i { background: var(--dg-ok); }
+  .bar .m, .legend .m i { background: var(--dg-warn); }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 8px; font-size: 12px; color: var(--dg-ink-2); }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: middle; }
+  @media (max-width: 560px) { .out { grid-template-columns: 1fr 1fr; } }
+</style>

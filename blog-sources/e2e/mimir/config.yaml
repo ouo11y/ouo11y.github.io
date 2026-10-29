@@ -1,0 +1,61 @@
+# Mimir in monolithic mode (target: all), filesystem storage.
+# OTLP push at :9009/otlp/v1/metrics, PromQL at :9009/prometheus.
+target: all
+multitenancy_enabled: false
+
+server:
+  http_listen_port: 9009
+  grpc_listen_port: 9095
+  log_level: warn
+
+common:
+  storage:
+    backend: filesystem
+    filesystem:
+      dir: /data/blocks
+
+blocks_storage:
+  storage_prefix: blocks
+  bucket_store:
+    sync_dir: /data/tsdb-sync
+  tsdb:
+    dir: /data/tsdb
+
+compactor:
+  data_dir: /data/compactor
+  sharding_ring:
+    instance_addr: 127.0.0.1
+    kvstore: { store: memberlist }
+
+distributor:
+  ring:
+    instance_addr: 127.0.0.1
+    kvstore: { store: memberlist }
+
+ingester:
+  ring:
+    instance_addr: 127.0.0.1
+    replication_factor: 1
+    kvstore: { store: memberlist }
+
+store_gateway:
+  sharding_ring:
+    instance_addr: 127.0.0.1
+    replication_factor: 1
+    kvstore: { store: memberlist }
+
+ruler_storage:
+  storage_prefix: rules
+
+alertmanager_storage:
+  storage_prefix: alertmanager
+
+memberlist:
+  bind_addr: [127.0.0.1]
+  join_members: []
+
+limits:
+  # Exemplars are off in Mimir until you give them room: the default is 0.
+  max_global_exemplars_per_user: 100000
+  # Keep OTel resource attributes such as service.namespace as labels on every series.
+  promote_otel_resource_attributes: "service.namespace,deployment.environment.name"

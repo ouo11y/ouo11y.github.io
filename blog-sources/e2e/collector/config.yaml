@@ -1,0 +1,74 @@
+# One collector for every signal. Apps push OTLP; the collector also pulls metrics from
+# RabbitMQ, Redis and PostgreSQL, and turns spans into RED metrics with exemplars.
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+        cors:
+          allowed_origins: ["http://localhost:47080", "http://127.0.0.1:47080"]
+  # Queue depth, consumers, publish and deliver rates, from the management API.
+  rabbitmq:
+    endpoint: http://rabbitmq:15672
+    username: shop
+    password: shop
+    collection_interval: 10s
+  # INFO stats: keyspace hits and misses, memory, clients, commands.
+  redis:
+    endpoint: redis:6379
+    collection_interval: 10s
+  # Server-side view: backends (connections), commits, rows, database size.
+  postgresql:
+    endpoint: postgres:5432
+    username: shop
+    password: shop
+    databases: [shop]
+    tls:
+      insecure: true
+    collection_interval: 10s
+
+connectors:
+  # Request rate, errors and duration per service and span name, computed from spans.
+  # The Node SDK records no exemplars, so this is where shop-api's exemplars come from.
+  span_metrics:
+    histogram:
+      unit: s
+      explicit:
+        buckets: [5ms, 10ms, 25ms, 50ms, 100ms, 250ms, 500ms, 1s, 2.5s, 5s, 10s]
+    dimensions:
+      - name: http.request.method
+      - name: http.route
+      - name: http.response.status_code
+    exemplars:
+      enabled: true
+    metrics_flush_interval: 15s
+
+processors:
+  batch: {}
+
+exporters:
+  otlp_grpc/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+  otlp_http/loki:
+    endpoint: http://loki:3100/otlp
+  otlp_http/mimir:
+    endpoint: http://mimir:9009/otlp
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp_grpc/tempo, span_metrics]
+    metrics:
+      receivers: [otlp, rabbitmq, redis, postgresql, span_metrics]
+      processors: [batch]
+      exporters: [otlp_http/mimir]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp_http/loki]
