@@ -6,6 +6,10 @@ import sitemap from '@astrojs/sitemap';
 export default defineConfig({
   site: 'https://ouo11y.com',
   trailingSlash: 'always',
+  // Announcements that moved: the old URL keeps working.
+  redirects: {
+    '/announcements/2026-10-24-sdks-on-npm/': '/announcements/2026-10-23-sdks-on-npm/',
+  },
   integrations: [
     starlight({
       title: 'ouo11y',

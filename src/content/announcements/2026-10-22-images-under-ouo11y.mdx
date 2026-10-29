@@ -1,0 +1,67 @@
+---
+title: "collector, rum-api and grafana 0.3.0: the images under ghcr.io/ouo11y"
+description: The first releases under the new name. No API, storage or configuration change, a new image path, and the Grafana app's new ID. How to move a 0.2.0 install, rehearsed with every replay intact.
+date: 2026-10-22
+kind: release
+tags: [release, collector, rum-api, grafana, upgrade]
+---
+
+import ReleaseTable from '../../components/announcements/ReleaseTable.astro';
+import Note from '../../components/Note.astro';
+
+The three server-side images, released again under the [new name](/announcements/2026-10-18-renamed-to-ouo11y/). The minor bump keeps all three on one version for the first ouo11y release; rum-api itself did not change.
+
+<ReleaseTable train="ouo11y-images" />
+
+## What is new
+
+- **New image path:** `ghcr.io/ouo11y/collector`, `ghcr.io/ouo11y/rum-api`, `ghcr.io/ouo11y/grafana`.
+- **rum-api:** no API, storage or configuration change. A 0.2.0 data directory, bucket and config file work unchanged. Session links now point at the Grafana app's new ID, `/a/ouo11y-rum-app/...`.
+- **collector:** the Sentry bridge marks everything it translates with the resource attribute `ouo.rum.mode = sentry`, so a dashboard can split a move from Sentry to ouo11y by cohort. The binary is still `ouo-collector` and the component names are unchanged, so your collector config keeps working.
+- **grafana:** the app inside is `ouo11y-rum-app` 0.7.0, and the image allows it with `GF_PLUGINS_ALLOW_LOADING_UNSIGNED_PLUGINS=ouo11y-rum-app`.
+
+## Get it
+
+The images are private during early access: email [hello@ouo11y.com](mailto:hello@ouo11y.com) for pull access, then log in as shown in [Before you start](/docs/start/quickstart/#before-you-start).
+
+```bash
+docker pull ghcr.io/ouo11y/rum-api:0.3.0
+```
+
+Newer versions are out: see [current versions](/announcements/#current) before you pin these.
+
+## Upgrade from 0.2.0
+
+The one thing that can go wrong is the Grafana app: its ID changed, so Grafana sees a new plugin. Read [the Grafana app gets a new ID](/announcements/2026-10-18-renamed-to-ouo11y/#the-grafana-app-gets-a-new-id) first if you configured Grafana by hand.
+
+On Docker Compose or the VM, with the [one-file stack](/docs/start/quickstart/):
+
+1. Back up the replays and Grafana's volume, as in [Upgrading](/docs/operate/upgrade/#docker-compose-and-the-vm).
+2. Use a compose file that names `ghcr.io/ouo11y/…` (the one-file stack does), set the versions in `.env`, then pull and start:
+
+   ```ini
+   OUO_COLLECTOR_VERSION=0.3.0
+   OUO_RUM_API_VERSION=0.3.0
+   OUO_GRAFANA_VERSION=0.3.0
+   ```
+
+
+   ```bash
+   docker compose pull
+   ```
+
+   ```bash
+   docker compose up -d
+   ```
+
+3. Check that `docker compose logs grafana-plugin` names `ouo11y-rum-app`, and that an older session with a replay still plays.
+
+The `grafana-plugin` service copies the app out of the new Grafana image onto Grafana's volume before Grafana starts. Without that step the volume keeps the app of the first install, and Grafana stops with `plugin not installed: "ouo11y-rum-app"`. Your Grafana provisioning must enable `ouo11y-rum-app`; a provisioning file that still names `ouo-rum-app` leaves the app missing.
+
+<Note type="tip" title="Rehearsed before release">
+On 23 October a VM install of the 0.2.0 images was upgraded to 0.3.0 with three rrweb replays, one frames replay and three Sentry video replays on it. Every replay came back byte-identical through rum-api (the SHA-256 of every event file, frame and video segment), and the sessions, statuses, trace counts and health numbers matched.
+</Note>
+
+## Which versions work together
+
+collector 0.3.0 and grafana 0.3.0 need rum-api 0.2.0 or newer. The SDKs released the next day, [`@ouo11y/browser` and `@ouo11y/react-native` 0.2](/announcements/2026-10-23-sdks-on-npm/), need collector and rum-api 0.2.0 or newer.

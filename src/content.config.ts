@@ -21,6 +21,8 @@ const post = z.object({
   // Newsletter only: the issue number, and the "In this issue" lines (shown atop the issue and on /newsletter/).
   issue: z.number().int().positive().optional(),
   inThisIssue: z.array(z.object({ text: z.string(), href: z.string() })).optional(),
+  // Announcements only: the badge and filter on /announcements/ (AUTHORING.md, "Announcements").
+  kind: z.enum(['release', 'notice', 'docs', 'site']).optional(),
 });
 
 const posts = (dir: string) =>
