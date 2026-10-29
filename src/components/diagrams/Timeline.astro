@@ -55,4 +55,6 @@ const ticks = Array.from({ length: 5 }, (_, i) => Math.round((duration / 4) * i)
   .row:hover .name, .row:hover .track { background: color-mix(in srgb, var(--tone) 8%, transparent); }
   .tl { container-type: inline-size; }
   @container (max-width: 520px) { .name small { display: none; } .grid { grid-template-columns: minmax(0, 52%) minmax(0, 1fr); } }
+  /* Narrow: keep only the first and last tick labels, so they never overlap. */
+  @container (max-width: 640px) { .axis span:not(:first-child):not(:last-child) { display: none; } .axis span:last-child { transform: translateX(-100%); } }
 </style>
