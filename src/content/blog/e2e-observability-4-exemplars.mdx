@@ -1,0 +1,208 @@
+---
+title: "End-to-end observability, hands-on, part 4: exemplars in depth"
+description: How a dot on a latency graph gets the trace ID that opens it, from the SDK through OTLP, the Collector and Mimir or Prometheus to Grafana, what every hop needs, and what happened each time we broke one.
+date: 2026-11-01
+tags: [opentelemetry, metrics, exemplars, mimir, prometheus, hands-on]
+series: "End-to-end observability, hands-on"
+part: 4
+---
+import Note from '../../components/Note.astro';
+import Flow from '../../components/diagrams/Flow.astro';
+import E2eExemplarPath from '../../components/diagrams/E2eExemplarPath.astro';
+import E2eFile from '../../components/E2eFile.astro';
+import E2ePostStyle from '../../components/E2ePostStyle.astro';
+
+<E2ePostStyle />
+
+A histogram is the right way to store latency: cheap, mergeable, and it answers "what is our p95" for any time range. It is also anonymous. When p95 jumps from 90 ms to 900 ms, the histogram cannot tell you which requests were slow. An exemplar is the fix: next to each bucket, keep one real measurement and the trace it came from. In Grafana it is a dot on the graph; hover it, and **Query with Tempo** opens that request.
+
+In this series the dots worked from part 1. This part takes them apart. We follow one exemplar through five systems, list what each one needs, and then break each hop on purpose and write down what we saw. Same project and versions as part 1, plus Prometheus 3.15.1 for comparison.
+
+## Where exemplars came from
+
+Exemplars come from [OpenMetrics](https://github.com/prometheus/OpenMetrics/blob/main/specification/OpenMetrics.md#exemplars), the specification that grew out of the Prometheus text format: a sample may carry a label set (usually a `trace_id`), a value and a timestamp. Prometheus [v2.26.0](https://github.com/prometheus/prometheus/releases/tag/v2.26.0), on 31 March 2021, added in-memory exemplar storage as an experiment behind `--enable-feature=exemplar-storage`. Five years later, in Prometheus 3.15.1, it is still behind that flag.
+
+OpenTelemetry made exemplars part of the [metrics data model](https://opentelemetry.io/docs/specs/otel/metrics/data-model/#exemplars): every OTLP data point can carry a list of exemplars, each with a value, a time, a `trace_id`, a `span_id` and any attributes that were dropped when the point was aggregated. The [SDK specification](https://opentelemetry.io/docs/specs/otel/metrics/sdk/#exemplar) decides which measurements become exemplars in two steps:
+
+- An **exemplar filter** decides which measurements are candidates: `trace_based` (the default: only measurements made while a sampled span is current), `always_on` or `always_off`. The variable is `OTEL_METRICS_EXEMPLAR_FILTER`.
+- An **exemplar reservoir** decides which candidates are kept. For histograms with explicit buckets, the default keeps one per bucket per collection, the most recent, so you get a slow example and a fast one rather than a hundred average ones.
+
+## The path, and what every hop needs
+
+<Flow
+  caption="One exemplar's trip from worker.py to the dot in Grafana. A requirement in any box that is not met drops it, usually without an error."
+  columns={[
+    { label: 'Record', arrow: 'OTLP', nodes: [
+      { title: 'SDK', sub: 'histogram.record() inside a sampled span; filter trace_based', tone: 'ok' },
+    ] },
+    { label: 'Carry', arrow: 'OTLP', nodes: [
+      { title: 'Collector', sub: 'passes exemplars through; span_metrics makes its own', tone: 'accent' },
+    ] },
+    { label: 'Store', arrow: 'PromQL', nodes: [
+      { title: 'Mimir', sub: 'max_global_exemplars_per_user > 0' },
+      { title: 'or Prometheus', sub: '--enable-feature=exemplar-storage' },
+    ] },
+    { label: 'Show', arrow: 'trace_id', nodes: [
+      { title: 'Grafana', sub: 'Exemplars on the query; exemplarTraceIdDestinations', tone: 'info' },
+    ] },
+    { label: 'Open', nodes: [
+      { title: 'Tempo', sub: 'the trace must have been kept', tone: 'warn' },
+    ] },
+  ]}
+/>
+
+### Hop 1: the SDK records it
+
+The worker records its processing time with the span still open, so the SDK can see the current span:
+
+```python
+with tracer.start_as_current_span(f"process {QUEUE}", kind=SpanKind.CONSUMER, ...) as span:
+    ...
+    # Recorded while the process span is current, so the SDK attaches its trace_id as an exemplar.
+    process_duration.record(time.time() - started, {**ATTRS, **outcome})
+```
+
+Move that `record()` one line down, outside the `with`, and the measurement has no current span: with the default filter, no exemplar. Nothing else in the code mentions exemplars. In `compose.yaml` we set the default explicitly, `OTEL_METRICS_EXEMPLAR_FILTER: trace_based`, so you can see where to change it.
+
+**The Node.js SDK does not record exemplars.** We searched `@opentelemetry/sdk-metrics` 3.0.0 for the word: it appears nowhere. Only the configuration package parses the environment variable. The work is tracked in [opentelemetry-js#5147](https://github.com/open-telemetry/opentelemetry-js/issues/5147), open since November 2024. In our stack, the API's own `http_server_request_duration_bucket` had 0 exemplars over the same five minutes in which the worker's histogram had 38. This is why the worker is written in Python, and why the Collector computes span metrics for the API.
+
+### Hop 2: the Collector carries it, or makes it
+
+An exemplar is part of the OTLP data point, and the `otlp` receiver, the `batch` processor and the `otlp_http` exporter pass it through untouched. Two things in a Collector can make or lose them:
+
+- The **`span_metrics` connector** builds histograms from spans, and with `exemplars: enabled: true` it attaches the trace and span ID of spans that fell into each bucket. That is language-independent: our Node.js API got exemplars this way, 260 of them in five minutes, including the one from part 1 that pointed at the browser click.
+- Anything that **re-aggregates** points (for example, processors that change temporality or drop attributes and merge series) has to decide what happens to the exemplars of the points it merges. Check the processor's documentation before you put it in front of a histogram you want exemplars on. We did not test any here.
+
+### Hop 3: the store keeps it
+
+This is where most setups lose them, because both stores we tried accept exemplars on the wire and keep none by default.
+
+**Mimir 3.2.1** keeps exemplars per tenant up to `max_global_exemplars_per_user`, and the default is 0. Our `mimir/config.yaml` sets it:
+
+```yaml
+limits:
+  # Exemplars are off in Mimir until you give them room: the default is 0.
+  max_global_exemplars_per_user: 100000
+```
+
+**Prometheus 3.15.1** needs the feature flag, and the OTLP receiver flag if the Collector pushes to it:
+
+```text
+prometheus --web.enable-otlp-receiver --enable-feature=exemplar-storage
+```
+
+with the Collector exporting to `http://prometheus:9090/api/v1/otlp`. Both answer the same API, `/api/v1/query_exemplars`, which is the quickest way to know whether a store has any:
+
+```bash
+curl -s -G http://127.0.0.1:47009/prometheus/api/v1/query_exemplars \
+  --data-urlencode 'query=messaging_process_duration_bucket' \
+  --data-urlencode start=$(( $(date +%s) - 300 )) --data-urlencode end=$(date +%s)
+```
+
+```json
+{"status": "success", "data": [{"seriesLabels": {"__name__": "messaging_process_duration_bucket",
+  "le": "0.1", "job": "shop/shop-worker", "messaging_destination_name": "orders", ...},
+ "exemplars": [{"labels": {"span_id": "70f9a11e0ab489d9", "trace_id": "29a1cab62eaa573ce7ecb5c1ebd78245"},
+   "value": "0.09864544868469238", "timestamp": 1793299922.063}]}, ...]}
+```
+
+<Note title="Same data, two names">
+The two stores named the same OTLP metric differently. Mimir 3.2.1 kept OpenTelemetry names without unit suffixes: `messaging_process_duration_bucket`, `messaging_client_consumed_messages`. Prometheus 3.15.1 added them: `messaging_process_duration_seconds_bucket`, `messaging_client_consumed_messages_total`. A dashboard or an exemplar query written for one returns nothing on the other.
+</Note>
+
+### Hop 4: Grafana shows it
+
+Two settings, both in part 1's `datasources.yaml`:
+
+- The query must ask for exemplars: the **Exemplars** toggle in the query options, `exemplar: true` in a dashboard's JSON.
+- The Prometheus-type datasource must know which exemplar label is a trace ID and where to send it:
+
+```yaml
+exemplarTraceIdDestinations:
+  - name: trace_id
+    datasourceUid: tempo
+```
+
+Without the second, the dots are drawn but hovering them shows only labels, not a link.
+
+### Hop 5: Tempo has the trace
+
+The exemplar carries only an ID. If the trace was not kept, the dot opens nothing, or half of something.
+
+## Breaking every hop
+
+For each test we changed one thing, waited for at least three export intervals, and counted exemplars stored in the last 30 seconds with `query_exemplars`. Baseline with everything on: 9 exemplars on the worker's histogram and 71 on the API's span metrics in 40 seconds. Tick a failure to see where it stops; "ran it" marks the ones we broke for real:
+
+<E2eExemplarPath
+  caption="Results of our runs on 29 October 2026. Untagged failures are documented behaviour we did not reproduce."
+  hops={[
+    { title: 'SDK', sub: 'worker.py, Python 1.45.1', fails: [
+      { label: 'Service is Node.js (SDK 3.0.0)', ran: true, see: 'No exemplars at all on SDK histograms: 0 on http_server_request_duration while the Python worker had 38. Use span_metrics in the Collector.' },
+      { label: 'OTEL_METRICS_EXEMPLAR_FILTER=always_off', ran: true, see: 'Series keep arriving; 0 exemplars in 30 s. Nothing is logged.' },
+      { label: 'OTEL_TRACES_SAMPLER=always_off, filter trace_based', ran: true, see: '0 exemplars: no span is sampled, so no measurement qualifies. Correct, and easy to mistake for a broken pipeline.' },
+      { label: 'record() called after the span ended', see: 'No current span, so the trace_based filter skips it.' },
+    ] },
+    { title: 'Collector', sub: 'contrib 0.164.0', fails: [
+      { label: 'span_metrics without exemplars.enabled', see: 'Histograms from spans arrive with no exemplars.' },
+      { label: 'A processor that re-aggregates points', see: 'Exemplars may be dropped when series are merged; check the processor.' },
+    ] },
+    { title: 'Store', sub: 'Mimir 3.2.1 or Prometheus 3.15.1', fails: [
+      { label: 'Mimir max_global_exemplars_per_user: 0 (the default)', ran: true, see: '0 exemplars for every metric; all 70 series still there; no error in the Collector log. The silent one.' },
+      { label: 'Prometheus without --enable-feature=exemplar-storage', ran: true, see: '0 exemplars; with the flag, 7 on the worker histogram and 60 on span metrics in 30 s.' },
+      { label: 'Query uses the other store\'s metric name', ran: true, see: 'messaging_process_duration_bucket exists in Mimir, messaging_process_duration_seconds_bucket in Prometheus: the wrong one returns an empty result.' },
+    ] },
+    { title: 'Grafana', sub: '13.3.0', fails: [
+      { label: 'Exemplars toggle off on the query', see: 'The line is drawn with no dots.' },
+      { label: 'No exemplarTraceIdDestinations', see: 'Dots appear, but hovering shows labels and no Query with Tempo link.' },
+    ] },
+    { title: 'Tempo', sub: '3.0.3', fails: [
+      { label: 'Worker unsampled, filter always_on', ran: true, see: 'Exemplars come back (5 in 30 s), but their span_id is a worker span that was never exported: the trace opens with the API half only.' },
+      { label: 'Tail sampling drops the trace', see: 'The dot opens "trace not found".' },
+    ] },
+  ]}
+/>
+
+What the runs looked like, as printed by our counting script:
+
+```text
+baseline:                                 9 exemplars in 3 series     71 exemplars in 14 series (span metrics)
+OTEL_METRICS_EXEMPLAR_FILTER=always_off:  0 exemplars in 0 series
+OTEL_TRACES_SAMPLER=always_off:           0 exemplars in 0 series
+always_off sampler + always_on filter:    5 exemplars in 3 series
+Mimir max_global_exemplars_per_user: 0:   0 exemplars in 0 series     0 exemplars in 0 series (span metrics)
+Prometheus, no exemplar-storage flag:     0 exemplars in 0 series
+Prometheus, with the flag:                7 exemplars in 3 series     60 exemplars in 21 series (span metrics)
+```
+
+The `always_on` case is the subtle one. The worker ran with sampling off and the filter forced on; the exemplars carried trace IDs from the API's `traceparent`, so Tempo found the trace (`GET /api/v2/traces/5950b953…` returned 200), but its only service was `shop-api`. The dot pointed at a worker span that does not exist. With the default filter you get fewer exemplars and every one of them leads somewhere. Keep the default.
+
+## How we ran the tests
+
+The worker tests are Compose override files that change one variable, for example:
+
+```yaml
+services:
+  worker:
+    environment:
+      OTEL_METRICS_EXEMPLAR_FILTER: always_off
+```
+
+```bash
+docker compose -f compose.yaml -f override.yaml up -d worker
+```
+
+The Mimir test mounted a copy of `mimir/config.yaml` with the limit set to 0. The Prometheus test added a `prom/prometheus:v3.15.1` service with the two flags and an `otlp_http/prometheus` exporter to the Collector's metrics pipeline, next to Mimir. Each was removed afterwards; the downloadable project has the working configuration only.
+
+## A checklist
+
+When the dots are missing, check in this order, because each check is one command:
+
+1. **Does the store have any?** `query_exemplars` against the metric, last five minutes. If yes, the problem is in Grafana (toggle, destination, label name).
+2. **Does the SDK make any?** Is the service in a language whose SDK records exemplars (not Node.js today)? Is the measurement inside a sampled span? Is `OTEL_METRICS_EXEMPLAR_FILTER` unset or `trace_based`?
+3. **Does the store keep them?** Mimir: `max_global_exemplars_per_user`. Prometheus: `--enable-feature=exemplar-storage`.
+4. **Is the name right?** Suffixes differ between Mimir and Prometheus.
+5. **Does the trace exist?** Open one exemplar's `trace_id` in Tempo. If it is missing or partial, look at sampling.
+
+## The series, in one paragraph
+
+One `trace_id`, created by a click in the browser, went through an HTTP header, an AMQP header, a Python worker, two databases, every log line written along the way and a bucket of two latency histograms. Each hop needed one agreement and, more often than not, one setting that is off by default. Part 1 connected the three signals; [part 2](/blog/e2e-observability-2-queues/) watched the queue from the broker because the consumer goes quiet when it fails; [part 3](/blog/e2e-observability-3-databases-and-redis/) went from a slow click to a missing index in four queries; this part made the dot on the graph reliable. The [project](/blog/e2e/blog-e2e.zip) runs all of it on a laptop.

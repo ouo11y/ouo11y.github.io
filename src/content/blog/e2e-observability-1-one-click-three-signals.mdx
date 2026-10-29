@@ -1,0 +1,329 @@
+---
+title: "End-to-end observability, hands-on, part 1: one click, three signals"
+description: Build a small shop with a browser, an API, RabbitMQ, a Python worker, PostgreSQL and Redis, and follow one click through every hop with traces, logs and metrics that point at each other.
+date: 2026-10-29
+tags: [opentelemetry, tracing, logs, metrics, hands-on]
+series: "End-to-end observability, hands-on"
+part: 1
+---
+import Note from '../../components/Note.astro';
+import Flow from '../../components/diagrams/Flow.astro';
+import E2eTrace from '../../components/diagrams/E2eTrace.astro';
+import E2eCorrelationMap from '../../components/diagrams/E2eCorrelationMap.astro';
+import E2eFile from '../../components/E2eFile.astro';
+import E2ePostStyle from '../../components/E2ePostStyle.astro';
+
+<E2ePostStyle />
+
+A user clicks **Buy**. Two hundred and seventy-eight milliseconds later the page says *paid*. In between, the click went through a browser, an HTTP API, Redis, PostgreSQL, a message queue, a worker in another language, PostgreSQL again and Redis again. When that click takes four seconds instead, which hop was it?
+
+This series builds that system on your laptop and answers the question with OpenTelemetry. By the end of this part you will click Buy, copy one `trace_id` from the page, and open from it the whole journey in Tempo, the log lines every service wrote for that click in Loki, and the latency graph in Mimir with a dot on it that opens the same trace.
+
+The four parts:
+
+1. **One click, three signals** (this post): the system, and how traces, logs and metrics find each other.
+2. **Queues**: carrying context through a message, span links or parent/child, and the metrics that tell you a queue is in trouble.
+3. **Databases and Redis**: the stable `db.*` conventions, what gets recorded as query text, connection pools, and finding the slow query from a slow click.
+4. **Exemplars in depth**: every hop between a histogram bucket and a trace, and the ways we broke each one.
+
+<Note title="What we ran">
+Everything on this page ran on 29 October 2026, on macOS (arm64) with Docker 29.3.1 and Compose v5.1.1: OpenTelemetry Collector contrib 0.164.0, Tempo 3.0.3, Loki 3.7.7, Mimir 3.2.1, Grafana 13.3.0, PostgreSQL 18.6, Redis 8.10.3, RabbitMQ 4.4.0. The API runs on Node.js 24.22.2 with `@opentelemetry/sdk-node` 0.300.0 (SDK 3.0.0); the worker on Python 3.14.10 with `opentelemetry-sdk` 1.45.1 and instrumentations 0.66b1; the browser uses OpenTelemetry JS 3.0.0. Every trace, log line and number below is output from that setup.
+</Note>
+
+## Where "one trace across everything" came from
+
+The idea that one request carries an ID through every process it touches is older than OpenTelemetry. Google described it in the [Dapper paper](https://research.google/pubs/dapper-a-large-scale-distributed-systems-tracing-infrastructure/) in 2010: a trace is a tree of spans, every RPC passes the trace and parent span IDs along, and the tree is put back together later from what each service recorded. Twitter's Zipkin (2012) and Uber's Jaeger (2015) brought the model to everyone else.
+
+What was missing for years was an agreed header. Every tracer had its own (`X-B3-TraceId`, `uber-trace-id`, …), so a trace broke at the first service that used a different library. The W3C [Trace Context](https://www.w3.org/TR/trace-context/) recommendation fixed that in February 2020 with one header, `traceparent`, which carries a 16-byte trace ID, an 8-byte parent span ID and a sampled flag. OpenTelemetry, formed in 2019 from the merger of OpenTracing and OpenCensus, uses it by default.
+
+Logs and metrics joined later. The OpenTelemetry [log data model](https://opentelemetry.io/docs/specs/otel/logs/data-model/) gives every log record a `TraceId` and `SpanId` field, so a log line written inside a span carries that span's identity without you formatting it into the message. For metrics, an aggregated number cannot carry the ID of every request it counted, so OpenTelemetry borrowed [exemplars](https://opentelemetry.io/docs/specs/otel/metrics/data-model/#exemplars) from OpenMetrics: a few sample measurements, each with the trace it came from. Part 4 is about those.
+
+So "end to end" is three agreements: one header between processes, one pair of fields in every log record, and one sampled trace ID on a metric. Most of the work in this post is making sure every hop keeps them.
+
+## The system
+
+<Flow
+  caption="Every service sends OTLP to one Collector. The Collector also pulls metrics from RabbitMQ, Redis and PostgreSQL, and computes request metrics from spans."
+  columns={[
+    { label: 'User', arrow: 'fetch + traceparent', nodes: [
+      { title: 'Browser', sub: 'shop-web · OTel JS 3.0', tone: 'info' },
+    ] },
+    { label: 'Services', arrow: 'AMQP headers', nodes: [
+      { title: 'API', sub: 'shop-api · Node.js, Express', tone: 'accent' },
+      { title: 'RabbitMQ', sub: 'queue orders' },
+      { title: 'Worker', sub: 'shop-worker · Python', tone: 'ok' },
+    ] },
+    { label: 'Data', arrow: 'OTLP', nodes: [
+      { title: 'PostgreSQL', sub: '3 million past orders' },
+      { title: 'Redis', sub: 'product and status cache' },
+    ] },
+    { label: 'Telemetry', nodes: [
+      { title: 'Collector', sub: 'contrib 0.164.0' },
+      { title: 'Tempo · Loki · Mimir', sub: 'traces · logs · metrics' },
+      { title: 'Grafana', sub: 'links between all three' },
+    ] },
+  ]}
+/>
+
+What one order does:
+
+1. The browser starts a `buy` span and sends `POST /api/orders` with a `traceparent` header.
+2. The API looks the product up in Redis (on a miss, in PostgreSQL, then caches it for 30 seconds), inserts the order, publishes a message to the `orders` queue and answers `202`.
+3. The worker takes the message, "charges the card", marks the order paid, counts the customer's past orders (a query that is slow on purpose, for part 3) and writes the status to Redis.
+4. The browser polls `GET /api/orders/:id` every 250 ms until it reads `paid`, then ends the `buy` span.
+
+Two languages on purpose: a trace that only works when every service uses the same SDK is not end to end. The API is Node.js because that is where most readers start; the worker is Python because, as part 4 shows, the Node.js SDK does not record exemplars yet and the Python one does.
+
+**Why RabbitMQ and not Kafka.** This is a work queue: each order is a job that one worker takes, does and acknowledges. That is RabbitMQ's model (a queue, acknowledgements, redelivery), and it runs as one container with a management API the Collector can read. Kafka is a log: messages stay after they are read, consumers track an offset, and "lag" is the distance between the newest offset and the group's. Pick Kafka when you need replay, many independent readers of the same stream, or partitioned ordering. The tracing in this series works the same way on both, because context rides in message headers either way; part 2 says where the metrics differ.
+
+## Run it
+
+Download the project, unzip it and start it:
+
+<a class="e2e-download" href="/blog/e2e/blog-e2e.zip" download>⬇ Download the project <small>(blog-e2e.zip, 35 files)</small></a>
+
+```bash
+unzip blog-e2e.zip && cd blog-e2e
+```
+
+```bash
+docker compose up -d --build
+```
+
+The first start builds two images and seeds three million rows into PostgreSQL, so give it a minute or two. All ports are on `127.0.0.1` and in the 47xxx range so they do not collide with anything else you run: the shop is on [localhost:47080](http://localhost:47080), Grafana on [localhost:47300](http://localhost:47300) (no login). A small load generator places two orders per second so the graphs have data.
+
+```bash
+docker compose ps --format '{{.Service}} {{.Status}}'
+```
+
+```text
+api Up 30 seconds
+collector Up 54 seconds
+grafana Up 53 seconds
+loadgen Up 30 seconds
+loki Up 54 seconds
+mimir Up 54 seconds
+postgres Up 54 seconds (healthy)
+rabbitmq Up 54 seconds (healthy)
+redis Up 54 seconds
+tempo Up 54 seconds
+worker Up 31 seconds
+```
+
+The whole stack is one file:
+
+<E2eFile path="compose.yaml" open={false} />
+
+<Note type="caution" title="A healthcheck that lies during the first start">
+The official PostgreSQL image runs `init.sql` on a temporary server that listens on its Unix socket only. `pg_isready` without `-h` checks that socket, so it reports healthy while the seed is still running, and our API and worker started, found nothing on TCP port 5432, and crashed (`ECONNREFUSED 172.29.0.4:5432`). The healthcheck in `compose.yaml` uses `-h 127.0.0.1` to check over TCP, which only answers once the real server is up.
+</Note>
+
+Once in our four fresh starts, RabbitMQ exited at boot with `Error when reading /var/lib/rabbitmq/.erlang.cookie: eacces`, and everything that depends on it stayed down. Starting it again worked; `compose.yaml` now gives RabbitMQ `restart: unless-stopped` for that reason. If `docker compose ps` shows no `rabbitmq`, run `docker compose up -d` again.
+
+## Instrumenting each hop
+
+### The API: zero-code, almost
+
+The API loads the OpenTelemetry Node.js SDK before anything else with `node --require ./instrumentation.js server.js`. The auto-instrumentations patch `http`, Express, `pg`, `ioredis`, `amqplib` and `pino`; exporters, endpoint and service name come from `OTEL_*` variables in `compose.yaml`.
+
+<E2eFile path="api/instrumentation.js" />
+
+We turned off three instrumentations that only add noise here, and one that doubles every span: Express 5 routes through the `router` package, and with both instrumentations on, each middleware showed up twice (`middleware - patched` from `router` next to the Express one).
+
+`OTEL_SEMCONV_STABILITY_OPT_IN: http,database` asks the HTTP and `pg` instrumentations for the stable attribute names (`http.request.method`, `db.query.text`) instead of the old ones (`http.method`, `db.statement`). Part 3 is about what each library actually emitted.
+
+The application code has no OpenTelemetry in it at all. The amqplib instrumentation writes `traceparent` into the message headers inside `sendToQueue`:
+
+<E2eFile path="api/server.js" />
+
+### The browser: plain OpenTelemetry JS
+
+<E2eFile path="api/web/otel.js" />
+
+<Note type="danger" title="The bug that cost us an hour">
+OpenTelemetry JS 3.0 changed `BatchSpanProcessor` to take its exporter as an option: `new BatchSpanProcessor({ exporter, scheduledDelayMillis })`. We first wrote the 2.x form, `new BatchSpanProcessor(exporter, options)`. It threw nothing, logged nothing, and exported nothing: the browser recorded spans, `forceFlush()` resolved, and the network tab showed no request to `/v1/traces`. In the page, the processor's `_exporter` was `undefined`. The backend half of the trace still arrived, because `traceparent` was sent; only the browser's own spans were missing. If your browser spans vanish after an upgrade to 3.0, check this first.
+</Note>
+
+The browser has no async context, so a span that is "current" before an `await` is not current after it. The page passes the `buy` span's context to every `fetch` explicitly:
+
+<E2eFile path="api/public/app.js" />
+
+The Collector accepts the browser's OTLP/HTTP directly, with CORS for the shop's origin. In production you would put it behind your own domain.
+
+### The worker: Python, with the consumer span written by hand
+
+`opentelemetry-instrument python worker.py` sets up the SDK and turns on the installed psycopg, redis and logging instrumentations. The consumer span is written by hand, without the pika instrumentation, so we can choose how it joins the producer's trace. That choice is part 2; the default here is parent/child, one trace per order. The full file is in part 2.
+
+## One click, end to end
+
+Open [localhost:47080](http://localhost:47080) and click **Buy** on the Exemplar hoodie. The page says:
+
+```text
+Order 3000248: paid after 278 ms.
+trace_id 58898222c16257cf4a2ab93951a45043
+Open the trace in Grafana
+```
+
+This is that trace, as Tempo returned it from `GET /api/v2/traces/58898222c16257cf4a2ab93951a45043` (two Express middleware spans of under a millisecond left out). Click a span for its attributes:
+
+<E2eTrace
+  duration={278}
+  caption="One click: 17 spans from three services and three SDKs in one trace. The worker's process span is a child of the API's publish span, through the traceparent the AMQP headers carried."
+  spans={[
+    { id: 'buy', name: 'buy', service: 'shop-web', depth: 0, from: 0, to: 278, kind: 'internal', attrs: { 'shop.product.id': '3', 'shop.order.id': '3000248', 'shop.order.status': 'paid', span_id: '9697a995ff898a02' }, note: 'Started by app.js on click, ended when the poll read "paid".' },
+    { id: 'post', name: 'POST', service: 'shop-web', depth: 1, from: 0, to: 21, kind: 'client', attrs: { 'http.request.method': 'POST', 'url.full': 'http://localhost:47080/api/orders', 'http.response.status_code': '202' } },
+    { id: 'srv', name: 'POST /api/orders', service: 'shop-api', depth: 2, from: 7, to: 18.9, kind: 'server', attrs: { 'http.request.method': 'POST', 'http.route': '/api/orders', 'url.path': '/api/orders', 'http.response.status_code': '202' } },
+    { id: 'h', name: 'request handler - /api/orders', service: 'shop-api', depth: 3, from: 8, to: 19.3, kind: 'internal', attrs: { 'express.name': '/api/orders', 'http.route': '/api/orders', span_id: 'f97f8b5c4492b4ad' }, note: 'The API\'s "order accepted" log line carries this span_id.' },
+    { id: 'rg', name: 'get', service: 'shop-api', depth: 4, from: 8, to: 8.2, kind: 'client', attrs: { 'db.system.name': 'redis', 'db.operation.name': 'get', 'db.query.text': 'get product:3' } },
+    { id: 'pc', name: 'pg-pool.connect', service: 'shop-api', depth: 4, from: 8, to: 8.2, kind: 'client', attrs: { 'db.system.name': 'postgresql', 'db.namespace': 'shop' } },
+    { id: 'ins', name: 'pg.query:INSERT shop', service: 'shop-api', depth: 4, from: 8, to: 10.6, kind: 'client', attrs: { 'db.system.name': 'postgresql', 'db.namespace': 'shop', 'db.query.text': 'INSERT INTO orders (product_id, quantity, customer_email) VALUES ($1, $2, $3) RETURNING id' } },
+    { id: 'pub', name: 'publish <default>', service: 'shop-api', depth: 4, from: 11, to: 17.4, kind: 'producer', attrs: { 'messaging.system': 'rabbitmq', 'messaging.destination': '', 'messaging.rabbitmq.routing_key': 'orders', 'messaging.message_id': '3000248', 'messaging.url': 'amqp://shop:***@rabbitmq:5672', span_id: '42018e6962245b8f' } },
+    { id: 'proc', name: 'process orders', service: 'shop-worker', depth: 5, from: 15.7, to: 120, kind: 'consumer', attrs: { 'messaging.system': 'rabbitmq', 'messaging.destination.name': 'orders', 'messaging.operation.type': 'process', 'messaging.message.id': '3000248', 'shop.order.id': '3000248', span_id: 'dabb9d3488a7bde8' }, note: 'Parent: 42018e6962245b8f, the publish span. The worker\'s "order paid" log line carries this span_id.' },
+    { id: 'cc', name: 'charge card', service: 'shop-worker', depth: 6, from: 16, to: 61, kind: 'internal' },
+    { id: 'up', name: 'UPDATE', service: 'shop-worker', depth: 6, from: 61.2, to: 62.6, kind: 'client', attrs: { 'db.system.name': 'postgresql', 'db.query.text': "UPDATE orders SET status = 'paid', paid_at = now() WHERE id = %s" } },
+    { id: 'sel', name: 'SELECT', service: 'shop-worker', depth: 6, from: 62.6, to: 119.5, kind: 'client', tone: 'warn', attrs: { 'db.system.name': 'postgresql', 'db.query.text': 'SELECT count(*) FROM orders WHERE customer_email = %s' }, note: 'Half the worker\'s time. Part 3 finds and fixes it.' },
+    { id: 'set', name: 'SET', service: 'shop-worker', depth: 6, from: 119.6, to: 119.8, kind: 'client', attrs: { 'db.system.name': 'redis', 'db.query.text': 'SET ? ? ? ?' } },
+    { id: 'get', name: 'GET', service: 'shop-web', depth: 1, from: 273, to: 278, kind: 'client', attrs: { 'http.request.method': 'GET', 'url.full': 'http://localhost:47080/api/orders/3000248', 'http.response.status_code': '200' } },
+    { id: 'gsrv', name: 'GET /api/orders/:id', service: 'shop-api', depth: 2, from: 273, to: 275.9, kind: 'server', attrs: { 'http.route': '/api/orders/:id', 'http.response.status_code': '200', span_id: '541d0379aae54599' }, note: 'An exemplar on the API latency histogram points at this span (below).' },
+    { id: 'gh', name: 'request handler - /api/orders/:id', service: 'shop-api', depth: 3, from: 275, to: 276.3, kind: 'internal' },
+    { id: 'gg', name: 'get', service: 'shop-api', depth: 4, from: 275, to: 275.3, kind: 'client', attrs: { 'db.system.name': 'redis', 'db.query.text': 'get order:3000248:status' } },
+  ]}
+/>
+
+Read it top to bottom and the click explains itself: 21 ms to accept the order, almost no time in the queue (the worker started on the message 1.7 ms before the API's publish confirm came back), 104 ms in the worker (57 of them in one `SELECT`), and then the browser waits for its next poll at 250 ms. The user waited 278 ms; the system worked for about 125.
+
+The "Open the trace in Grafana" link on the page opens this trace in Explore: Grafana shows `shop/shop-web buy`, 3 services, 21 spans (including the four middleware spans), and a **Logs for this trace** button.
+
+## Which ID links which signal
+
+Grafana jumps between signals only along links that someone configured. Here is every link in this setup, what carries it, and where a click on it goes:
+
+<E2eCorrelationMap
+  caption="Pick a key to see which records carry it and under which name. trace_id does most of the work; service.name narrows the jump from a span to its service's metrics."
+  keys={[
+    { id: 'trace', label: 'trace_id', why: 'one per click, shared by every span, log and exemplar of it' },
+    { id: 'span', label: 'span_id', why: 'which operation inside the trace' },
+    { id: 'svc', label: 'service.name', why: 'which service; becomes a label in Loki and Mimir' },
+    { id: 'order', label: 'order id', why: 'a business key; links nothing by itself' },
+  ]}
+  signals={[
+    { title: 'Span', sub: 'Tempo', tone: 'accent', where: [
+      { key: 'trace', field: 'traceId', opens: 'Logs for this trace (Loki)' },
+      { key: 'span', field: 'spanId · parentSpanId' },
+      { key: 'svc', field: 'resource service.name', opens: 'Request rate, p95 (Mimir)' },
+      { key: 'order', field: 'shop.order.id, messaging.message.id' },
+    ] },
+    { title: 'Log record', sub: 'Loki, OTLP', tone: 'ok', where: [
+      { key: 'trace', field: 'structured metadata trace_id', opens: 'View trace (Tempo)' },
+      { key: 'span', field: 'structured metadata span_id' },
+      { key: 'svc', field: 'label service_name' },
+      { key: 'order', field: 'order_id (API) · in the message (worker)' },
+    ] },
+    { title: 'Metric point', sub: 'Mimir', tone: 'warn', where: [
+      { key: 'svc', field: 'label service_name (span metrics) or job' },
+    ] },
+    { title: 'Exemplar', sub: 'on a histogram bucket', tone: 'info', where: [
+      { key: 'trace', field: 'label trace_id', opens: 'Query with Tempo' },
+      { key: 'span', field: 'label span_id' },
+    ] },
+    { title: 'AMQP message', sub: 'RabbitMQ headers', tone: 'bad', where: [
+      { key: 'trace', field: 'header traceparent' },
+      { key: 'span', field: 'traceparent (the publish span)' },
+      { key: 'order', field: 'message_id property' },
+    ] },
+    { title: 'HTTP request', sub: 'browser → API', tone: 'info', where: [
+      { key: 'trace', field: 'header traceparent' },
+      { key: 'span', field: 'traceparent (the fetch span)' },
+    ] },
+  ]}
+/>
+
+The order id is worth a note: we put it everywhere, and it links nothing. That is fine. It is what a support ticket contains, so you search for it once (`{ span.shop.order.id = "3000248" }` in TraceQL) and from there you follow `trace_id`.
+
+### Logs: trace_id without formatting it yourself
+
+Neither service puts a trace ID into a log message. The pino instrumentation adds `trace_id`, `span_id` and `trace_flags` to every line written inside a span and also sends each record through the OpenTelemetry logs SDK; Python's logging instrumentation does the same for the standard `logging` module. Both go OTLP to the Collector and on to Loki's native OTLP endpoint, where `trace_id` becomes structured metadata: searchable, but not a label, so it does not create one stream per trace.
+
+The query for one click's logs, from every service:
+
+```bash
+curl -s -G http://127.0.0.1:47100/loki/api/v1/query_range \
+  --data-urlencode 'query={service_name=~"shop-.+"} | trace_id="58898222c16257cf4a2ab93951a45043"'
+```
+
+returned two streams (fields trimmed):
+
+```text
+service_name=shop-worker  span_id=dabb9d3488a7bde8  code_function_name=process  code_line_number=95
+    order 3000248 paid, customer has 61 orders
+service_name=shop-api     span_id=f97f8b5c4492b4ad  scope_name=@opentelemetry/instrumentation-pino
+    order accepted
+```
+
+Each `span_id` is the span that was current when the line was written: the API's request handler and the worker's `process orders`. Loki's configuration keeps labels to `service_name` and the environment; everything else stays structured metadata:
+
+<E2eFile path="loki/config.yaml" open={false} />
+
+### Grafana: the links are datasource settings
+
+<E2eFile path="grafana/provisioning/datasources/datasources.yaml" />
+
+Four links, each a few lines:
+
+- **Loki → Tempo**, `derivedFields` with `matcherType: label`: the field is read from structured metadata named `trace_id`, not with a regex over the log line. In Explore, expanding the worker's log line shows a **View trace** link.
+- **Tempo → Loki**, `tracesToLogsV2` with `filterByTraceID`: the **Logs for this trace** button on every trace.
+- **Tempo → Mimir**, `tracesToMetrics`: from a span to its service's request rate and p95, with `service.name` mapped to the `service_name` label.
+- **Mimir → Tempo**, `exemplarTraceIdDestinations`: an exemplar's `trace_id` label becomes **Query with Tempo**.
+
+We clicked each of them in Grafana 13.3.0 with this provisioning.
+
+### Metrics: the dot that opens the trace
+
+The API's request latency histogram is computed in the Collector from spans (the `span_metrics` connector, below), and every bucket keeps a few exemplars. Asking Mimir for exemplars on it:
+
+```bash
+curl -s -G http://127.0.0.1:47009/prometheus/api/v1/query_exemplars \
+  --data-urlencode 'query=traces_span_metrics_duration_bucket{service_name="shop-api"}' \
+  --data-urlencode start=$(( $(date +%s) - 300 )) --data-urlencode end=$(date +%s)
+```
+
+returned 260 exemplars over 34 series in five minutes, among them:
+
+```json
+{"labels": {"span_id": "541d0379aae54599", "trace_id": "58898222c16257cf4a2ab93951a45043"},
+ "value": "0.002852084", "timestamp": 1793300054.139}
+```
+
+That is our click: the `GET /api/orders/:id` span from the trace above, 2.85 ms, sitting in the `le="0.005"` bucket. In Grafana it is a dot on the latency graph, and hovering it shows **Query with Tempo**.
+
+## The Collector
+
+<E2eFile path="collector/config.yaml" />
+
+Three things worth knowing:
+
+- **The `span_metrics` connector** is an exporter of the traces pipeline and a receiver of the metrics pipeline. It turns every span into a call count and a duration histogram per service, span name, kind, status and the dimensions we listed, and it keeps exemplars. Part 4 explains why we need it for the Node.js API.
+- **Three receivers pull from the infrastructure**: `rabbitmq` (queue depth, publish and deliver counts, from the management API), `redis` (`INFO`: hits, misses, memory) and `postgresql` (backends, commits, sizes). Parts 2 and 3 use them.
+- **Component names changed.** Collector 0.164.0 logs `"otlp" alias is deprecated; use "otlp_grpc" instead`, and the same for `otlphttp` (now `otlp_http`) and `spanmetrics` (now `span_metrics`). The old names still work; the config above uses the new ones.
+
+Tempo and Mimir run as single binaries with local storage. Two lines in Mimir's limits matter for this series: `max_global_exemplars_per_user`, which is 0 by default and drops every exemplar (part 4 shows it), and `promote_otel_resource_attributes`, without which the RabbitMQ queue-depth series have no queue name (part 2).
+
+<E2eFile path="mimir/config.yaml" open={false} />
+<E2eFile path="tempo/config.yaml" open={false} />
+
+## Stop it
+
+```bash
+docker compose down -v
+```
+
+`-v` deletes the volumes too, so the next start seeds PostgreSQL again.
+
+## What we learned
+
+- One `trace_id` gets you everything only if every hop keeps it: the `traceparent` header on HTTP, the same header inside the AMQP message, the `TraceId` field on every log record, and an exemplar on the metrics.
+- Most of that is free with zero-code instrumentation. What is not free is the configuration that lets Grafana jump: four datasource settings, all shown above.
+- Three things broke silently on the way, and none of them logged an error: `BatchSpanProcessor` with the 2.x arguments, a healthcheck that checked the wrong socket, and doubled middleware spans from two instrumentations of the same router.
+
+[Part 2](/blog/e2e-observability-2-queues/) takes the message between the API and the worker apart: how the context travels, why the specification prefers span links to parent/child, and what to measure so that a stuck queue pages you before your users do.
+

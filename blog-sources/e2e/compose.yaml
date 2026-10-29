@@ -1,0 +1,161 @@
+# End-to-end observability, hands-on: one order, followed from a browser click to the database.
+#
+#   browser ──> api (Node) ──> RabbitMQ ──> worker (Python) ──> PostgreSQL
+#                  │                            │
+#                  └──── Redis <────────────────┘
+#
+# Every service sends OTLP to one OpenTelemetry Collector, which writes traces to Tempo,
+# logs to Loki and metrics to Mimir. Grafana reads all three.
+#
+#   docker compose up -d --build
+#   open http://localhost:47080   (the shop)    http://localhost:47300   (Grafana)
+#
+# Host ports are all 47xxx on 127.0.0.1 so they do not collide with anything else you run.
+name: blog-e2e
+
+x-otel: &otel
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://collector:4318
+  OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+  OTEL_TRACES_EXPORTER: otlp
+  OTEL_METRICS_EXPORTER: otlp
+  OTEL_LOGS_EXPORTER: otlp
+  OTEL_METRIC_EXPORT_INTERVAL: "10000"
+  OTEL_RESOURCE_ATTRIBUTES: deployment.environment.name=blog-e2e,service.namespace=shop
+
+services:
+  api:
+    build: ./api
+    restart: unless-stopped
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: shop-api
+      # Emit the stable HTTP and database attribute names (http.request.method, db.query.text, ...).
+      OTEL_SEMCONV_STABILITY_OPT_IN: http,database
+      DATABASE_URL: postgres://shop:shop@postgres:5432/shop
+      REDIS_URL: redis://redis:6379
+      AMQP_URL: amqp://shop:shop@rabbitmq:5672
+      # The browser sends its spans straight to the collector; the page learns the URL from /config.js.
+      PUBLIC_OTLP_URL: http://localhost:${E2E_COLLECTOR_PORT:-47318}
+      PUBLIC_GRAFANA_URL: http://localhost:${E2E_GRAFANA_PORT:-47300}
+    ports:
+      - "127.0.0.1:${E2E_API_PORT:-47080}:8080"
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      redis: { condition: service_started }
+      collector: { condition: service_started }
+
+  worker:
+    build: ./worker
+    restart: unless-stopped
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: shop-worker
+      OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED: "true"
+      OTEL_SEMCONV_STABILITY_OPT_IN: database
+      # Record an exemplar only for measurements made inside a sampled span (the SDK default).
+      OTEL_METRICS_EXEMPLAR_FILTER: trace_based
+      DATABASE_URL: postgresql://shop:shop@postgres:5432/shop
+      REDIS_URL: redis://redis:6379
+      AMQP_URL: amqp://shop:shop@rabbitmq:5672/%2F
+      # child: the process span is a child of the publish span (one trace per order).
+      # link:  the process span starts a new trace and links to the publish span.
+      TRACE_MODE: ${E2E_TRACE_MODE:-child}
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+      collector: { condition: service_started }
+
+  loadgen:
+    build: ./api
+    command: ["node", "loadgen.js"]
+    environment:
+      API_URL: http://api:8080
+      RATE: ${E2E_RATE:-2}
+    depends_on: [api]
+
+  postgres:
+    image: postgres:18.6
+    environment:
+      POSTGRES_USER: shop
+      POSTGRES_PASSWORD: shop
+      POSTGRES_DB: shop
+    volumes:
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - pg-data:/var/lib/postgresql
+    healthcheck:
+      # Over TCP: during first-start init PostgreSQL listens on its socket only.
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "shop", "-d", "shop"]
+      interval: 2s
+      retries: 60
+
+  redis:
+    image: redis:8.10.3-alpine
+
+  rabbitmq:
+    image: rabbitmq:4.4.0-management-alpine
+    # Once in our four fresh starts it exited reading .erlang.cookie (eacces); a restart fixed it.
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: shop
+      RABBITMQ_DEFAULT_PASS: shop
+    ports:
+      - "127.0.0.1:${E2E_RABBITMQ_UI_PORT:-47672}:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 3s
+      retries: 60
+
+  collector:
+    image: otel/opentelemetry-collector-contrib:0.164.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./collector/config.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "127.0.0.1:${E2E_COLLECTOR_PORT:-47318}:4318"
+
+  tempo:
+    image: grafana/tempo:3.0.3
+    command: ["-config.file=/etc/tempo/config.yaml"]
+    volumes:
+      - ./tempo/config.yaml:/etc/tempo/config.yaml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "127.0.0.1:${E2E_TEMPO_PORT:-47200}:3200"
+
+  loki:
+    image: grafana/loki:3.7.7
+    command: ["-config.file=/etc/loki/config.yaml"]
+    volumes:
+      - ./loki/config.yaml:/etc/loki/config.yaml:ro
+      - loki-data:/loki
+    ports:
+      - "127.0.0.1:${E2E_LOKI_PORT:-47100}:3100"
+
+  mimir:
+    image: grafana/mimir:3.2.1
+    command: ["-config.file=/etc/mimir/config.yaml"]
+    volumes:
+      - ./mimir/config.yaml:/etc/mimir/config.yaml:ro
+      - mimir-data:/data
+    ports:
+      - "127.0.0.1:${E2E_MIMIR_PORT:-47009}:9009"
+
+  grafana:
+    image: grafana/grafana:13.3.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "127.0.0.1:${E2E_GRAFANA_PORT:-47300}:3000"
+    depends_on: [tempo, loki, mimir]
+
+volumes:
+  pg-data:
+  tempo-data:
+  loki-data:
+  mimir-data:

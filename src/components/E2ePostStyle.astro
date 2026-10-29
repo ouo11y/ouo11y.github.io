@@ -1,0 +1,10 @@
+---
+// Page-level styles for the end-to-end series posts: let long inline code (metric names, URLs,
+// trace IDs) wrap on narrow screens, and style the project download link. Include once per post.
+// The blog's shared prose styles do not wrap inline code; this stays local to these posts.
+---
+<style is:global>
+  .prose :not(pre) > code { overflow-wrap: anywhere; }
+  .e2e-download { display: inline-flex; flex-wrap: wrap; gap: .5rem; align-items: center; padding: .55rem 1rem; border-radius: .6rem; border: 1px solid var(--accent, #0a6fa6); background: var(--accent-soft, #e0f2fe); color: var(--ink, inherit); text-decoration: none; font-weight: 600; }
+  .e2e-download small { font-weight: 400; opacity: .75; }
+</style>
