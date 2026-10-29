@@ -98,3 +98,61 @@ dark-default theme and turns every diagram on the page dark in light mode. Use
 `astro-expressive-code/components` instead, as `src/components/E2eFile.astro` does. Set
 `featured: true` on the one post the blog index should lead with. Import paths from a post:
 `../../components/...`.
+
+## Announcements
+
+`/announcements/` is where a user checks what ouo11y shipped, which versions to run together
+and how to upgrade. It has three parts, built from two sources:
+
+- **Current versions** and the **release timeline** read `src/data/releases.ts`: every package
+  (`packages`), every released version (`releases`), the release trains that group them
+  (`trains`), and the non-release events flagged on the timeline (`milestones`).
+- **The list** reads `src/content/announcements/`, newest first, grouped by month, with a badge
+  and filter from the `kind:` front matter field: `release`, `notice` (a change that is not a
+  release, such as the rename), `docs` or `site`.
+
+### Where facts come from
+
+Every fact in an announcement or in `releases.ts` must be in one of these. Never write a
+feature from a commit title or a guess, and never announce what is planned.
+
+| Fact | Source |
+|---|---|
+| version, time, image digest, what changed | `gh release view <tag> -R ouo11y/ouo11y`, and the package's own `CHANGELOG.md` on the product repo's `main` |
+| npm publish time | `npm view @ouo11y/<package> time --json` |
+| which versions work together (`needs`) | `docs/compatibility.md` on the product repo's `main` |
+| upgrade steps | `docs/operations/upgrade.md`, retold for the site's own stack in `/docs/operate/upgrade/` |
+
+Dates are UTC: the GitHub release time, or the npm publish time when that is later. The post's
+`date:` is the day of the last release in its train.
+
+### Adding a release
+
+1. In `src/data/releases.ts`, add one `releases` entry per released version: package, version,
+   `at` (UTC), `train`, `tagged`, `image` and `digest` for images, `plugin` for the grafana image,
+   `needs` copied from the compatibility matrix, and a `note` of one line saying what a user gets.
+   Versions released together share a train; add the train to `trains` with the id of its
+   announcement. The landing's current versions and timeline update from this alone.
+2. Write the announcement: `src/content/announcements/<YYYY-MM-DD>-<slug>.mdx`, `kind: release`.
+3. Update the version tables in `/docs/` that name current versions (`/docs/`, "What is released
+   today"; `/docs/operate/upgrade/`; `/docs/start/quickstart/`, "Versions").
+
+### The format of a release announcement
+
+Sections, in this order; leave out one that has nothing to say:
+
+1. One paragraph: what was released together, and on which days.
+2. `<ReleaseTable train="<id>" />` from `src/components/announcements/`: each version, the one
+   before it, where to get it, what it needs, the digest.
+3. **What is new**, grouped by who notices it (operators, the session page, SDK users), in plain
+   user-facing words. Not a commit list: say what someone can now do or see.
+4. **Get it**: copy-paste commands, one per block. Images are private during early access; say so
+   and link `/docs/start/quickstart/#before-you-start`.
+5. **Upgrade**: the order, anything that changes behaviour on upgrade (a new default, a header the
+   collector must allow, a renamed setting), and a link to `/docs/operate/upgrade/`.
+6. **Which versions work together**, in a `Note`.
+
+Link to pages on this site (`/docs/...`), never to the product repository. When an announcement
+and a docs page disagree, say so in the announcement and name the page. A correction to a
+published announcement gets `updated:` and a short "Corrected on" note; if the date in its file
+name changes, add the old URL to `redirects` in `astro.config.mjs`.

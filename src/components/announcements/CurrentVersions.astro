@@ -1,0 +1,42 @@
+---
+// The newest version of every package, from src/data/releases.ts.
+import { channels, day, latest, packages, train } from '../../data/releases';
+import { fmtDate } from '../../lib/site';
+
+const rows = packages.map((p) => ({ p, r: latest(p.id) }));
+---
+<div class="cv not-content">
+  <div class="cv-grid">
+    {rows.map(({ p, r }) => (
+      <div class={`cv-card ${p.channel}`}>
+        <div class="cv-top">
+          <a class="cv-name" href={p.docs}>{p.name}</a>
+          <span class={`cv-ch ${p.channel}`} title={channels[p.channel].note}>{channels[p.channel].label}</span>
+        </div>
+        <div class="cv-ver">{r.version}</div>
+        <div class="cv-date">
+          {fmtDate(new Date(day(r.at)))} · <a href={`/announcements/${train(r.train).announcement}/`}>what changed</a>
+        </div>
+        <code class="cv-get">{p.get(r.version)}</code>
+      </div>
+    ))}
+  </div>
+  <p class="cv-foot">
+    These versions work together. Container images are private during early access: email <a href="mailto:hello@ouo11y.com">hello@ouo11y.com</a> for pull access, then follow <a href="/docs/start/quickstart/#before-you-start">Before you start</a>. Upgrade order and the full matrix: <a href="/docs/operate/upgrade/">Upgrading</a>.
+  </p>
+</div>
+
+<style>
+  .cv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap: 12px; }
+  .cv-card { display: grid; gap: 4px; padding: 16px 18px; border: 1px solid var(--line); border-radius: 14px; background: var(--bg-2); min-width: 0; }
+  .cv-top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 10px; }
+  .cv-name { font-weight: 700; color: var(--ink); }
+  .cv-ch { font-size: 11.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+  .cv-ch.npm { background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); }
+  .cv-ch.ghcr { background: color-mix(in srgb, var(--warn) 15%, transparent); color: var(--warn); }
+  .cv-ch.inside-grafana { background: var(--accent-soft); color: var(--accent); }
+  .cv-ver { font-size: 30px; font-weight: 800; letter-spacing: -.02em; line-height: 1.1; font-variant-numeric: tabular-nums; }
+  .cv-date { font-size: 13px; color: var(--ink-3); }
+  .cv-get { display: block; margin-top: 6px; font-size: 12.5px; padding: 6px 8px; border-radius: 8px; overflow-wrap: anywhere; }
+  .cv-foot { font-size: 14px; color: var(--ink-2); margin: 14px 0 0; }
+</style>

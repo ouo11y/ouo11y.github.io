@@ -1,0 +1,80 @@
+---
+title: "@ouo11y/browser and @ouo11y/react-native are on npm"
+description: Both SDKs are public on npmjs.org under Apache-2.0, at 0.2.1, published from CI with npm trusted publishing. They talk only to the collector and sign every request with the project credential.
+date: 2026-10-23
+updated: 2026-10-29
+kind: release
+tags: [release, sdk, browser, react-native]
+---
+
+import ReleaseTable from '../../components/announcements/ReleaseTable.astro';
+import Note from '../../components/Note.astro';
+
+The browser and React Native SDKs are public on npmjs.org ([`@ouo11y/browser`](https://www.npmjs.com/package/@ouo11y/browser), [`@ouo11y/react-native`](https://www.npmjs.com/package/@ouo11y/react-native)), with their source in the package, under the Apache-2.0 licence. No registry login, no token: `npm install` works.
+
+<ReleaseTable train="sdks-npm" />
+
+0.2.0 and 0.2.1 went out the same evening. 0.2.1 has no code change: it is the first version released from CI through [npm trusted publishing](https://docs.npmjs.com/trusted-publishers), so every later version is built and published by the release workflow, never from a laptop. Install 0.2.1 or newer.
+
+## Get it
+
+```bash
+npm install @ouo11y/browser
+```
+
+```bash
+npm install @ouo11y/react-native
+```
+
+Then follow [the browser SDK](/docs/instrument/ouo-sdk/) or [React Native](/docs/instrument/react-native/), or build a whole app with it in [quickstart 1](/docs/quickstarts/1-tiny-shop/). Prefer not to add our SDK at all? [Bring your own OpenTelemetry](/docs/instrument/bring-your-own-otel/): the server side does not care.
+
+## What 0.2 does
+
+**The collector is the only thing the SDK talks to.** OTLP for traces and logs goes to the collector's OTLP/HTTP endpoint, replay chunks to its replay receiver. rum-api is internal and never addressed by an app.
+
+**Every request carries the project credential.** `projectId` and `projectToken` are required, and every OTLP export and replay upload sends `Authorization: Basic base64(projectId:projectToken)`, which the collector checks. `initRUM` throws, naming the option, when either is missing or empty, or when the id contains `:`. The token identifies the project; it is not a secret. [Project tokens](/docs/operate/tokens/) shows how to make one.
+
+**One URL is enough.** `endpoint` is the collector's OTLP/HTTP base, for example `https://otel.example.com`. `replayEndpoint` is optional: with `endpoint` on port 4318 it defaults to the same host on 4319, otherwise to `endpoint` itself, for a proxy that routes `/v1/replay/*`.
+
+```ts
+import { initRUM } from "@ouo11y/browser";
+
+const rum = initRUM({
+  endpoint: "http://localhost:4318",
+  projectId: "demo",
+  projectToken: "pt_dev_demo_0000000000000000",
+  service: { name: "web-store", version: "1.4.2", environment: "local" },
+});
+```
+
+**React Native adds:**
+
+- `XMLHttpRequest` tracing, so axios and other XHR clients get the same spans, trace propagation and failure records as `fetch`; the XHR that React Native's own `fetch` opens is skipped, so one request is one span;
+- a `resource` option for extra resource attributes on every span and log record, such as a rollout cohort;
+- `errors.onUnhandledRejection(error)`, to forward unhandled promise rejections to Sentry when both SDKs run in one app (Hermes keeps one rejection tracker; initialise ouo11y after Sentry).
+
+## Upgrade notes
+
+0.1 was never on npm. If you used a 0.1 build from us, this is what changes:
+
+- add `projectId` and `projectToken`;
+- point `endpoint` at the collector, and drop `replayEndpoint` unless the replay receiver lives on another host (the 0.1 default, rum-api on port 8080, is gone);
+- the collector must allow your page's origin in its CORS settings and `Authorization` in its allowed headers; see [Collector side](/docs/instrument/ouo-sdk/#collector-side).
+
+```diff
+ initRUM({
+   endpoint: "http://localhost:4318",
+-  replayEndpoint: "http://localhost:8080",
++  projectId: "demo",
++  projectToken: "pt_dev_demo_0000000000000000",
+   service: { name: "web-store", version: "1.4.2", environment: "local" },
+ });
+```
+
+<Note title="Which versions work together">
+Both SDKs at 0.2 need collector 0.2.0 or newer and rum-api 0.2.0 or newer. The SDK name in your data is now `@ouo11y/browser` or `@ouo11y/react-native`; data from before the [rename](/announcements/2026-10-18-renamed-to-ouo11y/#your-stored-data) keeps the old one.
+</Note>
+
+<Note type="caution" title="Corrected on 29 October">
+The first version of this announcement was dated 24 October and called 0.3.0 the current browser release. Both packages were published on 23 October (UTC); `@ouo11y/browser` 0.3.0 came on [26 October](/announcements/2026-10-26-funnels-stacks-browser-0-3/).
+</Note>

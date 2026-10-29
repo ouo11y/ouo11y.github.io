@@ -13,7 +13,7 @@ export async function GET(context: APIContext) {
       description: e.data.description,
       pubDate: e.data.date,
       link: `/announcements/${e.id}/`,
-      categories: e.data.tags,
+      categories: [...new Set([e.data.kind ?? 'notice', ...e.data.tags])],
     })),
   });
 }

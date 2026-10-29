@@ -1,0 +1,79 @@
+---
+title: "Retention and deletion, a cleaner session page, and Sentry bridge parity"
+description: rum-api 0.4.0 expires replays, deletes a user's or a project's data with an audit log, and caps replay sampling per project. The Grafana app 0.8.0 reworks the session page. The collector 0.4.0 closes the gaps in the Sentry bridge.
+date: 2026-10-24
+kind: release
+tags: [release, collector, rum-api, grafana, sentry, upgrade]
+---
+
+import ReleaseTable from '../../components/announcements/ReleaseTable.astro';
+import Note from '../../components/Note.astro';
+
+Four releases that went out together: rum-api, the collector, the Grafana app and the grafana image that carries it.
+
+<ReleaseTable train="data-lifecycle" />
+
+## Your data, under your rules (rum-api 0.4.0)
+
+- **Replay retention.** `retention.replays` sets how long replays are kept, for every project or per project. A sweeper removes expired sessions on disk and in S3; on S3 it also tags objects and can set bucket lifecycle rules (`storage.s3.lifecycle_rules`). See [rum-api, Per project](/docs/operate/rum-api/#per-project).
+- **Delete a user or a project.** An operator API behind the admin token (`OUO_ADMIN_TOKEN`) deletes everything one user or one project left behind: replays, Loki events (through a Loki delete request) and Tempo traces. With no admin token set, the admin API answers `404`. Routes in [The API](/docs/operate/rum-api/#the-api).
+- **An audit log you can trust.** Every deletion is written first to an append-only log with a SHA-256 chain. A deletion whose first entry cannot be written does not run. See [Deletion audit log](/docs/operate/rum-api/#deletion-audit-log).
+- **Replay sampling per project, on the server.** `session_rate`, `replay_rate` and `replay_on_error_rate` cap what a project keeps, whatever its apps send, with the same deterministic rule as the SDKs. A session that passes either replay decision keeps its replay, so replays triggered by an error survive. Setting both replay rates to `0` keeps no replay at all ([Replay model](/docs/concepts/replay/)).
+- **A guard against unsafe rollbacks.** rum-api now records in the replay store the newest replay schema it reads, and refuses to start on a store last opened by a rum-api that reads a newer one. A store written by 0.3.0 or older is adopted; nothing is rewritten. See [The replay schema guard](/docs/operate/upgrade/#the-replay-schema-guard).
+
+## The session page (Grafana app 0.8.0)
+
+- **Less to look at.** Beside the player there is only the activity list. The Timeline panel is still there, behind the feature toggle `sessionTimelinePanel` (off by default).
+- **Stack traces.** Errors in the activity list, the Timeline and the Logs panel expand to their stack trace. Expanding one never moves the replay.
+- **Who and where.** The header shows the session's device, OS, app build and environment, and a "Previous session" link when the session replaced an earlier one (`session.previous_id`).
+- **Readable traces.** A trace whose root span is a generic `HTTP GET` is named `GET /api/products/p-1001`, method plus path.
+- **Exceptions in the Logs panel** read `Type: message` instead of `exception`.
+- **The real masking state.** The replay's info line says whether it was recorded masked, not masked, or unknown, from a flag the replay now carries.
+- **One clock.** The activity list, the Timeline, the Logs panel and the players all count from the session start (the list and the players were 0.3 s apart).
+- **No black frame when you seek** a video replay: the neighbouring segments are preloaded and the last frame stays until the next one can paint.
+- **Taps** in iOS and React Native frames replays are counted and marked like those of video replays.
+- The configuration page keeps every setting it does not edit when it saves (it used to drop all but the rum-api URL).
+
+## Sentry bridge parity (collector 0.4.0)
+
+For apps that keep the Sentry SDK and send to ouo11y through the [Sentry bridge](/docs/operate/sentry-bridge/):
+
+- `captureMessage` arrives as a `sentry.message` record; HTTP spans are named by method, with `server.*` and `url.*` attributes;
+- release, environment, OS and device are on every log record and on the session;
+- `session.previous_id`, back navigations, and a timeline for sessions that have no replay;
+- error context through an allowlist, with Sentry tags copied only when you turn on `copy_tags`;
+- native frames keep their addresses and debug images; start-up logs join the session they belong to;
+- **mobile vitals** (app start, time to initial display, frames, stalls) from Sentry's transaction measurements.
+
+The supported Sentry SDK range is `@sentry/react-native` 8.30.0 to 8.32.0, with 8.30.0 and 8.32.0 recorded as test journeys ([what is supported](/docs/operate/sentry-bridge/#what-is-supported)).
+
+The collector also counts rejected credentials as `ouo_auth_failures_total{reason}` (see [Its own metrics](/docs/operate/collector/#its-own-metrics)), rate-limits empty OTLP exports, and keeps the platform's own telemetry in an `internal` project. `golang.org/x/net` is at 0.60.0.
+
+## Upgrade
+
+Order: **rum-api first**, then the collector, then the grafana image.
+
+```ini
+OUO_RUM_API_VERSION=0.4.0
+OUO_COLLECTOR_VERSION=0.4.0
+OUO_GRAFANA_VERSION=0.4.0
+```
+
+```bash
+docker compose pull
+```
+
+```bash
+docker compose up -d
+```
+
+The full procedure, with backups and Helm, is in [Upgrading](/docs/operate/upgrade/).
+
+- **Replays now expire.** `retention.replays` (`REPLAY_RETENTION`) defaults to `720h`: from 0.4.0 on, the sweeper removes a replay 30 days after its session's last chunk, including replays recorded before the upgrade. To keep them longer, set it before you start 0.4.0; `0` keeps replays forever. Keep Loki's log retention in step ([Every key](/docs/operate/rum-api/#every-key)).
+- The release notes list no breaking change. The admin API stays off (`404`) until you set an admin token.
+- To get the Timeline panel back, enable `sessionTimelinePanel` with `OUO_FEATURE_TOGGLES_ENABLE` in Grafana provisioning, or `grafana.plugin.featureToggles` in the Helm chart.
+- Replays recorded before rum-api 0.4.0 carry no masking flag, so they show "masking unknown".
+
+<Note title="Which versions work together">
+The Grafana app 0.8 and the grafana image 0.4 need rum-api 0.4.0 or newer. With rum-api 0.3, the masking state and the header's device and environment fall back. collector 0.4 needs rum-api 0.2.0 or newer. The SDKs stay at 0.2.
+</Note>

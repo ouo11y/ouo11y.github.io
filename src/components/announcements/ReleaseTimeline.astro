@@ -1,0 +1,178 @@
+---
+// Every release from src/data/releases.ts on one time axis: one lane per package, a mark per
+// release (two releases of one package on one day share a mark), numbered bands for release
+// trains, flags for announcements that are not releases. Hover, focus or tap a mark for details.
+import { channels, day, milestones, packages, pkg, releases, trains, type Release } from '../../data/releases';
+import { fmtDate } from '../../lib/site';
+
+const start = Date.parse('2026-10-16T00:00:00Z');
+const lastAt = Math.max(...releases.map((r) => Date.parse(r.at)), ...milestones.map((m) => Date.parse(m.at)));
+const DAY = 86_400_000;
+const days = Math.ceil((lastAt - start) / DAY);
+const end = start + days * DAY;
+const x = (t: number) => ((t - start) / (end - start)) * 100;
+const pct = (n: number) => `${n.toFixed(3)}%`;
+
+const ticks = Array.from({ length: days }, (_, i) => {
+  const d = new Date(start + i * DAY);
+  return { left: pct(x(start + i * DAY)), width: pct(100 / days), label: d.getUTCDate(), month: i === 0 || d.getUTCDate() === 1 ? d.toLocaleString('en-GB', { month: 'short', timeZone: 'UTC' }) : '' };
+});
+
+const bands = trains.map((t, i) => {
+  const ts = releases.filter((r) => r.train === t.id).map((r) => Date.parse(r.at));
+  const a = x(Math.min(...ts) - 4 * 3_600_000), b = x(Math.max(...ts) + 4 * 3_600_000);
+  return { n: i + 1, t, left: pct(a), width: pct(b - a), mid: pct((a + b) / 2) };
+});
+
+// One mark per package and day.
+interface Mark { lane: number; left: string; group: Release[]; }
+const marks: Mark[] = [];
+for (const [lane, p] of packages.entries()) {
+  const byDay = new Map<string, Release[]>();
+  for (const r of releases.filter((r) => r.pkg === p.id).sort((a, b) => a.at.localeCompare(b.at))) {
+    byDay.set(day(r.at), [...(byDay.get(day(r.at)) ?? []), r]);
+  }
+  for (const group of byDay.values()) {
+    const mean = group.reduce((s, r) => s + Date.parse(r.at), 0) / group.length;
+    marks.push({ lane, left: pct(x(mean)), group });
+  }
+}
+
+const time = (iso: string) => `${fmtDate(new Date(iso))}, ${iso.slice(11, 16)} UTC`;
+const detail = (m: Mark) => {
+  const p = pkg(m.group[0].pkg);
+  const tr = trains.find((t) => t.id === m.group[0].train)!;
+  return {
+    title: `${p.name} ${m.group.map((r) => r.version).join(', ')}`,
+    rows: m.group.map((r) => ({
+      version: r.version,
+      when: time(r.at),
+      note: r.note,
+      where: r.tagged ? (r.image ?? (p.channel === 'inside-grafana' ? channels['inside-grafana'].label : channels[p.channel].label)) : 'not tagged on its own',
+      plugin: r.plugin,
+    })),
+    train: `${trains.indexOf(tr) + 1}. ${tr.title}`,
+    href: `/announcements/${tr.announcement}/`,
+  };
+};
+const flags = milestones.map((m) => ({ ...m, left: pct(x(Date.parse(m.at))) }));
+---
+<div class="rt not-content">
+  <div class="rt-chart" style={`--lanes:${packages.length}`}>
+    <div class="rt-head">
+      <span class="rt-corner">Trains</span>
+      <div class="rt-track">
+        {bands.map((b) => <a class="rt-num" style={`left:${b.mid}`} href={`/announcements/${b.t.announcement}/`} title={b.t.title}>{b.n}</a>)}
+        {flags.map((f) => <a class="rt-flag" style={`left:${f.left}`} href={`/announcements/${f.announcement}/`} title={f.label} aria-label={f.label}></a>)}
+      </div>
+    </div>
+    <div class="rt-body">
+      <div class="rt-labels">
+        {packages.map((p) => <span>{p.short}</span>)}
+      </div>
+      <div class="rt-track rt-lanes">
+        {ticks.map((t) => <span class="rt-day" style={`left:${t.left};width:${t.width}`}></span>)}
+        {bands.map((b) => <span class="rt-band" style={`left:${b.left};width:${b.width}`}></span>)}
+        {flags.map((f) => <span class="rt-fline" style={`left:${f.left}`}></span>)}
+        {packages.map((_, i) => <span class="rt-lane" style={`top:calc(${i} * var(--lane) + var(--lane) / 2)`}></span>)}
+        {marks.map((m) => {
+          const d = detail(m);
+          const tagged = m.group.some((r) => r.tagged);
+          return (
+            <button type="button" class:list={['rt-mk', { hollow: !tagged }]} style={`left:${m.left};top:calc(${m.lane} * var(--lane) + var(--lane) / 2)`}
+              aria-label={`${d.title}, ${fmtDate(new Date(m.group[0].at))}`} data-detail={JSON.stringify(d)}>
+              <span class="rt-v">{m.group.at(-1)!.version}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+    <div class="rt-axis">
+      <span class="rt-corner"></span>
+      <div class="rt-track">
+        {ticks.map((t, i) => <span class:list={['rt-tick', { odd: i % 2 === 1 }]} style={`left:${t.left};width:${t.width}`}>{t.label}{t.month && <small> {t.month}</small>}</span>)}
+      </div>
+    </div>
+  </div>
+
+  <div class="rt-detail" aria-live="polite">
+    <p class="rt-hint">Hover or tap a mark to see the release. A hollow mark is a version of the Grafana app that shipped only inside the grafana image.</p>
+  </div>
+
+  <ol class="rt-legend">
+    {bands.map((b) => <li><b>{b.n}</b> <a href={`/announcements/${b.t.announcement}/`}>{b.t.title}</a></li>)}
+    {flags.map((f) => <li><i class="rt-flag-key"></i> <a href={`/announcements/${f.announcement}/`}>{f.label}</a></li>)}
+  </ol>
+</div>
+
+<script>
+  for (const root of document.querySelectorAll<HTMLElement>('.rt')) {
+    const panel = root.querySelector<HTMLElement>('.rt-detail')!;
+    const hint = panel.innerHTML;
+    const marks = [...root.querySelectorAll<HTMLButtonElement>('.rt-mk')];
+    let pinned: HTMLButtonElement | null = null;
+    const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
+    function show(mk: HTMLButtonElement | null) {
+      marks.forEach((m) => m.classList.toggle('on', m === mk));
+      if (!mk) { panel.innerHTML = hint; return; }
+      const d = JSON.parse(mk.dataset.detail!);
+      panel.innerHTML = `<p class="rt-dt">${esc(d.title)}</p>` + d.rows.map((r: any) =>
+        `<div class="rt-row"><b>${esc(r.version)}</b> <span class="rt-when">${esc(r.when)}</span><br>${esc(r.note)}` +
+        `${r.plugin ? `<br><span class="rt-when">App inside: ${esc(r.plugin)}</span>` : ''}` +
+        `<br><code>${esc(r.where)}</code></div>`).join('') +
+        `<p class="rt-when">Release train ${esc(d.train)} · <a href="${d.href}">read the announcement</a></p>`;
+    }
+    for (const mk of marks) {
+      mk.addEventListener('mouseenter', () => { if (!pinned) show(mk); });
+      mk.addEventListener('focus', () => show(mk));
+      mk.addEventListener('click', () => { pinned = pinned === mk ? null : mk; show(pinned ?? mk); });
+    }
+    root.querySelector('.rt-chart')!.addEventListener('mouseleave', () => { if (!pinned) show(null); });
+  }
+</script>
+
+<style>
+  .rt { container-type: inline-size; }
+  .rt-chart { --lane: 34px; --label: 104px; border: 1px solid var(--line); border-radius: 14px; background: var(--bg-2); padding: 12px 14px 8px; }
+  .rt-head, .rt-body, .rt-axis { display: grid; grid-template-columns: var(--label) minmax(0, 1fr); }
+  .rt-track { position: relative; }
+  .rt-corner { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); align-self: center; }
+  .rt-head .rt-track { height: 26px; }
+  .rt-num { position: absolute; top: 3px; transform: translateX(-50%); width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; font-weight: 700; background: var(--accent); color: var(--on-accent); }
+  .rt-num:hover { text-decoration: none; filter: brightness(1.1); }
+  .rt-flag { position: absolute; top: 6px; transform: translateX(-50%) rotate(45deg); width: 12px; height: 12px; background: var(--warn); border-radius: 2px; }
+  .rt-labels { display: grid; grid-auto-rows: var(--lane); font-size: 13px; color: var(--ink-2); }
+  .rt-labels span { align-self: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 8px; }
+  .rt-lanes { height: calc(var(--lanes) * var(--lane)); }
+  .rt-day { position: absolute; top: 0; bottom: 0; border-left: 1px solid var(--line); }
+  .rt-band { position: absolute; top: 0; bottom: 0; min-width: 6px; transform: translateX(0); background: color-mix(in srgb, var(--accent) 10%, transparent); border-radius: 6px; }
+  .rt-fline { position: absolute; top: 0; bottom: 0; border-left: 2px dashed color-mix(in srgb, var(--warn) 60%, transparent); }
+  .rt-lane { position: absolute; left: 0; right: 0; border-top: 1px dotted var(--line); }
+  .rt-mk { position: absolute; transform: translate(-50%, -50%); width: 14px; height: 14px; padding: 0; border-radius: 50%; border: 2px solid var(--accent); background: var(--accent); cursor: pointer; }
+  .rt-mk.hollow { background: var(--bg-2); }
+  .rt-mk:hover, .rt-mk:focus-visible, .rt-mk.on { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 30%, transparent); outline: none; }
+  .rt-v { display: none; position: absolute; left: 50%; bottom: 13px; transform: translateX(-50%); font-size: 11px; font-weight: 600; color: var(--ink-2); white-space: nowrap; pointer-events: none; }
+  .rt-axis .rt-track { height: 22px; }
+  .rt-tick { position: absolute; top: 4px; text-align: center; font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .rt-tick small { font-size: 10px; }
+  .rt-detail { margin-top: 10px; min-height: 92px; padding: 12px 16px; border: 1px dashed var(--line); border-radius: 12px; font-size: 14px; color: var(--ink-2); }
+  .rt-detail :global(p) { margin: 0; }
+  .rt-detail :global(.rt-dt) { font-weight: 700; color: var(--ink); margin-bottom: 4px; }
+  .rt-detail :global(.rt-row) { margin: 6px 0; }
+  .rt-detail :global(.rt-when) { color: var(--ink-3); font-size: 13px; }
+  .rt-detail :global(code) { font-size: 12px; overflow-wrap: anywhere; }
+  .rt-legend { list-style: none; padding: 0; margin: 12px 0 0; display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13.5px; }
+  .rt-legend b { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: var(--accent); color: var(--on-accent); font-size: 10.5px; }
+  .rt-flag-key { display: inline-block; width: 10px; height: 10px; background: var(--warn); transform: rotate(45deg); margin: 0 4px 0 3px; border-radius: 2px; }
+  @container (min-width: 720px) {
+    .rt-chart { --lane: 40px; --label: 120px; }
+    .rt-v { display: block; }
+  }
+  @container (max-width: 480px) {
+    .rt-chart { --label: 84px; }
+    .rt-labels { font-size: 12px; }
+    .rt-tick.odd { visibility: hidden; }
+    .rt-tick small { display: none; }
+    .rt-mk { width: 12px; height: 12px; }
+  }
+</style>

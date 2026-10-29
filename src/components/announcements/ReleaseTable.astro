@@ -1,0 +1,42 @@
+---
+// The versions of one release train, from src/data/releases.ts: what was before, when,
+// where to get it, and what it needs. <ReleaseTable train="funnels" />
+import { channels, day, inTrain, pkg, previous, type TrainId } from '../../data/releases';
+import { fmtDate } from '../../lib/site';
+
+interface Props { train: TrainId; }
+const rows = inTrain(Astro.props.train).map((r) => ({ r, p: pkg(r.pkg), prev: previous(r) }));
+---
+<div class="rtab not-content">
+  {rows.map(({ r, p, prev }) => (
+    <div class="rtab-row">
+      <div class="rtab-name">
+        <a href={p.docs}>{p.name}</a>
+        <span class="rtab-ver">{r.version}</span>
+        {prev && <span class="rtab-prev">after {prev.version}</span>}
+      </div>
+      <div class="rtab-facts">
+        <span>{fmtDate(new Date(day(r.at)))}</span>
+        <span>{r.tagged ? channels[p.channel].label : 'not tagged on its own'}</span>
+        {r.plugin && <span>app {r.plugin} inside</span>}
+        {r.needs && <span>needs {r.needs}</span>}
+      </div>
+      <p class="rtab-note">{r.note}</p>
+      {r.tagged && <code class="rtab-get">{r.image ? `docker pull ${r.image}` : p.get(r.version)}</code>}
+      {r.digest && <span class="rtab-digest">{r.digest}</span>}
+    </div>
+  ))}
+</div>
+
+<style>
+  .rtab { display: grid; gap: 10px; margin: 20px 0 28px; }
+  .rtab-row { display: grid; gap: 4px; padding: 14px 16px; border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 12px; background: var(--bg-2); min-width: 0; }
+  .rtab-name { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+  .rtab-name a { font-weight: 700; color: var(--ink); }
+  .rtab-ver { font-size: 20px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .rtab-prev { font-size: 13px; color: var(--ink-3); }
+  .rtab-facts { display: flex; flex-wrap: wrap; gap: 2px 14px; font-size: 13px; color: var(--ink-3); }
+  .rtab-note { margin: 2px 0; font-size: 15px; line-height: 1.5; color: var(--ink-2); }
+  .rtab-get { display: block; font-size: 12.5px; padding: 5px 8px; overflow-wrap: anywhere; width: fit-content; max-width: 100%; }
+  .rtab-digest { font-size: 12px; color: var(--ink-3); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow-wrap: anywhere; }
+</style>
