@@ -1,0 +1,122 @@
+---
+// Error budget calculator: SLO target, window and traffic in; allowed bad events, the same budget
+// as minutes of full outage, and how much is left after the bad events so far. A little JS.
+// <SloBudgetCalculator target={99.9} days={28} rps={50} bad={40000} elapsed={10} />
+import '../../styles/diagram.css';
+
+interface Props { target?: number; days?: number; rps?: number; bad?: number; elapsed?: number; caption?: string; }
+const { target = 99.9, days = 28, rps = 50, bad = 40000, elapsed = 10, caption } = Astro.props;
+---
+<figure class="dg slo-calc not-content" data-slo-calc role="group" aria-label={caption ?? 'Error budget calculator'}>
+  <div class="grid">
+    <div class="inputs">
+      <label>SLO target
+        <span class="field"><input type="number" min="50" max="99.9999" step="0.01" value={target} data-in="target" /><i>%</i></span>
+      </label>
+      <div class="chips" role="group" aria-label="Common targets">
+        {[99, 99.5, 99.9, 99.95, 99.99].map((t) => <button type="button" data-target={t}>{t}%</button>)}
+      </div>
+      <label>Window
+        <select data-in="days">
+          {[7, 28, 30, 90].map((d) => <option value={d} selected={d === days}>{d} days, rolling</option>)}
+        </select>
+      </label>
+      <label>Traffic
+        <span class="field"><input type="number" min="0" step="1" value={rps} data-in="rps" /><i>requests / s</i></span>
+      </label>
+      <label>Bad events so far
+        <span class="field"><input type="number" min="0" step="100" value={bad} data-in="bad" /><i>failed or slow</i></span>
+      </label>
+      <label>Days into the window <output data-out="elapsed">{elapsed}</output>
+        <input type="range" min="0" max={days} step="1" value={elapsed} data-in="elapsed" />
+      </label>
+    </div>
+    <div class="results" aria-live="polite">
+      <div class="big"><span data-out="allowed">…</span><small>bad events allowed in the window</small></div>
+      <dl>
+        <dt>Events in the window</dt><dd data-out="total">…</dd>
+        <dt>Same budget as a full outage of</dt><dd data-out="minutes">…</dd>
+        <dt>Budget used</dt><dd data-out="used">…</dd>
+        <dt>Pace</dt><dd data-out="pace">…</dd>
+      </dl>
+      <div class="bar" aria-hidden="true"><div class="fill" data-out="fill"></div><div class="tick" data-out="tick"></div></div>
+      <p class="verdict" data-out="verdict"></p>
+    </div>
+  </div>
+  {caption && <figcaption>{caption}</figcaption>}
+</figure>
+
+<script>
+  const nf = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
+  const dur = (min: number) => {
+    if (min < 1) return `${(min * 60).toFixed(0)} seconds`;
+    if (min < 120) return `${min.toFixed(min < 10 ? 1 : 0)} minutes`;
+    const h = min / 60;
+    return h < 48 ? `${h.toFixed(1)} hours` : `${(h / 24).toFixed(1)} days`;
+  };
+  for (const fig of document.querySelectorAll<HTMLElement>('[data-slo-calc]')) {
+    const $ = (k: string) => fig.querySelector<HTMLInputElement>(`[data-in="${k}"]`)!;
+    const out = (k: string) => fig.querySelector<HTMLElement>(`[data-out="${k}"]`)!;
+    const update = () => {
+      const target = Math.min(99.9999, Math.max(0, +$('target').value || 0)) / 100;
+      const days = +$('days').value;
+      const rps = Math.max(0, +$('rps').value || 0);
+      const bad = Math.max(0, +$('bad').value || 0);
+      const el = $('elapsed');
+      el.max = String(days);
+      const elapsed = Math.min(days, +el.value);
+      const total = rps * 86400 * days;
+      const allowed = total * (1 - target);
+      const used = allowed > 0 ? bad / allowed : 0;
+      const expected = elapsed / days;
+      out('elapsed').textContent = String(elapsed);
+      out('allowed').textContent = nf.format(allowed);
+      out('total').textContent = nf.format(total);
+      out('minutes').textContent = dur(days * 1440 * (1 - target));
+      out('used').textContent = `${nf.format(bad)} = ${(used * 100).toFixed(1)}%`;
+      const pace = elapsed > 0 ? used / expected : 0;
+      out('pace').textContent = elapsed > 0 ? `${pace.toFixed(2)}× (burn rate so far)` : 'pick a day';
+      const fill = out('fill');
+      fill.style.width = `${Math.min(100, used * 100)}%`;
+      fill.dataset.tone = used >= 1 ? 'bad' : pace > 1 ? 'warn' : 'ok';
+      out('tick').style.left = `${expected * 100}%`;
+      out('verdict').textContent = used >= 1
+        ? 'Budget spent. The policy decides what happens now: usually reliability work before features.'
+        : elapsed > 0 && pace > 1
+          ? `Spending faster than the window allows. At this pace the budget runs out on day ${Math.max(elapsed, Math.floor(elapsed / used)).toFixed(0)}.`
+          : `${(100 - used * 100).toFixed(1)}% of the budget left: room to ship, experiment, or take planned risk.`;
+    };
+    fig.querySelectorAll<HTMLButtonElement>('[data-target]').forEach((b) =>
+      b.addEventListener('click', () => { $('target').value = b.dataset.target!; update(); }));
+    fig.querySelectorAll('input, select').forEach((el) => el.addEventListener('input', update));
+    update();
+  }
+</script>
+
+<style>
+  .slo-calc { container-type: inline-size; }
+  .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; }
+  .inputs { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  .inputs label { display: grid; gap: 4px; font-size: 13px; font-weight: 600; color: var(--dg-ink-2); }
+  .inputs label output { font-weight: 700; color: var(--dg-ink); }
+  .field { display: flex; align-items: center; gap: 8px; }
+  .field i { font-style: normal; font-weight: 400; color: var(--dg-ink-3); white-space: nowrap; }
+  input[type='number'], select { width: 100%; min-width: 0; font: inherit; font-size: 15px; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--dg-line); background: var(--dg-node); color: var(--dg-ink); }
+  input[type='range'] { width: 100%; accent-color: var(--dg-accent); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: -4px; }
+  .chips button { font: inherit; font-size: 12px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--dg-line); background: var(--dg-node); color: var(--dg-ink-2); cursor: pointer; }
+  .chips button:hover { border-color: var(--dg-accent); color: var(--dg-accent); }
+  .results { min-width: 0; padding: 16px; border-radius: 12px; background: var(--dg-node); border: 1px solid var(--dg-line); }
+  .big span { display: block; font-size: 32px; font-weight: 800; font-variant-numeric: tabular-nums; color: var(--dg-accent); line-height: 1.1; overflow-wrap: anywhere; }
+  .big small { color: var(--dg-ink-3); font-size: 13px; }
+  dl { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; margin: 14px 0; font-size: 13px; }
+  dt { color: var(--dg-ink-2); }
+  dd { margin: 0; text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .bar { position: relative; height: 12px; border-radius: 6px; background: var(--dg-line); overflow: visible; }
+  .fill { height: 100%; border-radius: 6px; background: var(--dg-ok); transition: width .2s; }
+  .fill[data-tone='warn'] { background: var(--dg-warn); }
+  .fill[data-tone='bad'] { background: var(--dg-bad); }
+  .tick { position: absolute; top: -4px; bottom: -4px; width: 2px; background: var(--dg-ink); transform: translateX(-1px); }
+  .verdict { margin: 10px 0 0; font-size: 13px; color: var(--dg-ink-2); }
+  @container (max-width: 560px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+</style>
