@@ -5,7 +5,7 @@ export const site = {
   tagline: 'Open Unified Observability',
   github: 'https://github.com/ouo11y',
   repo: 'https://github.com/ouo11y/ouo11y',
-  // Shown on the site. Placeholders until the mailboxes are set up.
+  // Shown on the site. Google Workspace aliases of one mailbox; a catch-all takes the rest.
   email: {
     hello: 'hello@ouo11y.com',
     security: 'security@ouo11y.com',
