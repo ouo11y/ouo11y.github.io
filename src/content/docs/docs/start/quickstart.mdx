@@ -32,11 +32,7 @@ One file holds the whole stack: every service and every config, inline. You down
 ## Before you start
 
 - **Docker with Compose 2.24 or later.** The file uses inline `configs.content`, which older Compose versions reject. Check with `docker compose version`.
-- **Pull access to the ouo11y images.**
-
-<Aside type="caution" title="Early access: the images are private">
-`ghcr.io/ouo11y/collector`, `rum-api` and `grafana` stay private until ouo11y reaches a stable version. Email [hello@ouo11y.com](mailto:hello@ouo11y.com) with your GitHub user name and we grant it read access. Then create a **classic** GitHub personal access token with only the `read:packages` scope. Without access, `docker compose up` stops with `denied` (HTTP 403) on the first ouo11y image.
-</Aside>
+- **About 1.5 GB of free disk** for the images. `ghcr.io/ouo11y/collector`, `rum-api` and `grafana` are public: no account and no `docker login`.
 
 ## Start it
 
@@ -56,13 +52,13 @@ One file holds the whole stack: every service and every config, inline. You down
 
    Or save it from the page: [quickstart.yaml](/downloads/quickstart.yaml). The full file is at the end of this page.
 
-3. Log in to the GitHub container registry with your token. Keep the token in your shell, never in a file.
+3. Pull the images. The first pull is about 1.5 GB; doing it now keeps the next step short.
 
    ```bash
-   echo $GHCR_TOKEN | docker login ghcr.io -u <github-user> --password-stdin
+   docker compose pull
    ```
 
-   You see `Login Succeeded`.
+   You see every image as `Pulled`. The images are public, so no login is needed.
 
 4. Start the stack.
 
@@ -70,7 +66,7 @@ One file holds the whole stack: every service and every config, inline. You down
    docker compose up -d
    ```
 
-   The first run pulls about 1.5 GB of images. Then you see every service as `Started`, and `grafana-plugin` as `Exited`: it copies the Grafana app onto the Grafana volume and stops, on every start.
+   You see every service as `Started`, and `grafana-plugin` as `Exited`: it copies the Grafana app onto the Grafana volume and stops, on every start.
 
 5. Check that the collector asks for a credential. Without one it answers `401`:
 
@@ -183,7 +179,7 @@ docker compose down -v
 
 | You see | Cause | Fix |
 |---|---|---|
-| `denied` or `403` pulling `ghcr.io/ouo11y/...` | no pull access, or logged in as another user | the early-access steps above; `docker logout ghcr.io` and log in again |
+| `denied` or `403` pulling `ghcr.io/ouo11y/...` | an old or expired `ghcr.io` login in Docker's credential store; the images themselves are public | `docker logout ghcr.io`, then pull again |
 | `configs.content` or `additional properties 'content' not allowed` | Compose older than 2.24 | update Docker Desktop or the Compose plugin |
 | `Bind for 0.0.0.0:3000 failed: port is already allocated` | something else uses that port | move it in `.env`, see above; do not stop the other program |
 | `401` with the credential | a typo in the id or token | the token is `pt_dev_demo_` followed by sixteen zeros |

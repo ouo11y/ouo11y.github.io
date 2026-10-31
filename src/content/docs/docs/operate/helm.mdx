@@ -8,7 +8,7 @@ import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 import Zones from '../../../../components/diagrams/Zones.astro';
 
 <Aside type="caution" title="The chart is not published yet">
-The Helm chart `ouo` will be published at `oci://ghcr.io/ouo11y/charts/ouo`, private like the images until ouo11y reaches a stable version. During early access we send it with pull access: email [hello@ouo11y.com](mailto:hello@ouo11y.com). The commands below install it from the unpacked chart folder, `./ouo`. Everything on this page was checked by rendering and linting that chart with the values shown.
+The Helm chart `ouo` will be published at `oci://ghcr.io/ouo11y/charts/ouo`. Until then we send it on request: email [hello@ouo11y.com](mailto:hello@ouo11y.com). The images it installs are already public on ghcr.io, so the cluster needs no pull secret. The commands below install it from the unpacked chart folder, `./ouo`. Everything on this page was checked by rendering and linting that chart with the values shown.
 </Aside>
 
 ## What it installs
@@ -54,20 +54,16 @@ The ouo11y collector (the only ingest), rum-api (ClusterIP only), Grafana with t
 | Helm | 3 or 4 |
 | An Ingress controller and certificates | for example ingress-nginx and cert-manager; or a `LoadBalancer` Service |
 | A default StorageClass | for the replay, Grafana and bundled LGTM volumes |
-| Pull access to `ghcr.io/ouo11y/*` | during early access |
+| Outbound HTTPS to `ghcr.io` | the images are public; no pull secret |
 
 ## Install
 
 <Steps>
 
-1. Create the namespace and the pull secret. The token is a classic GitHub token with only `read:packages`, from your shell.
+1. Create the namespace. The ouo11y images are public, so there is no pull secret.
 
    ```bash
    kubectl create namespace ouo
-   ```
-
-   ```bash
-   kubectl create secret docker-registry ghcr -n ouo --docker-server=ghcr.io --docker-username=<github-user> --docker-password="$GHCR_TOKEN"
    ```
 
 2. Create the secrets, so no credential ever sits in a values file. First a project token; keep it, your apps need it:
@@ -98,8 +94,6 @@ The ouo11y collector (the only ingest), rum-api (ClusterIP only), Grafana with t
 
    ```yaml
    # ouo11y on Kubernetes: bundled single-binary Loki, Tempo and Mimir.
-   imagePullSecrets:
-     - name: ghcr                      # while the ouo11y images are private
    collector:
      image: { tag: "0.4.0" }
      existingProjectsSecret: ouo-projects
@@ -263,7 +257,7 @@ On AWS leave `endpoint` empty. With the S3 store rum-api has no volume and rolls
 | `grafana.env`, `grafana.extraEnv` | | any `GF_*` setting: SSO, an external database, SMTP |
 | `lgtm.bundled.<loki,tempo,mimir>.persistence.size` | `20Gi` | |
 | `lgtm.bundled.<x>.configOverride` | `""` | a whole Loki, Tempo or Mimir config |
-| `imagePullSecrets` | `[]` | `[{name: ghcr}]` during early access |
+| `imagePullSecrets` | `[]` | only for a private mirror of the images |
 
 Every component also takes `resources`, `nodeSelector`, `tolerations`, `affinity`, security contexts and pod annotations.
 

@@ -62,7 +62,7 @@ docker compose down -v
 |---|---|
 | `Bind for 0.0.0.0:4318 failed: port is already allocated` (or 3000, 3100, 3200, 13133) | Another stack has the port. See [ports taken](#ports-taken) below. |
 | `docker compose up` fails with `unable to prepare context` or a missing `ouo11y` context | `OUO11Y_REPO` is not set in this terminal, or does not point at the clone: see [the stack](/docs/quickstarts/3-funnels/stack/#start-it). |
-| `denied` when pulling `ghcr.io/ouo11y/collector` | Not logged in to ghcr.io, or no pull access yet: see [the stack](/docs/quickstarts/3-funnels/stack/#start-it). |
+| `denied` when pulling `ghcr.io/ouo11y/collector` | An old or expired `ghcr.io` login in Docker's credential store; the image is public. Run `docker logout ghcr.io` and start again. |
 | No **Funnels** page in the app menu | Grafana is not the image built on the stack page: run `docker compose up -d --build`, then hard-reload the browser. |
 | The step box suggests nothing | No page views in the range yet: buy once (the Instrument page), time range **Last 1 hour**. |
 | Every bar is 0 | Step 1 does not match (`/` vs `/home`) or the Service filter has a typo. Check the paths on a session page. |

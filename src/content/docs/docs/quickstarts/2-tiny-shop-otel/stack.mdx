@@ -76,15 +76,15 @@ The three ouo11y images use the `latest` tag, which follows every release. The c
 The `demo` project token (`pt_dev_demo_0000000000000000`), the Grafana login (`admin` / `testing567`) and the `it_dev_` and `rt_dev_` tokens are public development values. Use them on your own machine only.
 </Aside>
 
-## 4b. Log in to ghcr.io
+## 4b. Pull the images
 
-The ouo11y images are private for now. You need read access to the `ouo11y` packages and a **classic** GitHub token with only the `read:packages` scope. Put the token in your shell (`export GHCR_TOKEN=...`), never in a file, then:
+The ouo11y images on ghcr.io are public, so there is nothing to log in to. Pull them now, about 1.5 GB, so the start is quick. From `tiny-shop-otel/`:
 
 ```bash
-echo $GHCR_TOKEN | docker login ghcr.io -u <your-github-user> --password-stdin
+docker compose -f stack/compose.yaml pull
 ```
 
-It prints `Login Succeeded`.
+Every image ends as `Pulled`.
 
 ## 4c. Check the ports
 

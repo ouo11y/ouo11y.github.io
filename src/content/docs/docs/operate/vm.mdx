@@ -43,7 +43,7 @@ One Docker host, Caddy in front for TLS, the one-file stack behind it. Suitable 
 - 4 GB of RAM and 20 GB of disk to start; disk grows with your traffic up to the retention you set.
 - Two DNS names pointing at the VM: one for Grafana (`ouo.example.com`), one for the collector (`otel.ouo.example.com`).
 - Ports 22, 80 and 443 open. 80 is needed for Let's Encrypt.
-- Pull access to the ouo11y images ([early access](/docs/start/quickstart/#before-you-start)). Log in **with `sudo`**: systemd pulls as root and does not see a login made as your own user.
+- Outbound HTTPS to `ghcr.io`. The ouo11y images are public, so systemd (which pulls as root) needs no login.
 
 ## Install
 

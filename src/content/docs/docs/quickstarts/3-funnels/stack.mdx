@@ -90,11 +90,7 @@ Grafana with the ouo11y RUM app, which has the **Funnels** page. Its `Dockerfile
 
 ## Start it
 
-The collector image is private for now: log in to ghcr.io once with a GitHub token that has `read:packages`. Without pull access the collector does not start; email [hello@ouo11y.com](mailto:hello@ouo11y.com).
-
-```bash
-echo $GHCR_TOKEN | docker login ghcr.io -u <github-user> --password-stdin
-```
+The collector image on ghcr.io is public, so there is nothing to log in to.
 
 Point the builds at your clone and start everything. The first run builds rum-api and Grafana, two to three minutes:
 

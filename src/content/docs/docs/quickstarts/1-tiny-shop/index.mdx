@@ -11,7 +11,7 @@ import Download from '../../../../../components/Download.astro';
 
 You build a two-folder shop: an Express API and a React page. First they work with no telemetry at all. Then you start the ouo11y stack from one file, trace the API with the OpenTelemetry Node SDK, add `@ouo11y/browser` to the page, and break things on purpose. At the end, one click in the browser is one trace from the button to the API's own spans, and Grafana shows a **crashed** session with that trace and a replay of what you clicked.
 
-**Time:** about 30 minutes. **You need:** Node 24 or newer, Docker Desktop, VS Code, and pull access to the ouo11y images (see below).
+**Time:** about 30 minutes. **You need:** Node 24 or newer, Docker Desktop, VS Code, and about 1.5 GB of disk for the ouo11y images (public, no login).
 
 ## What you build
 
@@ -64,10 +64,6 @@ Each page ends with what you should see before you go on.
   <LinkCard title="5. See it in Grafana" href="/docs/quickstarts/1-tiny-shop/grafana/" description="One trace across both apps, the browser events, and the crashed session." />
   <LinkCard title="6. Clean up and troubleshooting" href="/docs/quickstarts/1-tiny-shop/clean-up/" description="Stop the stack, and what to do when something does not work." />
 </CardGrid>
-
-<Aside type="caution" title="Early access: the images are private">
-The ouo11y container images on `ghcr.io` are private while we are in early access, so step 2 only works with pull access. Email [hello@ouo11y.com](mailto:hello@ouo11y.com) for it; we answer quickly. Step 1 needs no access, and everything else (the SDKs, the files on these pages) is public.
-</Aside>
 
 ## The finished files
 

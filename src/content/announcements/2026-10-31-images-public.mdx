@@ -1,0 +1,37 @@
+---
+title: "The ouo11y container images are public"
+description: ghcr.io/ouo11y/collector, rum-api and grafana now pull without an account, a token or docker login. Every guide on this site drops its login step.
+date: 2026-10-31
+kind: notice
+tags: [images, collector, rum-api, grafana]
+---
+
+The three ouo11y container images on the GitHub container registry are public:
+
+| Image | Current version |
+|---|---|
+| `ghcr.io/ouo11y/collector` | 0.4.0 |
+| `ghcr.io/ouo11y/rum-api` | 0.5.0 |
+| `ghcr.io/ouo11y/grafana` (Grafana 13.2.1 with the ouo11y RUM app 0.9.0) | 0.5.0 |
+
+Until today you needed read access to the `ouo11y` packages and a GitHub token with `read:packages`. Now any machine pulls them:
+
+```bash
+docker pull ghcr.io/ouo11y/collector:0.4.0
+```
+
+We checked that with an empty Docker configuration, so no saved login was involved.
+
+## What changes for you
+
+- **New to ouo11y:** the [one-file stack](/docs/start/quickstart/) and the three [quickstarts](/docs/quickstarts/) start with `docker compose up`. No email to us, no token.
+- **Already logged in to ghcr.io:** nothing breaks. You can remove the login with `docker logout ghcr.io`. If a pull fails with `denied`, an expired login in Docker's credential store is the cause; log out and pull again.
+- **On Kubernetes:** the `ghcr` pull secret and `imagePullSecrets` are no longer needed. [Helm on Kubernetes](/docs/operate/helm/) no longer creates them.
+- **On a VM with systemd:** no `sudo docker login` before the first start ([VM install](/docs/operate/vm/)).
+
+## What is still not public
+
+- **The Helm chart `ouo`** is not published yet. Email [hello@ouo11y.com](mailto:hello@ouo11y.com) and we send it.
+- **The product repository** stays private during early access. Every file a guide needs is on this site, so you never need it.
+
+The SDKs, `@ouo11y/browser` and `@ouo11y/react-native`, have been public on npm since [23 October](/announcements/2026-10-23-sdks-on-npm/).
