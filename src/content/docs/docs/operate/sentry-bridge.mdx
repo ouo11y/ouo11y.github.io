@@ -204,7 +204,6 @@ The Helm chart does not deploy the bridge. Run it as **its own Deployment with o
        metadata:
          labels: { app.kubernetes.io/name: ouo-sentry-bridge }
        spec:
-         imagePullSecrets: [{ name: ghcr }]
          containers:
            - name: bridge
              image: ghcr.io/ouo11y/collector:0.4.0   # the same version as the chart's collector

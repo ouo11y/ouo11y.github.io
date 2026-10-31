@@ -141,7 +141,7 @@ The ouo11y collector (the only ingest), rum-api (ClusterIP only), Grafana with t
    kubectl -n ouo get pods
    ```
 
-   Three Deployments and three StatefulSets, each `1/1 Running`. A pod in `ImagePullBackOff` with `403 Forbidden` in `kubectl describe pod` means the pull secret is missing or has no access.
+   Three Deployments and three StatefulSets, each `1/1 Running`. A pod in `ImagePullBackOff` means the node cannot reach `ghcr.io` or the tag does not exist; `kubectl describe pod` names which.
 
 6. Check the edge from outside: `401` without a credential, `200` with one.
 
