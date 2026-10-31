@@ -60,7 +60,7 @@ export const packages: Package[] = [
 
 export const channels: Record<Channel, { label: string; note: string }> = {
   npm: { label: 'npm, public', note: 'Apache-2.0 on npmjs.org.' },
-  ghcr: { label: 'GHCR, early access', note: 'Private until ouo11y is stable. Email hello@ouo11y.com for pull access.' },
+  ghcr: { label: 'GHCR, public', note: 'Public on ghcr.io since 31 October 2026: no account, no login.' },
   'inside-grafana': { label: 'inside the grafana image', note: 'Ships baked into the grafana image; not published on its own.' },
 };
 
@@ -158,6 +158,7 @@ export const milestones: { at: string; label: string; announcement: string }[] =
   { at: '2026-10-18T12:00:00Z', label: 'Renamed to ouo11y', announcement: '2026-10-18-renamed-to-ouo11y' },
   { at: '2026-10-28T12:00:00Z', label: 'ouo11y.com and the docs', announcement: '2026-10-28-ouo11y-com' },
   { at: '2026-10-29T12:00:00Z', label: 'The blog', announcement: '2026-10-29-the-blog' },
+  { at: '2026-10-31T12:00:00Z', label: 'Images public', announcement: '2026-10-31-images-public' },
 ];
 
 export function grafanaWithPlugin(pluginVersion: string) {

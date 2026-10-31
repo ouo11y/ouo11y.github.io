@@ -105,11 +105,7 @@ The `ouo.` attributes in this table wait for an OpenTelemetry semantic conventio
 ## What you need
 
 - **Node 24** or newer, **Docker Desktop**, and **VS Code** with its `code` command. The first page checks all three.
-- **Pull access to the ouo11y images.** The collector, rum-api and Grafana images on `ghcr.io/ouo11y` are private for now.
-
-<Aside type="caution" title="The ouo11y images are private for now">
-To start the stack you need read access to the `ouo11y` packages on ghcr.io and a classic GitHub token with only the `read:packages` scope. Without that access, `docker compose up` stops with `denied`. You can still read every step, build the app and the browser instrumentation, and check the spans and requests in your browser's DevTools.
-</Aside>
+- **About 1.5 GB of disk** for the collector, rum-api and Grafana images on `ghcr.io/ouo11y`. They are public: no account, no login.
 
 ## Or run the finished files
 

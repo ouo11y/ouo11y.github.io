@@ -231,8 +231,8 @@ Sections, in this order; leave out one that has nothing to say:
    before it, where to get it, what it needs, the digest.
 3. **What is new**, grouped by who notices it (operators, the session page, SDK users), in plain
    user-facing words. Not a commit list: say what someone can now do or see.
-4. **Get it**: copy-paste commands, one per block. Images are private during early access; say so
-   and link `/docs/start/quickstart/#before-you-start`.
+4. **Get it**: copy-paste commands, one per block. Images are public on ghcr.io (no login); the Helm
+   chart is sent on request until it is published.
 5. **Upgrade**: the order, anything that changes behaviour on upgrade (a new default, a header the
    collector must allow, a renamed setting), and a link to `/docs/operate/upgrade/`.
 6. **Which versions work together**, in a `Note`.

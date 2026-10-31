@@ -40,19 +40,15 @@ Open the block below, copy all of it (the copy button is at its top right), and 
 
 The comments at its top say which ouo11y release each image and config comes from, and how to pin them.
 
-### 4b. Log in to ghcr.io
+### 4b. Pull the images
 
-<Aside type="caution" title="Early access: the images are private">
-The ouo11y images are private for now. You need read access to the `ouo11y` packages: email [hello@ouo11y.com](mailto:hello@ouo11y.com) with your GitHub user name. Without it, `docker compose up` stops with `denied`.
-</Aside>
-
-With access, create a **classic** GitHub token with only the `read:packages` scope. Put the token in your shell (`export GHCR_TOKEN=...`), never in a file, then:
+The ouo11y images on ghcr.io are public, so there is nothing to log in to. Pull them now, about 1.5 GB, so the start in step 4d is quick:
 
 ```bash
-echo $GHCR_TOKEN | docker login ghcr.io -u <your-github-user> --password-stdin
+docker compose -f ~/Desktop/tiny-shop/stack/compose.yaml pull
 ```
 
-Replace `<your-github-user>` with your GitHub user name. It prints `Login Succeeded`.
+Every image ends as `Pulled`.
 
 ### 4c. Check the ports
 

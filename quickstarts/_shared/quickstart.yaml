@@ -15,7 +15,6 @@
 #
 # Copy this file into an empty folder as compose.yaml, then:
 #
-#   echo $GHCR_TOKEN | docker login ghcr.io -u <github-user> --password-stdin   # images are private for now
 #   docker compose up -d
 #
 # Grafana          http://localhost:3000      admin / testing567, More apps -> ouo11y RUM

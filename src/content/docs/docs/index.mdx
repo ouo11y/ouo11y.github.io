@@ -54,8 +54,8 @@ Read in this order. Each page stands on its own, and nothing points you to a rep
 | How do we change the pipeline? | [Collector](/docs/operate/collector/), [Customize](/docs/operate/customize/) |
 | How do we upgrade and rotate tokens? | [Upgrading](/docs/operate/upgrade/), [Project tokens](/docs/operate/tokens/) |
 
-<Aside type="note" title="Early access">
-The SDKs are public on npm. The three ouo11y container images (`collector`, `rum-api`, `grafana`) and the Helm chart are private until ouo11y reaches a stable version. Email [hello@ouo11y.com](mailto:hello@ouo11y.com) for pull access.
+<Aside type="note" title="What is public">
+The SDKs are public on npm, and the three ouo11y container images (`collector`, `rum-api`, `grafana`) are public on ghcr.io: no account and no login. The Helm chart is not published yet; email [hello@ouo11y.com](mailto:hello@ouo11y.com) for it.
 </Aside>
 
 ## What is released today
@@ -64,7 +64,7 @@ The SDKs are public on npm. The three ouo11y container images (`collector`, `rum
 |---|---|---|
 | `@ouo11y/browser` | 0.3.0 | npm, public |
 | `@ouo11y/react-native` | 0.2.1 | npm, public |
-| collector | 0.4.0 | `ghcr.io/ouo11y/collector`, private |
-| rum-api | 0.5.0 | `ghcr.io/ouo11y/rum-api`, private |
-| grafana (Grafana 13.2.1 with the ouo11y RUM app 0.9.0) | 0.5.0 | `ghcr.io/ouo11y/grafana`, private |
+| collector | 0.4.0 | `ghcr.io/ouo11y/collector`, public |
+| rum-api | 0.5.0 | `ghcr.io/ouo11y/rum-api`, public |
+| grafana (Grafana 13.2.1 with the ouo11y RUM app 0.9.0) | 0.5.0 | `ghcr.io/ouo11y/grafana`, public |
 | Helm chart `ouo` | not published yet | see [Helm on Kubernetes](/docs/operate/helm/) |
