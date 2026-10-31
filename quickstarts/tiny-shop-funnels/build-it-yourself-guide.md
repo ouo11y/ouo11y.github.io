@@ -850,12 +850,7 @@ apps:
 
 </details>
 
-The collector image is private for now: log in to ghcr.io once with a GitHub token that has
-`read:packages`.
-
-```bash
-echo $GHCR_TOKEN | docker login ghcr.io -u <github-user> --password-stdin
-```
+The collector image on ghcr.io is public, so there is nothing to log in to.
 
 Point the builds at your clone and start everything. The first run builds rum-api and Grafana
 (two to three minutes):
@@ -1567,7 +1562,7 @@ docker compose down -v
 |---|---|
 | `Bind for 0.0.0.0:4318 failed: port is already allocated` (or 3000, 3100, 3200, 13133) | another stack has the port: `export OUO_GRAFANA_PORT=13000 OUO_OTLP_HTTP_PORT=14318 OUO_REPLAY_PORT=14319 OUO_LOKI_PORT=13100 OUO_TEMPO_PORT=13200 OUO_COLLECTOR_HEALTH_PORT=13134` before `up`, then `OUO_OTLP_ENDPOINT=http://localhost:14318 npm start` for the API and `frontend/.env.local` with `VITE_OUO_ENDPOINT=http://localhost:14318` and `VITE_OUO_REPLAY_ENDPOINT=http://localhost:14319` |
 | `docker compose up` fails with `unable to prepare context` or a missing `ouo11y` context | `OUO11Y_REPO` is not set in this terminal, or does not point at the clone: step 4 |
-| `denied` when pulling `ghcr.io/ouo11y/collector` | not logged in to ghcr.io: step 4 |
+| `denied` when pulling `ghcr.io/ouo11y/collector` | an old or expired `ghcr.io` login in Docker's credential store; the image is public: `docker logout ghcr.io`, then step 4 again |
 | No **Funnels** page in the app menu | Grafana is not the image built in step 4: `docker compose up -d --build`, then hard-reload the browser |
 | The step box suggests nothing | no page views in the range yet: buy once (step 6), time range **Last 1 hour** |
 | Every bar is 0 | step 1 does not match (`/` vs `/home`) or the Service filter has a typo; check the paths on a session page |

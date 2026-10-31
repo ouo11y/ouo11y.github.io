@@ -236,7 +236,6 @@ their configuration inline. Open the block below, copy all of it, and paste it i
 #
 # Copy this file into an empty folder as compose.yaml, then:
 #
-#   echo $GHCR_TOKEN | docker login ghcr.io -u <github-user> --password-stdin   # images are private for now
 #   docker compose up -d
 #
 # Grafana          http://localhost:3000      admin / testing567, More apps -> ouo11y RUM
@@ -1109,15 +1108,16 @@ configs:
 
 </details>
 
-### 4b. Log in to ghcr.io
+### 4b. Pull the images
 
-The ouo images are private for now. You need read access to the `ouo11y` packages and a
-**classic** GitHub token with only the `read:packages` scope. Put the token in your shell
-(`export GHCR_TOKEN=...`), never in a file, then:
+The ouo11y images on ghcr.io are public, so there is nothing to log in to. Pull them now, about
+1.5 GB, so the start in step 4d is quick:
 
 ```bash
-echo $GHCR_TOKEN | docker login ghcr.io -u <your-github-user> --password-stdin
+docker compose -f ~/Desktop/tiny-shop/stack/compose.yaml pull
 ```
+
+Every image ends as `Pulled`.
 
 ### 4c. Check the ports
 
@@ -1572,7 +1572,7 @@ docker compose down -v
 | You see | Cause and fix |
 |---|---|
 | `Bind for 0.0.0.0:4318 failed: port is already allocated` | another stack has the port: step 4c, move this one with `stack/.env` |
-| `denied` when pulling `ghcr.io/ouo11y/...` | not logged in to ghcr.io, or no read access yet: step 4b |
+| `denied` when pulling `ghcr.io/ouo11y/...` | an old or expired `ghcr.io` login in Docker's credential store; the images are public: `docker logout ghcr.io`, then step 4b again |
 | Vite: `@ouo/browser ... could not be resolved` | the package is `@ouo11y/browser` |
 | `Cannot read properties of undefined (reading 'export')` in the API | OpenTelemetry 2.x code: `new BatchSpanProcessor({ exporter })` from `@opentelemetry/sdk-trace` |
 | The backend trace starts at `POST /api/checkout`, without the browser span | `propagateTo` does not match the API URL (use the RegExp), or the page was not reloaded after editing `rum.js` |

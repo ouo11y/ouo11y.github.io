@@ -33,7 +33,7 @@ docker compose down -v
 | You see | Cause and fix |
 |---|---|
 | `Bind for 0.0.0.0:4318 failed: port is already allocated` | another stack has the port: [step 4c](/docs/quickstarts/1-tiny-shop/stack/#4c-check-the-ports), move this one with `stack/.env` |
-| `denied` when pulling `ghcr.io/ouo11y/...` | not logged in to ghcr.io, or no read access yet: [step 4b](/docs/quickstarts/1-tiny-shop/stack/#4b-log-in-to-ghcrio) |
+| `denied` when pulling `ghcr.io/ouo11y/...` | an old or expired `ghcr.io` login in Docker's credential store; the images are public: `docker logout ghcr.io`, then [step 4b](/docs/quickstarts/1-tiny-shop/stack/#4b-pull-the-images) again |
 | Vite: `@ouo/browser ... could not be resolved` | the package is `@ouo11y/browser` |
 | `Cannot read properties of undefined (reading 'export')` in the API | OpenTelemetry 2.x code: `new BatchSpanProcessor({ exporter })` from `@opentelemetry/sdk-trace` |
 | The backend trace starts at `POST /api/checkout`, without the browser span | `propagateTo` does not match the API URL (use the RegExp), or the page was not reloaded after editing `rum.js` |

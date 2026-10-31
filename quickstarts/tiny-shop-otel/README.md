@@ -39,9 +39,8 @@ Needs Node 24 and Docker. Commands have no `$` prompt; each runs from the folder
 
 ## 1. Run the ouo stack
 
-Log in to ghcr.io (the images are private for now:
-[fast-tracked 00, "Pull access"](../../fast-tracked/00-stack.md)), then from
-`examples/quickstarts/tiny-shop-otel/result/stack`:
+From `examples/quickstarts/tiny-shop-otel/result/stack` (the images are public, no login
+needed):
 
 ```bash
 docker compose up -d

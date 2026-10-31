@@ -88,14 +88,8 @@ rum-api and the plugin from it; from a copy of `result/` outside the checkout, s
 `OUO11Y_REPO=<checkout root>` first). Commands have no `$` prompt; each runs from the folder named
 above it.
 
-**1. The stack.** The collector image is private for now, so log in to ghcr.io once with a GitHub
-token that has `read:packages`:
-
-```bash
-echo $GHCR_TOKEN | docker login ghcr.io -u <github-user> --password-stdin
-```
-
-From `result/stack` (the first run builds rum-api and Grafana, two to three minutes):
+**1. The stack.** The collector image is public, so there is nothing to log in to. From
+`result/stack` (the first run builds rum-api and Grafana, two to three minutes):
 
 ```bash
 docker compose up -d --build

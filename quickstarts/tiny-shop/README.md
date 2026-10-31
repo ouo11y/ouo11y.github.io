@@ -33,8 +33,8 @@ Needs Node 24 and Docker. Commands have no `$` prompt; each runs from the folder
 ## 1. Run the ouo stack
 
 The stack is one file, [`deploy/compose/quickstart.yaml`](../../../deploy/compose/quickstart.yaml).
-Copy it into an empty folder as `compose.yaml`, log in to ghcr.io (the images are private for now:
-[fast-tracked 00, "Pull access"](../../fast-tracked/00-stack.md)), then in that folder:
+Copy it into an empty folder as `compose.yaml`, then in that folder (the images are public, no
+login needed):
 
 ```bash
 docker compose up -d
