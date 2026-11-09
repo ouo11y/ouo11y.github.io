@@ -33,7 +33,7 @@ const rows = packages.map((p) => ({ p, r: latest(p.id) }));
   .cv-name { font-weight: 700; color: var(--ink); }
   .cv-ch { font-size: 11.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
   .cv-ch.npm, .cv-ch.ghcr { background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); }
-  .cv-ch.inside-grafana { background: var(--accent-soft); color: var(--accent); }
+  .cv-ch.inside-grafana, .cv-ch.on-request { background: var(--accent-soft); color: var(--accent); }
   .cv-ver { font-size: 30px; font-weight: 800; letter-spacing: -.02em; line-height: 1.1; font-variant-numeric: tabular-nums; }
   .cv-date { font-size: 13px; color: var(--ink-3); }
   .cv-get { display: block; margin-top: 6px; font-size: 12.5px; padding: 6px 8px; border-radius: 8px; overflow-wrap: anywhere; }
