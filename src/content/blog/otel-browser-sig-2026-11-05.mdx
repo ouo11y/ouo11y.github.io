@@ -1,0 +1,186 @@
+---
+title: "Browser SIG, 5 November 2026: browser-sdk 0.7.0 was tagged but never reached npm, and JS 3.1 tightens the API peer range"
+description: The publish of browser-sdk 0.7.0 and browser-instrumentation 0.10.0 was rejected on purpose, so npm still has 0.6.0 and 0.9.0. OTel JS 3.1 makes API 1.9 with the 0.3xx packages an install error, and session and INP work moved forward in issues. What to do today.
+date: 2026-11-06
+tags: [opentelemetry, browser, community]
+series: "OpenTelemetry in the browser"
+part: 4
+---
+import Note from '../../components/Note.astro';
+import Flow from '../../components/diagrams/Flow.astro';
+import BrowserHistory from '../../components/diagrams/BrowserHistory.astro';
+
+[Part 3](/blog/otel-browser-sig-2026-10-29/) covered the meeting of 29 October and said a breaking release was in the queue. This part covers the meeting of **Thursday 5 November 2026** and what happened from 30 October to 6 November. The short version: that release got a GitHub tag and never reached npm.
+
+<Note title="Sources for this post">
+The SIG's public [meeting notes](https://docs.google.com/document/d/1G3yBAV5SzWBO3mmsBUos5bsn4yxsqkS1MLWl1urVojQ) (read on 6 November 2026), merged and open PRs, issues, releases and the publish workflow run in [opentelemetry-browser](https://github.com/open-telemetry/opentelemetry-browser), [opentelemetry-js](https://github.com/open-telemetry/opentelemetry-js), [semantic-conventions-client-side](https://github.com/open-telemetry/semantic-conventions-client-side) and [semantic-conventions](https://github.com/open-telemetry/semantic-conventions), and the npm registry. No recordings, Slack or YouTube.
+</Note>
+
+<Note type="tip" title="The short answer, 6 November 2026">
+[Part 1](/blog/otel-browser-state-2026-10/)'s advice has not changed: use `@opentelemetry/browser-sdk@0.6.0`, `@opentelemetry/browser-instrumentation@0.9.0` and `@opentelemetry/api@1.9.1`. GitHub labels browser-sdk 0.7.0 "Latest", but you cannot install it. If you use the classic `instrumentation-fetch` or `instrumentation-xml-http-request`, [check your API version](#if-you-use-the-classic-fetch-or-xhr-packages) before you take 0.301.0.
+</Note>
+
+## The week at a glance
+
+<BrowserHistory
+  caption="30 October to 6 November 2026. Every entry links its PR, release, workflow run or the meeting notes. Untick a track to hide it."
+  tracks={[
+    { id: 'sig', label: 'SIG meetings', tone: 'info' },
+    { id: 'repo', label: 'opentelemetry-browser', tone: 'ok' },
+    { id: 'semconv', label: 'Semantic conventions', tone: 'warn' },
+    { id: 'js', label: 'OTel JS', tone: 'accent' },
+  ]}
+  items={[
+    { date: '2026-10-30', track: 'repo', title: 'Release PR #522 merged; browser-sdk 0.7.0 and browser-instrumentation 0.10.0 tagged', body: 'The npm publish job stops and waits for approval.', href: 'https://github.com/open-telemetry/opentelemetry-browser/pull/522' },
+    { date: '2026-10-31', track: 'repo', title: 'Issues opened on the instrumentation contract (#538, #539)', body: 'Where the base class lives, and whether the SDK should peer-depend on the instrumentation package.', href: 'https://github.com/open-telemetry/opentelemetry-browser/issues/538' },
+    { date: '2026-11-02', track: 'semconv', title: 'Core semantic conventions v1.45.0', body: 'Includes the <code>enduser.*</code> deprecation.', href: 'https://github.com/open-telemetry/semantic-conventions/releases/tag/v1.45.0' },
+    { date: '2026-11-03', track: 'semconv', title: 'Browser entity removed from core (#4172)', body: 'The <code>browser.*</code> attributes stay in the registry.', href: 'https://github.com/open-telemetry/semantic-conventions/pull/4172' },
+    { date: '2026-11-03', track: 'sig', title: 'Client Instrumentation SIG: a small set of INP attributes', body: 'As reported in the issue. We did not use the recording.', href: 'https://github.com/open-telemetry/semantic-conventions-client-side/issues/35' },
+    { date: '2026-11-04', track: 'repo', title: 'PR #552 opened: a new @opentelemetry/browser-api package', href: 'https://github.com/open-telemetry/opentelemetry-browser/pull/552' },
+    { date: '2026-11-04', track: 'semconv', title: 'Client-side registry pins its enduser dependency to core v1.45.0 (#49)', href: 'https://github.com/open-telemetry/semantic-conventions-client-side/pull/49' },
+    { date: '2026-11-05', track: 'repo', title: 'Web vitals for soft navigations merged (#512)', body: 'Not on npm yet. Release PR #554 lists it.', href: 'https://github.com/open-telemetry/opentelemetry-browser/pull/512' },
+    { date: '2026-11-05', track: 'sig', title: 'Browser SIG meeting: three attendees, no agenda in the notes', href: 'https://docs.google.com/document/d/1G3yBAV5SzWBO3mmsBUos5bsn4yxsqkS1MLWl1urVojQ' },
+    { date: '2026-11-05', track: 'js', title: 'OTel JS 3.1.0 and experimental 0.301.0', body: 'The API peer floor rises to 1.10.0 for the packages that need it.', href: 'https://github.com/open-telemetry/opentelemetry-js/releases/tag/v3.1.0' },
+    { date: '2026-11-06', track: 'repo', title: 'The waiting npm publish of 0.7.0 and 0.10.0 is rejected', body: 'The run ends at 01:43 UTC.', href: 'https://github.com/open-telemetry/opentelemetry-browser/actions/runs/41103996641' },
+  ]}
+/>
+
+## What the SIG discussed on 5 November
+
+We can say little, and we will not guess. When we read the notes on 6 November, the entry for 5 November listed three attendees (from Palo Alto Networks and Microsoft) and an empty agenda. The notes record no discussion and no decision. They may be filled in later; if so, we will cover what they add next week.
+
+Two threads were active around this meeting, and the notes record nothing on either:
+
+- **Session id in baggage.** Part 3 reported a yes to sending `session.id` to backends, with no issue behind it. There is one now: [#535](https://github.com/open-telemetry/opentelemetry-browser/issues/535), opened right after the 29 October call. Its author asked to settle on 5 November whether the option belongs on the fetch and XHR instrumentations or on a session-aware wrapper around the propagator. The issue had no answer when we read it.
+- **One convention decision per meeting** ([semantic-conventions-client-side#34](https://github.com/open-telemetry/semantic-conventions-client-side/issues/34)). A comment posted later on 5 November, following up a Client Instrumentation SIG discussion, asks whether the conventions describe a browser kind or one running browser, before anyone picks identifying attributes. No outcome is recorded.
+
+## Why npm still has 0.6.0
+
+The release workflow has two steps. Release-please creates the tags and GitHub releases, then a separate `npm-publish` job runs, and it needs a maintainer's approval in a protected environment. Merging [#522](https://github.com/open-telemetry/opentelemetry-browser/pull/522) on 30 October did the first step: [browser-sdk 0.7.0](https://github.com/open-telemetry/opentelemetry-browser/releases/tag/browser-sdk-v0.7.0) and [browser-instrumentation 0.10.0](https://github.com/open-telemetry/opentelemetry-browser/releases/tag/browser-instrumentation-v0.10.0) exist on GitHub.
+
+The second step never ran. The [workflow run](https://github.com/open-telemetry/opentelemetry-browser/actions/runs/41103996641) shows the publish job with no steps. The run ended on 6 November, when Martin Kuba rejected the deployment. The rejection comment gives the reason: this release would ship the SDK's peer dependency on `browser-instrumentation` and the `instrumentation-base` export, and [#552](https://github.com/open-telemetry/opentelemetry-browser/pull/552) replaces both. Our reading: holding the release avoids publishing an API that would have to be taken back.
+
+The registry agrees. These are the versions on npm on 6 November:
+
+```bash
+npm view @opentelemetry/browser-sdk dist-tags
+```
+
+```text
+{ latest: '0.6.0' }
+```
+
+Asking for the tagged version fails:
+
+```text
+npm error code ETARGET
+npm error notarget No matching version found for @opentelemetry/browser-sdk@0.7.0.
+```
+
+Part 3 promised to run part 1's page against the new release and report what changed on the wire. We have not, because there is nothing to install. We did read the source at the tag (commit `8802bea`) and did not build it. The [README](https://github.com/open-telemetry/opentelemetry-browser/tree/browser-sdk-v0.7.0/packages/sdk) and `package.json` there match three points of [part 3's checklist](/blog/otel-browser-sig-2026-10-29/#before-you-upgrade-to-browser-sdk-070): `enabled: false` for consent, no OTLP exporter when `exportConfig` is omitted, and the peer dependency on `browser-instrumentation` ^0.10.0. That last one is what the rejection targets.
+
+<Flow
+  caption="Where the browser packages stand on 6 November 2026, and what the open PRs say comes next. No PR or issue gives a date."
+  columns={[
+    { label: 'On npm', arrow: 'tagged after', nodes: [
+      { title: 'browser-sdk 0.6.0', sub: 'OTel JS 2.12 line', tone: 'ok' },
+      { title: 'browser-instrumentation 0.9.0', sub: 'OTel JS 2.12 line', tone: 'ok' },
+    ] },
+    { label: 'Tag only, never published', arrow: 'waiting on', nodes: [
+      { title: 'browser-sdk 0.7.0', sub: 'breaking: #278, #532', tone: 'bad' },
+      { title: 'browser-instrumentation 0.10.0', sub: 'breaking: #278', tone: 'bad' },
+    ] },
+    { label: 'Open PRs', arrow: 'then', nodes: [
+      { title: '#552 browser-api package', sub: 'approved twice; changes requested for a first manual publish', tone: 'warn' },
+      { title: '#548 OTel JS 3.0 generation', sub: 'breaking: API ^1.10.0; paused until #552 merges', tone: 'warn' },
+    ] },
+    { label: 'Next release', nodes: [
+      { title: 'Release PR #554', sub: 'today previews browser-instrumentation 0.11.0, browser-sdk 0.7.1', tone: 'accent' },
+    ] },
+  ]}
+/>
+
+## What merged and what shipped
+
+**Browser repository.** Nothing new on npm. Five changes merged after part 3:
+
+- **Web vitals for soft navigations** ([#512](https://github.com/open-telemetry/opentelemetry-browser/pull/512), merged 5 November). A new `reportSoftNavs` option, off by default, passes through to `web-vitals`, so a single-page app can measure each route change. It adds `browser.web_vital.navigation_url`, and `sanitizeUrl` lets you clean that URL. Neither registry defines that name yet. TTFB is left out for soft navigations, because `web-vitals` reports a placeholder 0. The PR also corrects the timestamps of FCP, LCP and TTFB for soft navigations and back-forward cache restores. The README says it needs Chromium 151 or later; other browsers ignore it. It also warns that the first page's CLS and INP become final at the first soft navigation, so they can read lower than without the option.
+- **Two small fixes that are in the 0.10.0 tag.** Element timing ignores entries delivered after disable ([#533](https://github.com/open-telemetry/opentelemetry-browser/pull/533)), and the resource-timing idle shim no longer refers to `window` ([#536](https://github.com/open-telemetry/opentelemetry-browser/pull/536)).
+- **Two dependency and workflow updates** ([#546](https://github.com/open-telemetry/opentelemetry-browser/pull/546), [#547](https://github.com/open-telemetry/opentelemetry-browser/pull/547)).
+
+**A new package is proposed.** [#552](https://github.com/open-telemetry/opentelemetry-browser/pull/552) adds `@opentelemetry/browser-api` with `Instrumentation`, `InstrumentationDeps` and `InstrumentationBase` at `./experimental/instrumentation`. The SDK drops its peer dependency on `browser-instrumentation`, which [#539](https://github.com/open-telemetry/opentelemetry-browser/issues/539) says would otherwise make an app on a different minor fail to install with `ERESOLVE`. It has two approvals. A maintainer then asked for one manual publish of the new package name first, so that npm trusted publishing can be set up.
+
+**The move to JS 3.x has a real PR now.** [#548](https://github.com/open-telemetry/opentelemetry-browser/pull/548) moves everything to the 3.0 / 0.300 generation and removes `@opentelemetry/api-logs`. Its install docs require `@opentelemetry/api` ^1.10.0, and it adds a section on bundlers (Vite, webpack 5.54+, Jest 29.4+, Parcel with `packageExports`). [A comment on the PR](https://github.com/open-telemetry/opentelemetry-browser/pull/548) says #552 must merge before its review resumes. The Renovate PR we have been pointing at, [#525](https://github.com/open-telemetry/opentelemetry-browser/pull/525), is still open with `build` and `lint` failing, so from now on [#514](https://github.com/open-telemetry/opentelemetry-browser/issues/514) and #548 are the ones to follow.
+
+A contributor [tested both PRs on a copy of the OpenTelemetry Demo's shop](https://github.com/open-telemetry/opentelemetry-browser/pull/552#issuecomment-6666980829) in Chrome and Firefox and reported 116,858 bytes minified (33,974 gzipped) on the 3.0 commit against 116,871 (34,001) on the 2.12 one, for six instrumentations. We did not repeat that test, but it suggests the JS move will not change bundle size much.
+
+**OTel JS 3.1.0 and experimental 0.301.0** ([3.1.0](https://github.com/open-telemetry/opentelemetry-js/releases/tag/v3.1.0), [0.301.0](https://github.com/open-telemetry/opentelemetry-js/releases/tag/experimental%2Fv0.301.0), both 5 November). What touches browser apps:
+
+- **The API peer floor rises to 1.10.0** ([#7259](https://github.com/open-telemetry/opentelemetry-js/pull/7259)) for packages that depend on `core`, `otlp-transformer` or `instrumentation`. The changelog says those pairings with API 1.9 never worked; npm now reports that at install time. See [below](#if-you-use-the-classic-fetch-or-xhr-packages).
+- **Exports from sandboxed iframes** ([#7211](https://github.com/open-telemetry/opentelemetry-js/pull/7211)). The OTLP exporter now picks the fetch `mode` from the document origin, so an opaque-origin document no longer fails with `mode: 'same-origin'`. The browser packages are on the 0.223 exporters, so this reaches you only if you wired 0.301.0 by hand.
+- **`context-zone` declares its API peer** ([#7268](https://github.com/open-telemetry/opentelemetry-js/pull/7268)), which fixes Yarn PnP setups.
+- **The batch processor change** that part 3 noted on `main` ([#7208](https://github.com/open-telemetry/opentelemetry-js/pull/7208)) is now released.
+
+The migration guide also says outright now that API 1.10.0 needs SDK 3.x, and that a project staying on SDK 2.x keeps the API at 1.9.x ([#7253](https://github.com/open-telemetry/opentelemetry-js/pull/7253)). That is the trap [part 1 tested](/blog/otel-browser-state-2026-10/#the-trap-mixing-in-otel-js-30).
+
+**Conventions.**
+
+- [Core v1.45.0](https://github.com/open-telemetry/semantic-conventions/releases/tag/v1.45.0) (2 November) carries the `enduser.*` deprecation, and the client-side registry now [pins to that tag](https://github.com/open-telemetry/semantic-conventions-client-side/pull/49) instead of a commit. It has not cut a release since v0.1.0-dev.
+- Core [removed the `browser` entity](https://github.com/open-telemetry/semantic-conventions/pull/4172) on 3 November, a breaking change to the v2 schema. The `browser.*` attributes stay in the registry, and resource definitions are expected to live in the client-side repository.
+- `session` and `app` are next to move: [client-side #48](https://github.com/open-telemetry/semantic-conventions-client-side/pull/48) and [core #4306](https://github.com/open-telemetry/semantic-conventions/pull/4306), both open. `device` follows in [client-side #51](https://github.com/open-telemetry/semantic-conventions-client-side/pull/51) and [core #4308](https://github.com/open-telemetry/semantic-conventions/pull/4308). This is also the part that matters for mobile RUM, since these names are shared across platforms. Neither description mentions a rename, and core keeps its definitions with migration links.
+- **INP attribution.** According to [a comment on client-side #35](https://github.com/open-telemetry/semantic-conventions-client-side/issues/35), the 3 November Client Instrumentation SIG agreed to define a small set of attributes and to keep the full attribution object in the body. The comment proposes `browser.web_vital.attribution.interaction_target`, `interaction_type`, `input_delay`, `processing_duration` and `presentation_delay`, and says the durations are the author's own addition. The code PR, [#486](https://github.com/open-telemetry/opentelemetry-browser/pull/486), has changes requested.
+
+**npm deprecation flags.** Of the packages in part 1's migration map, `sdk-trace-web`, `sdk-trace-base` and the removed `api-events` are flagged (part 3 named only `sdk-trace-web`; we do not know when the other two flags were set). `instrumentation-fetch` and `instrumentation-xml-http-request` (0.301.0) are not, and the `instrumentation-web-exception` notice ([contrib #3832](https://github.com/open-telemetry/opentelemetry-js-contrib/pull/3832)) is still in review.
+
+## What this means if you instrument a web app today
+
+**What we ran.** On macOS, with Node.js 24.15.0 and npm 11.12.1, we resolved dependency trees with `npm install --package-lock-only --ignore-scripts` and read the lock files. That runs no package code and no browser, so the results below are about what installs, not what happens at runtime.
+
+### If you use browser-sdk and browser-instrumentation
+
+Stay pinned to 0.6.0 and 0.9.0 with API 1.9.1. JS 3.1 does not disturb this: on 6 November the three packages still resolve to `core` and `sdk-trace` 2.12.0, and `sdk-logs` and `api-logs` 0.223.0.
+
+When the next release lands, **read more than its changelog**. Release-please treats 0.7.0 and 0.10.0 as done, so [release PR #554](https://github.com/open-telemetry/opentelemetry-browser/pull/554) today lists only #512 and marks nothing as breaking. Coming from npm, you would still take the breaking changes in [#278](https://github.com/open-telemetry/opentelemetry-browser/pull/278) and [#532](https://github.com/open-telemetry/opentelemetry-browser/pull/532), and a version like 0.7.1 will not suggest that. So read the [0.7.0](https://github.com/open-telemetry/opentelemetry-browser/releases/tag/browser-sdk-v0.7.0) and [0.10.0](https://github.com/open-telemetry/opentelemetry-browser/releases/tag/browser-instrumentation-v0.10.0) notes as well, and use [part 3's checklist](/blog/otel-browser-sig-2026-10-29/#before-you-upgrade-to-browser-sdk-070), with two changes if the open PRs land as written:
+
+- With #552, the SDK no longer needs a matching `browser-instrumentation` peer, so the first item of that list falls away.
+- With #548, you need `@opentelemetry/api` ^1.10.0, and the "keep the API at 1.9.1" line no longer applies. The numbers in #548's description (browser-sdk 0.8.0) may also change.
+
+### If you use the classic fetch or XHR packages
+
+`instrumentation-fetch` 0.301.0 now declares `@opentelemetry/api` ^1.10.0. Pick one generation and stay inside it:
+
+| Combination | Result of our resolve on 6 November |
+|---|---|
+| API 1.9.1, `instrumentation-fetch` 0.223.0, `sdk-trace-web` 2.12.0 | resolves cleanly (the 2.x line) |
+| API 1.10.0, `instrumentation-fetch` 0.301.0, `sdk-trace` 3.1.0 | resolves cleanly (the 3.x line) |
+| API 1.9.1, `instrumentation-fetch` 0.301.0 | fails with `ERESOLVE` |
+| API 1.9.1, `instrumentation-fetch` 0.300.0 | installs with peer warnings |
+
+The last row is the dangerous one. [#7259](https://github.com/open-telemetry/opentelemetry-js/pull/7259) reports that this kind of install then fails on import, because `@opentelemetry/api` 1.9.1 has no `logs` export. We did not run that part. If your lock file has this pairing, fix it now.
+
+This is the failing command, if you want to see the error yourself:
+
+```bash
+npm install --package-lock-only --ignore-scripts @opentelemetry/api@1.9.1 @opentelemetry/instrumentation-fetch@0.301.0
+```
+
+### If you write your own instrumentation
+
+Do not build on `@opentelemetry/browser-instrumentation/experimental/instrumentation-base`. It was never published, and #552 removes it. The direction in [#548](https://github.com/open-telemetry/opentelemetry-browser/pull/548) and [#538](https://github.com/open-telemetry/opentelemetry-browser/issues/538) is to extend `InstrumentationBase` from the new package, which is not on npm yet either.
+
+### If you want session.id on your backend
+
+Nothing has shipped, so [part 3's notes](/blog/otel-browser-sig-2026-10-29/#sending-sessionid-to-your-backend-today) still apply. The proposal in [#535](https://github.com/open-telemetry/opentelemetry-browser/issues/535) shows the shape it may take: off by default, using the existing `SessionProvider`, only for URLs that already get trace headers, and through the configured propagator. It also names the two jobs that stay yours: copy `session.id` from baggage into span attributes on the server, and allow the `baggage` header in your CORS config. None of the option names in it exist yet.
+
+### If you run a single-page app
+
+Web vitals still describe only the first page load in 0.9.0. `reportSoftNavs` is the fix to plan for, but it is not on npm, and because of the first-page effect above, expect a step in your CLS and INP numbers on the day you turn it on.
+
+## What to watch next week
+
+- **#552, then #548.** #552 is the change the rejected publish was waiting for, and it needs its first manual publish. Whether the next release also moves to JS 3.x is not stated anywhere we found.
+- **The next browser-sdk on npm**, and whether release-please's notes for it mention #278 and #532. When it lands, we will run part 1's page against it, as promised.
+- **[#535](https://github.com/open-telemetry/opentelemetry-browser/issues/535)**: where the session id option goes.
+- **[#495](https://github.com/open-telemetry/opentelemetry-browser/pull/495)** (full export URLs, no activity since 29 October) and **[#494](https://github.com/open-telemetry/opentelemetry-browser/pull/494)** (non-Error exception values), the other open PRs marked breaking. [#540](https://github.com/open-telemetry/opentelemetry-browser/pull/540), also open, would set resource and navigation timing events to the entry's start time instead of the emit time, which moves those records on your time axis.
+- **Document load**: [#504](https://github.com/open-telemetry/opentelemetry-browser/pull/504), the span PR, had review activity this week.
+- **The 5 November notes.** If they are filled in, next week's part will say what was decided.
