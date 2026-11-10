@@ -18,14 +18,14 @@ Release tags and published versions are permanent. A broken release is fixed by 
 | Component | Line | Needs | Notes |
 |---|---|---|---|
 | `@ouo11y/browser` | 0.3 | collector ≥ 0.2.0, rum-api ≥ 0.2.0 | with rum-api ≥ 0.5, stacks are symbolicated from uploaded source maps and sessions carry `device_id` |
-| `@ouo11y/react-native` | 0.2 | collector ≥ 0.2.0, rum-api ≥ 0.2.0 | iOS replay as `frames`, schema 1 |
-| collector | 0.4 | rum-api ≥ 0.2.0 | accepts replay schema ≤ 1 |
-| rum-api | 0.5 | | reads replay schema ≤ 1; storage compatible with 0.4 |
-| Grafana app (plugin) | 0.9 | rum-api ≥ 0.4.0, Grafana ≥ 13.0.0 | the Funnels page and source-mapped stacks need rum-api ≥ 0.5.0 |
-| grafana image | 0.5 | rum-api ≥ 0.4.0 | Grafana 13.2.1 with the app 0.9.0 |
-| Helm chart | 0.1 | collector ≥ 0.3.0, rum-api ≥ 0.3.0 | Kubernetes ≥ 1.25; not published yet |
+| `@ouo11y/react-native` | 0.3 | collector ≥ 0.5.0, rum-api ≥ 0.6.0, Grafana app ≥ 0.10.0 | iOS replay as `frames`, schema 2 (tiles) |
+| collector | 0.5 | rum-api ≥ 0.2.0 | accepts replay schema ≤ 2; schema 2 chunks need rum-api ≥ 0.6.0 |
+| rum-api | 0.6 | | reads replay schema ≤ 2; afterwards rum-api 0.4 and 0.5 refuse to start on its store, and 0.3.0 and older must never run on it |
+| Grafana app (plugin) | 0.10 | rum-api ≥ 0.4.0, Grafana ≥ 13.0.0 | plays schema ≤ 2; native symbolicated frames need rum-api ≥ 0.6.0; the Funnels page and source-mapped stacks need rum-api ≥ 0.5.0 |
+| grafana image | 0.6 | rum-api ≥ 0.4.0 | Grafana 13.2.5 with the app 0.10.0; schema 2 replays and native symbolicated frames need rum-api ≥ 0.6.0 |
+| Helm chart | 0.2 | collector ≥ 0.5.0, rum-api ≥ 0.6.0 | Kubernetes ≥ 1.25; sent on request; roll forward only, no rollback to chart 0.1.x once rum-api 0.6.0 has run |
 
-The newest releases are collector 0.4.0, rum-api 0.5.0, grafana 0.5.0, `@ouo11y/browser` 0.3.0 and `@ouo11y/react-native` 0.2.1. The [one-file stack](/docs/start/quickstart/) was generated for those three images.
+The newest releases are collector 0.5.0, rum-api 0.6.0, grafana 0.6.0, `@ouo11y/browser` 0.3.1 and `@ouo11y/react-native` 0.3.0. The [one-file stack](/docs/start/quickstart/) was generated for collector 0.4.0, rum-api 0.5.0 and grafana 0.5.0, and follows `:latest` unless you pin it.
 
 ## The order
 
@@ -34,8 +34,8 @@ The newest releases are collector 0.4.0, rum-api 0.5.0, grafana 0.5.0, `@ouo11y/
   stages={[
     { who: 'Back up', title: 'What cannot be rebuilt', body: 'Replays, Grafana\'s database, your secrets and projects.' },
     { who: 'First', title: 'rum-api', body: 'Reads every older replay schema. Upgrading never rewrites stored chunks.', tone: 'accent' },
-    { who: 'Then', title: 'collector', tone: 'accent' },
-    { who: 'Then', title: 'grafana image', body: 'Carries the app; the new app needs the new rum-api.', tone: 'accent' },
+    { who: 'Then', title: 'grafana image', body: 'Carries the app; the new app needs the new rum-api, and tiled replays need the new app.', tone: 'accent' },
+    { who: 'Then', title: 'collector', body: 'A newer collector can accept a replay schema an older rum-api refuses.', tone: 'accent' },
     { who: 'Last', title: 'SDKs', body: 'Ship them in your apps once the server side is up.', tone: 'ok' },
   ]}
 />
@@ -47,9 +47,9 @@ Read the changelog of every version you skip, the **Breaking** and **Compatibili
 The one-file stack pins nothing by default: the ouo11y images are `:latest`. Pin them in `.env` so an upgrade is a choice:
 
 ```ini
-OUO_COLLECTOR_VERSION=0.4.0
-OUO_RUM_API_VERSION=0.5.0
-OUO_GRAFANA_VERSION=0.5.0
+OUO_COLLECTOR_VERSION=0.5.0
+OUO_RUM_API_VERSION=0.6.0
+OUO_GRAFANA_VERSION=0.6.0
 ```
 
 <Steps>
@@ -106,7 +106,7 @@ helm upgrade ouo ./ouo -n ouo -f my-values.yaml --rollback-on-failure --timeout 
 
 ## The replay schema guard
 
-Replay chunks carry a `schema_version` (today `1`). Each rum-api knows the newest schema it can read, and records it in the store's `replays/schema.json`. At start, a rum-api that finds a store opened by a rum-api that reads a **newer** schema refuses to run:
+Replay chunks carry a `schema_version` (today `2` for frames and `1` for video). Each rum-api knows the newest schema it can read, and records it in the store's `replays/schema.json`. At start, a rum-api that finds a store opened by a rum-api that reads a **newer** schema refuses to run:
 
 ```text
 rum-api exited error="replay store written by a newer replay schema: the store was last opened by
@@ -115,12 +115,14 @@ rum-api 0.9.0, which reads replay schema_version up to 2; this rum-api 0.4.0 rea
 
 This makes rollbacks safe: an old binary never half-reads new data. A rollback on the **same** schema is allowed. A store without the marker (rum-api 0.3.0 and older) is adopted. Upgrading never rewrites stored chunks, and a newer rum-api reads older schemas.
 
+rum-api 0.6.0 is the first to read schema 2 and writes it into the marker at its first start, so rum-api 0.4 and 0.5 then refuse that store. rum-api 0.3.0 and older have no guard and must never run on it.
+
 On Helm with `--rollback-on-failure`, a refused start rolls the release back by itself.
 
 ## Roll back
 
-- **Compose:** set the previous versions in `.env` and `docker compose up -d`. Data is untouched by an upgrade, so this works unless the new release raised the replay schema (the guard above stops it).
-- **Helm:** `helm rollback ouo <revision> -n ouo`. Volumes stay across rollbacks.
+- **Compose:** set the previous versions in `.env` and `docker compose up -d`. Data is untouched by an upgrade, so this works unless the new release raised the replay schema (the guard above stops it). rum-api 0.6.0 raised it: once it has run, fix a failed upgrade forward. A Grafana app older than 0.10 shows schema 2 tiles as broken images and a collector older than 0.5 refuses schema 2 chunks.
+- **Helm:** `helm rollback ouo <revision> -n ouo`. Volumes stay across rollbacks. Once rum-api 0.6.0 (chart 0.2.0) has run, never roll back to chart 0.1.x, by hand or through `--rollback-on-failure` or `--atomic`.
 - **SDKs:** pin the previous version in your app and release it. Sessions recorded by the newer SDK stay readable.
 
 <Aside type="caution">
