@@ -101,19 +101,21 @@ dark-default theme and turns every diagram on the page dark in light mode. Use
 
 ## Newsletter: The o11y radar
 
-One issue a month, published in the last week of the month, at `src/content/newsletter/<YYYY-MM>.mdx`
-(the file name is the URL: `/newsletter/2026-10/`). Its job: an engineer who reads only this each
-month still knows what changed in OpenTelemetry and observability, and what to do about it.
+One issue a week, published early in the week, at `src/content/newsletter/<YYYY-MM-DD>.mdx`, named
+after the publication date (the file name is the URL: `/newsletter/2026-11-10/`). Issue #1,
+`2026-10.mdx`, was monthly and keeps its URL. Its job: an engineer who reads only this each week
+still knows what changed in OpenTelemetry and observability, and what to do about it.
 
-**Window.** The calendar month of the issue. Include the last days of the previous month only when
-they shaped this month (a release that landed on the 29th, a stable promotion that the press covered
-this month); give the real date.
+**Window.** The seven days from Monday to the Sunday before publication. If days since the previous
+issue's window are not covered yet, include them too, up to 14 days; give the real date of each
+item. A weekly issue is shorter than a monthly one: the same sections, fewer items.
 
 **Sections, always in this order** (`##` headings; skip one only if it is empty, and say so in a line):
 
 1. `## OpenTelemetry`: specification, semantic conventions, Collector, SDKs, governance.
-   Start with a `<StabilityMoves>` of everything that changed maturity this month.
-2. `## Release radar`: one `<ReleaseRadar>` with the month's notable releases across collector /
+   Start with a `<StabilityMoves>` of everything that changed maturity in the window (only if
+   something did).
+2. `## Release radar`: one `<ReleaseRadar>` with the window's notable releases across collector /
    collector-contrib, JS, browser, Java (SDK and agent), Python, Go, .NET, spec, operator, Android,
    Swift. One row per release that matters (not every patch); `change` is the one thing a user must
    know; `kind` marks major, stable, breaking or security.
@@ -122,9 +124,9 @@ this month); give the real date.
    Embrace, Chronosphere and others. Only what the vendor itself announced (press release, blog,
    changelog). No adjectives from press releases, no pricing analysis, no predictions.
 5. `## Community and events`: dates, places, calls for papers, elections.
-6. `## Reading list`: three to eight posts from elsewhere, each summarised in two sentences of
+6. `## Reading list`: two to six posts from elsewhere, each summarised in two sentences of
    our own words, with author and date.
-7. `## From ouo11y`: our posts and announcements of the month. Last and short.
+7. `## From ouo11y`: our posts and announcements of the week. Last and short.
 
 **Every item is an `<Item>`** (`src/components/newsletter/Item.astro`): `title`, `label`
 (stable, breaking, release, security, new, deprecation, event, read, vendor, ours), `date` of the
@@ -137,12 +139,12 @@ primary source(s), `deeper` links our own posts that go further. Give every item
 
 ```yaml
 ---
-title: "The o11y radar #2, November 2026: <the two biggest headlines>"
+title: "The o11y radar #3, week of 9 November 2026: <the biggest headlines>"
 description: One sentence for the archive, link previews and RSS.
-date: 2026-11-27
-issue: 2
+date: 2026-11-17
+issue: 3
 tags: [opentelemetry, vendors, newsletter]
-inThisIssue:            # 5 to 8 lines, the issue's headlines, each linking to an item
+inThisIssue:            # 3 to 8 lines, the issue's headlines, each linking to an item
   - text: "OTTL is v1: your `transform` rules sit on a stable language"
     href: "#ottl-v1"
 ---
@@ -161,7 +163,7 @@ gh release list -R open-telemetry/opentelemetry-collector-contrib -L 10
 gh release view v0.164.0 -R open-telemetry/opentelemetry-collector-contrib
 ```
 
-Repos to scan each month: opentelemetry-collector, -collector-contrib, -collector-releases,
+Repos to scan each week: opentelemetry-collector, -collector-contrib, -collector-releases,
 -specification, semantic-conventions, semantic-conventions-client-side, -proto, -js, -js-contrib,
 -browser, -java, -java-instrumentation, -python, -python-contrib, -go, -go-contrib, -dotnet,
 -dotnet-instrumentation, -operator, -helm-charts, -android, -swift, -configuration,

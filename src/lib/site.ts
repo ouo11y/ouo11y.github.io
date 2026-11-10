@@ -22,7 +22,7 @@ export const sections: Record<Section, { title: string; blurb: string }> = {
   },
   newsletter: {
     title: 'Newsletter',
-    blurb: 'The o11y radar: what changed in OpenTelemetry and across observability vendors, and why it matters to you. Monthly, with sources.',
+    blurb: 'The o11y radar: what changed in OpenTelemetry and across observability vendors, and why it matters to you. Weekly, with sources.',
   },
   announcements: {
     title: 'Announcements',
