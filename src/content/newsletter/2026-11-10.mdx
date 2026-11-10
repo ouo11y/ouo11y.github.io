@@ -1,0 +1,288 @@
+---
+title: "The o11y radar #2, week of 2 November 2026: OBI 1.0, RPC conventions released stable, Collector v0.165"
+description: OpenTelemetry eBPF Instrumentation reaches 1.0, semantic conventions v1.45.0 ships stable RPC and renames messaging attributes, Collector v0.165.0 marks confighttp stable and bounds zstd memory, JS 3.1 tightens the API floor, and the browser SDK's breaking release never reached npm.
+date: 2026-11-10
+issue: 2
+tags: [opentelemetry, collector, browser, vendors, newsletter]
+inThisIssue:
+  - text: "OpenTelemetry eBPF Instrumentation (OBI) reaches 1.0, with a compatibility promise for config and deployment"
+    href: "#obi-1"
+  - text: "Semantic conventions v1.45.0: RPC is stable, RPC metadata and `messaging.*` attributes are renamed"
+    href: "#semconv-1-45"
+  - text: "Collector v0.165.0: zstd memory bounded, `confighttp` stable, SignalFx receiver removed"
+    href: "#collector-165"
+  - text: "OTel JS 3.1: API 1.10 is now required at install time; 2.x gets a year of support"
+    href: "#js-3-1"
+  - text: "Browser: SDK 0.7.0 was tagged but its npm publish was rejected; stay on 0.6.0"
+    href: "#browser-sdk-07"
+  - text: "Spec: environment variables as context carriers are stable, and the security exception now covers runtime versions"
+    href: "#spec-week"
+---
+import Item from '../../components/newsletter/Item.astro';
+import ReleaseRadar from '../../components/newsletter/ReleaseRadar.astro';
+import StabilityMoves from '../../components/newsletter/StabilityMoves.astro';
+
+The o11y radar is weekly from this issue on. This one covers 30 October to 8 November, picking up
+where issue #1 stopped. The short version: the eBPF instrumentation got its 1.0, the RPC conventions
+that were merged in October are now released, and every Collector user should read the v0.165.0
+breaking changes before upgrading.
+
+## OpenTelemetry
+
+<StabilityMoves
+  caption="What changed maturity from 30 October to 8 November. Click a name for the source."
+  moves={[
+    { what: 'OpenTelemetry eBPF Instrumentation (OBI)', from: 'rc', to: 'stable', date: '2026-10-30', href: 'https://github.com/open-telemetry/opentelemetry-ebpf-instrumentation/releases/tag/v1.0.0', note: 'v1.0.0' },
+    { what: 'RPC spans and call duration metrics, incl. gRPC', from: 'rc', to: 'stable', date: '2026-11-02', href: 'https://github.com/open-telemetry/semantic-conventions/releases/tag/v1.45.0', note: 'released in semconv v1.45.0' },
+    { what: 'RPC request/response headers and trailers', from: 'development', to: 'rc', date: '2026-11-02', href: 'https://github.com/open-telemetry/semantic-conventions/pull/4277', note: 'semconv v1.45.0' },
+    { what: 'K8s and container uptime, filesystem, network, paging metrics', from: 'development', to: 'rc', date: '2026-11-02', href: 'https://github.com/open-telemetry/semantic-conventions/releases/tag/v1.45.0', note: 'semconv v1.45.0' },
+    { what: 'Env variables as context propagation carriers', from: 'rc', to: 'stable', date: '2026-11-03', href: 'https://github.com/open-telemetry/opentelemetry-specification/pull/5389', note: 'spec, merged, not yet released' },
+    { what: 'Collector `confighttp`', from: 'beta', to: 'stable', date: '2026-11-06', href: 'https://github.com/open-telemetry/opentelemetry-collector/releases/tag/v0.165.0', note: 'core v0.165.0' },
+    { what: 'Collector `queue_batch` processor (traces, metrics, logs)', from: 'alpha', to: 'beta', date: '2026-11-06', href: 'https://github.com/open-telemetry/opentelemetry-collector/releases/tag/v0.165.0', note: 'core v0.165.0' },
+    { what: '`messaging.system` and `messaging.kafka.*` etc.', from: 'development', to: 'deprecated', date: '2026-11-02', href: 'https://github.com/open-telemetry/semantic-conventions/releases/tag/v1.45.0', note: 'use `messaging.system.name`, `kafka.*`' },
+    { what: 'Collector SignalFx receiver', from: 'deprecated', to: 'removed', date: '2026-11-07', href: 'https://github.com/open-telemetry/opentelemetry-collector-contrib/releases/tag/v0.165.0', note: 'contrib v0.165.0' },
+  ]}
+/>
+
+<Item id="obi-1" title="OpenTelemetry eBPF Instrumentation reaches 1.0" label="stable" date="2026-10-30"
+  why="OBI gives you request rates, errors, latency and service dependencies for Linux services without touching their code. A 1.0 means configuration and deployment now carry a written compatibility promise, so it is safer to roll out across a fleet."
+  todo="If you run OBI on Config v1, migrate with `obi config migrate` and check it with `obi config validate`: v1 still works but is frozen. Compare telemetry in a canary before a broad rollout. If you embed OBI in a Collector, note that its receiver keeps a separate v0 release line."
+  sources={[
+    { label: 'OTel blog: OBI reaches v1.0.0', href: 'https://opentelemetry.io/blog/2026/obi-v1-release/' },
+    { label: 'OBI v1.0.0 release', href: 'https://github.com/open-telemetry/opentelemetry-ebpf-instrumentation/releases/tag/v1.0.0' },
+  ]}
+  deeper={[{ label: 'Kubernetes observability without a vendor, part 2: the collectors', href: '/blog/k8s-without-a-vendor-2-collectors/' }]}>
+
+OBI v1.0.0 was released on 30 October; the project began as Grafana's donation of Beyla. The
+compatibility promise covers Config v2, its generated schema and the documented deployment
+interfaces. Telemetry is treated differently: what follows stable conventions stays put (except bug
+fixes), what follows conventions still in development can change, and OBI now describes all of it in
+a Weaver schema registry with migration notes. Since the early releases it has added MQTT, NATS,
+AMQP 1.0, MSSQL, Couchbase, Memcached and Aerospike, route discovery for common Python, Ruby, .NET and
+PHP frameworks, trace-log correlation, and opt-in GenAI instrumentation.
+
+</Item>
+
+<Item id="semconv-1-45" title="Semantic conventions v1.45.0: stable RPC, renamed messaging and RPC metadata" label="breaking" date="2026-11-02"
+  why="Issue #1 reported RPC stability as merged but unreleased; it is now in a release, so instrumentations will start shipping it. The same release renames attributes many dashboards filter on."
+  todo="Search queries and alerts for `rpc.response.status_code` (now `rpc.status_code`), `rpc.request.metadata.*` / `rpc.response.metadata.*` (now `header` and `trailer`), `messaging.system` (now `messaging.system.name`), `messaging.kafka.*` (now `kafka.*`), `db.client.connection.max` (now `.limit`) and `system.memory.state=free|buffers|cached`. Nothing changes until your instrumentation adopts v1.45.0; read its release notes when it does."
+  sources={[
+    { label: 'semantic-conventions v1.45.0', href: 'https://github.com/open-telemetry/semantic-conventions/releases/tag/v1.45.0' },
+    { label: 'JS semconv package 1.45.0', href: 'https://github.com/open-telemetry/opentelemetry-js/releases/tag/semconv%2Fv1.45.0' },
+  ]}
+  deeper={[
+    { label: 'Queues: messaging spans, links and attributes', href: '/blog/e2e-observability-2-queues/' },
+    { label: 'Databases and Redis: what the stable db.* conventions changed', href: '/blog/e2e-observability-3-databases-and-redis/' },
+  ]}>
+
+Released 2 November. RPC spans and call-duration metrics are stable, including gRPC and Apache Dubbo,
+with new histogram bucket advice (gRPC uses the 41 boundaries from gRPC's own proposal A66). RPC
+headers and trailers moved to release candidate. Many Kubernetes and container metrics (uptime,
+filesystem, network, paging faults, CPU usage) and the JVM file descriptor metrics are release
+candidates too. Also in it: opt-in `http.request.body.content` and `http.response.body.content`
+attributes (they may carry sensitive data), `service.peer.name` deprecated in favour of
+`server.service.name` and `client.service.name`, and the `enduser.*` deprecation from October.
+
+</Item>
+
+<Item id="collector-165" title="Collector v0.165.0: zstd memory bounded, confighttp stable, SignalFx receiver removed" label="breaking" date="2026-11-07"
+  why="The zstd and nesting fixes close ways a small crafted payload could make a Collector allocate a lot of memory or overflow its stack. The removals and renames break configs and queries on upgrade."
+  todo="Upgrade to contrib v0.165.1 (9 November), which reverts a dependency bump in the resource detection processor. Before upgrading: replace the SignalFx receiver with the OTLP receiver, replace `flatten_data` in the transform processor with `flatten.log`, and if you use the Jaeger or Zipkin translators, expect `http.response.status_code`, `network.peer.address` and `service.peer.name` instead of the old names. Watch the new startup warning if a pipeline uses both the batch processor and exporter batching."
+  sources={[
+    { label: 'core v0.165.0', href: 'https://github.com/open-telemetry/opentelemetry-collector/releases/tag/v0.165.0' },
+    { label: 'contrib v0.165.0', href: 'https://github.com/open-telemetry/opentelemetry-collector-contrib/releases/tag/v0.165.0' },
+    { label: 'contrib v0.165.1', href: 'https://github.com/open-telemetry/opentelemetry-collector-contrib/releases/tag/v0.165.1' },
+  ]}
+  deeper={[{ label: 'OTTL v1, one statement at a time', href: '/blog/ottl-v1-hands-on/' }]}>
+
+Core v0.165.0 (6 November) and contrib v0.165.0 (7 November). Security-relevant fixes: the gRPC and
+HTTP servers now bound the zstd decoder window by the configured maximum message or body size, and
+pdata limits nesting depth to 100 when unmarshalling attribute values. `confighttp` is marked stable,
+and four of its deprecated fields are removed. The `queue_batch` processor is beta. In contrib, OTTL
+gains an experimental span-link context, and the transform processor puts new functions behind a
+`processor.transform.enableExperimentalFunctions` gate while they are experimental.
+
+</Item>
+
+<Item id="js-3-1" title="OpenTelemetry JS 3.1: API 1.10 required at install time, 2.x supported for a year" label="release" date="2026-11-05"
+  why="Mixing 3.x or 0.3xx packages with `@opentelemetry/api` 1.9 never worked at runtime; now npm tells you at install. The official 3.0 announcement also sets an end date for 2.x."
+  todo="If npm reports a peer dependency error after upgrading, move `@opentelemetry/api` to 1.10.0 or later. If you set `OTEL_SPAN_ATTRIBUTE_PER_EVENT_COUNT_LIMIT` or `..._PER_LINK_...`, switch to the spec names `OTEL_EVENT_ATTRIBUTE_COUNT_LIMIT` and `OTEL_LINK_ATTRIBUTE_COUNT_LIMIT`. Plan the 3.x move within the year: 2.x stable packages are supported for one year from 3.0.0 (20 October)."
+  sources={[
+    { label: 'JS v3.1.0', href: 'https://github.com/open-telemetry/opentelemetry-js/releases/tag/v3.1.0' },
+    { label: 'experimental v0.301.0', href: 'https://github.com/open-telemetry/opentelemetry-js/releases/tag/experimental%2Fv0.301.0' },
+    { label: 'OTel blog: Announcing JS SDK 3.0', href: 'https://opentelemetry.io/blog/2026/otel-js-sdk-3-0/' },
+  ]}
+  deeper={[{ label: 'How OpenTelemetry came to be (the OpenTracing shim, and why it is gone)', href: '/blog/how-opentelemetry-came-to-be/' }]}>
+
+3.1.0 and experimental 0.301.0 (5 November) raise the API peer floor to 1.10.0, deprecate
+`envDetector` in favour of two separate detectors, and mark the `service.instance.id` detector
+stable. `startNodeSdk()` now covers the environment-variable configuration path, and `new NodeSDK()`
+users get `os.*` and `service.instance.id` resource attributes by default. The project's blog post
+on 3.0 (5 November) adds that complex attribute values are supported on span and log attributes.
+
+</Item>
+
+<Item id="spec-week" title="Spec: environment-variable carriers stable, security exception widened" label="stable" date="2026-11-04"
+  why="Batch jobs and CLI tools can pass trace context to child processes through `TRACEPARENT`-style variables with a stable contract. And a minor SDK release may now raise its minimum runtime when that runtime no longer gets security fixes."
+  todo="Nothing to change yet; both are merged, not released (the latest spec release is v1.62.0). When you pin SDK versions on an old runtime, read minor release notes for a raised minimum."
+  sources={[
+    { label: 'spec PR #5389: env var carriers stable', href: 'https://github.com/open-telemetry/opentelemetry-specification/pull/5389' },
+    { label: 'spec PR #5404: security exception for runtime and dependency requirements', href: 'https://github.com/open-telemetry/opentelemetry-specification/pull/5404' },
+  ]}>
+
+On 3 November the specification marked environment variables as context propagation carriers
+stable, after the feedback period announced on the OTel blog. On 4 November it extended October's
+security exception: stable SDKs and contrib components may now tighten supported runtime or
+dependency versions in a minor or patch release, when that addresses a concrete security risk, and
+the release notes must say so.
+
+</Item>
+
+## Release radar
+
+Notable releases from 30 October to 8 November, plus the two fixes released on 9 November that you
+should take instead.
+
+<ReleaseRadar
+  from="2026-10-29"
+  to="2026-11-10"
+  caption="Dates are GitHub release dates (UTC). Outlined dots are majors, stable promotions or breaking changes."
+  releases={[
+    { area: 'eBPF', project: 'opentelemetry-ebpf-instrumentation', version: 'v1.0.0', date: '2026-10-30', kind: 'stable', change: 'First stable release; Config v2 is the contract, Config v1 is frozen.', href: 'https://github.com/open-telemetry/opentelemetry-ebpf-instrumentation/releases/tag/v1.0.0' },
+    { area: 'Browser', project: 'browser-sdk / -instrumentation', version: '0.7.0 / 0.10.0', date: '2026-10-30', kind: 'breaking', change: 'Tagged on GitHub only; the npm publish was rejected. See [below](#browser-sdk-07).', href: 'https://github.com/open-telemetry/opentelemetry-browser/releases/tag/browser-sdk-v0.7.0' },
+    { area: 'Spec', project: 'semantic-conventions', version: 'v1.45.0', date: '2026-11-02', kind: 'stable', change: 'RPC stable; RPC metadata, `messaging.system`, `db.client.connection.max` renamed.', href: 'https://github.com/open-telemetry/semantic-conventions/releases/tag/v1.45.0' },
+    { area: 'Kubernetes', project: 'helm: opentelemetry-kube-stack', version: '0.27.0', date: '2026-11-02', change: 'Readiness and startup probe options for collectors.', href: 'https://github.com/open-telemetry/opentelemetry-helm-charts/releases/tag/opentelemetry-kube-stack-0.27.0' },
+    { area: '.NET', project: 'dotnet-instrumentation', version: 'v1.19.0', date: '2026-11-04', change: 'Instruments methods built with the experimental runtime-async feature; Kafka `ProduceAsync` span fix.', href: 'https://github.com/open-telemetry/opentelemetry-dotnet-instrumentation/releases/tag/v1.19.0' },
+    { area: 'JavaScript', project: 'opentelemetry-js', version: 'v3.1.0 / 0.301.0', date: '2026-11-05', change: 'API peer floor 1.10.0; `startNodeSdk()` covers env config; `os` and `serviceinstance` detectors on by default.', href: 'https://github.com/open-telemetry/opentelemetry-js/releases/tag/v3.1.0' },
+    { area: 'JavaScript', project: 'js-contrib', version: 'all instrumentations', date: '2026-11-05', change: 'Aligned on JS 3.1 and the API 1.10 peer range.', href: 'https://github.com/open-telemetry/opentelemetry-js-contrib/releases/tag/instrumentation-document-load-v0.70.0' },
+    { area: 'Mobile', project: 'opentelemetry-android', version: 'v1.8.1', date: '2026-11-05', change: 'Fixes a slow-rendering crash on Android 8 to 11 without core library desugaring.', href: 'https://github.com/open-telemetry/opentelemetry-android/releases/tag/v1.8.1' },
+    { area: 'Java', project: 'opentelemetry-java', version: 'v1.68.0', date: '2026-11-06', change: 'Periodic metric reader gets its own export worker and an exporter timeout; experimental `SdkResourceProvider`.', href: 'https://github.com/open-telemetry/opentelemetry-java/releases/tag/v1.68.0' },
+    { area: 'Collector', project: 'collector core', version: 'v0.165.0', date: '2026-11-06', kind: 'security', change: 'zstd decoder bounded by max message size; `confighttp` stable; `queue_batch` beta.', href: 'https://github.com/open-telemetry/opentelemetry-collector/releases/tag/v0.165.0' },
+    { area: 'Collector', project: 'collector-contrib', version: 'v0.165.0', date: '2026-11-07', kind: 'breaking', change: 'SignalFx receiver and transform `flatten_data` removed; Jaeger/Zipkin translators emit new names.', href: 'https://github.com/open-telemetry/opentelemetry-collector-contrib/releases/tag/v0.165.0' },
+    { area: 'Collector', project: 'collector-contrib', version: 'v0.165.1', date: '2026-11-09', change: 'Reverts a Consul API bump in resource detection. Take this one.', href: 'https://github.com/open-telemetry/opentelemetry-collector-contrib/releases/tag/v0.165.1' },
+    { area: 'JavaScript', project: 'opentelemetry-js', version: 'v3.1.1 / v2.12.1', date: '2026-11-09', change: 'Full paths for `ioreg` and `kenv` when detecting `host.id` on macOS and BSD.', href: 'https://github.com/open-telemetry/opentelemetry-js/releases/tag/v3.1.1' },
+  ]}
+/>
+
+## Client-side and RUM
+
+<Item id="browser-sdk-07" title="Browser: SDK 0.7.0 was tagged, then its npm publish was rejected" label="breaking" date="2026-11-06"
+  why="GitHub labels `browser-sdk` 0.7.0 as the latest release, but `npm install` cannot find it. Anyone following GitHub instead of npm will be confused, and the next release that does land carries breaking changes."
+  todo="Stay on `@opentelemetry/browser-sdk@0.6.0` and `@opentelemetry/browser-instrumentation@0.9.0` (still `latest` on npm when we checked on 10 November). If you use the classic contrib web instrumentations, upgrading them to the 5 November releases also means `@opentelemetry/api` 1.10."
+  sources={[
+    { label: 'browser-sdk v0.7.0 (tag)', href: 'https://github.com/open-telemetry/opentelemetry-browser/releases/tag/browser-sdk-v0.7.0' },
+    { label: 'browser-instrumentation v0.10.0 (tag)', href: 'https://github.com/open-telemetry/opentelemetry-browser/releases/tag/browser-instrumentation-v0.10.0' },
+    { label: 'the rejected publish run', href: 'https://github.com/open-telemetry/opentelemetry-browser/actions/runs/41103996641' },
+    { label: 'soft-navigation web vitals, PR #512', href: 'https://github.com/open-telemetry/opentelemetry-browser/pull/512' },
+  ]}
+  deeper={[
+    { label: 'Browser SIG, 5 November 2026 (OpenTelemetry in the browser, part 4)', href: '/blog/otel-browser-sig-2026-11-05/' },
+    { label: 'The state of OpenTelemetry in the browser, October 2026', href: '/blog/otel-browser-state-2026-10/' },
+  ]}>
+
+The release PR merged on 30 October created GitHub tags for `browser-sdk` 0.7.0 and
+`browser-instrumentation` 0.10.0. Both are breaking: a browser-native instrumentation base class,
+and the SDK no longer sets a default HTTP exporter. They also add element timing instrumentation.
+The npm publish job waited for approval and was rejected on 6 November. Meanwhile a
+`reportSoftNavs` option for web vitals on single-page route changes was merged on 5 November and is
+not on npm yet. Our part 4 of "OpenTelemetry in the browser" has the full timeline.
+
+</Item>
+
+<Item id="mobile-week" title="Mobile: Android 1.8.1 fixes a crash on older Android" label="release" date="2026-11-05"
+  why="A crash in the SDK that watches for slow rendering is the worst kind of RUM bug: the monitoring causes the problem."
+  todo="On Android 1.8.0 with minSdk below 31 and no core library desugaring, upgrade to 1.8.1."
+  sources={[{ label: 'Android v1.8.1', href: 'https://github.com/open-telemetry/opentelemetry-android/releases/tag/v1.8.1' }]}>
+
+OpenTelemetry Android 1.8.1 (5 November) fixes a `NoSuchMethodError` in the slow rendering
+instrumentation on Android 8 to 11, and lets lifecycle tracking work again after the SDK is
+re-initialized. No Swift release this week.
+
+</Item>
+
+## Vendors
+
+Only what each company announced itself, in our words. Nothing here is an endorsement.
+
+<Item id="vendors-week" title="Sentry, Dash0, Honeycomb: agents, rage clicks and a Go SDK rewrite" label="vendor" date="2026-11-05"
+  why="Two of these touch OpenTelemetry users directly: a RUM signal that open-source browser SDKs do not have yet, and an OpenTelemetry .NET distribution for runtimes the upstream agent has moved past."
+  todo="Nothing to do unless you use these products. If you want rage clicks from OpenTelemetry data, there is no client-side convention for them yet; watch the client-side registry."
+  sources={[
+    { label: 'Sentry: Seer Agent and Grafana', href: 'https://sentry.io/changelog/connect-seer-agent-to-your-telemetry-in-grafana/' },
+    { label: 'Sentry: Go SDK 1.0.0-alpha.1', href: 'https://sentry.io/changelog/go-sdk-v1-alpha/' },
+    { label: 'Dash0: rage clicks', href: 'https://www.dash0.com/changelog/rage-clicks-show-where-your-users-got-stuck' },
+    { label: 'Dash0: .NET 6 and 7', href: 'https://www.dash0.com/changelog/automatic-instrumentation-for-net-6-and-7' },
+    { label: 'Honeycomb: Team Agents', href: 'https://www.honeycomb.io/blog/honeycomb-team-agents-ai-sre-done-right' },
+  ]}>
+
+- **Sentry** (5 November): its Seer agent can connect to a Grafana account and read related telemetry next to Sentry errors and traces. Separately, an alpha of Sentry's Go SDK 1.0 redesigns the API around Go's `context` and removes hubs.
+- **Dash0** (2 and 3 November): its web SDK flags rage clicks (three or more clicks on one spot, each within a second of the last) in recorded sessions, and its Kubernetes operator auto-instruments .NET 6 and 7 through a Dash0 OpenTelemetry distribution.
+- **Honeycomb** (3 November): introduced Team Agents, AI SRE agents that work toward goals a team sets, with autonomy matched to risk.
+
+</Item>
+
+## Community and events
+
+<Item id="kubecon-this-week" title="KubeCon NA is this week in Salt Lake City" label="event" date="2026-11-09"
+  why="Most OpenTelemetry news of the next days will come from here, and it lands in issue #3."
+  todo="If you are there: the OTel Contribfest is Tuesday 10 November, 11:30 to 12:50, and the project kiosk is 16A in the Project Pavilion until 12 November."
+  sources={[{ label: 'OTel blog: OpenTelemetry at KubeCon NA 2026', href: 'https://opentelemetry.io/blog/2026/kubecon-na/' }]}>
+
+KubeCon + CloudNativeCon North America runs 9 to 12 November; Observability Day was on 9 November.
+Issue #1 has the details.
+
+</Item>
+
+## Reading list
+
+Posts from the window that taught us something, summarised in our words.
+
+<Item id="read-keycloak" title="Keycloak's observability journey: a guide for project maintainers" label="read" date="2026-11-02"
+  why="If you maintain software other people run, this is a frank account of why native instrumentation beat the Java agent for them."
+  sources={[{ label: 'OTel Developer Experience SIG, opentelemetry.io', href: 'https://opentelemetry.io/blog/2026/devex-keycloak/' }]}
+  deeper={[{ label: 'Declarative configuration on the Java agent', href: '/blog/declarative-configuration-hands-on/' }]}>
+
+The Keycloak maintainers tried the Java agent first and dropped it because it added tens of seconds
+to startup, then built telemetry on Quarkus' own OpenTelemetry support, starting with metrics and
+adding traces for slow database and LDAP calls.
+
+</Item>
+
+<Item id="read-kafka-receiver" title="Two changes to the OpenTelemetry Kafka receiver that stop one slow tenant stalling the rest" label="read" date="2026-11-06"
+  why="A clear example of the noisy-neighbour problem in a shared Collector, and how it was fixed upstream rather than in a fork."
+  sources={[{ label: 'Elastic Observability Labs', href: 'https://www.elastic.co/observability-labs/blog/opentelemetry-kafka-receiver-tenant-isolation' }]}>
+
+Explains why one tenant's slow backend used to block every partition in the Kafka receiver, and the
+two contrib changes that fix it: a worker per partition, and a cap on how much of the sending queue
+one tenant can hold.
+
+</Item>
+
+<Item id="read-agent-model-swap" title="Three model calls, 92% of the wait: AI agent observability with OpenTelemetry" label="read" date="2026-11-05"
+  why="Shows what the GenAI conventions are for: comparing two models on cost and latency from traces, not guesses."
+  sources={[{ label: 'Elastic Observability Labs', href: 'https://www.elastic.co/observability-labs/blog/ai-agent-observability-opentelemetry' }]}>
+
+A LangChain agent instrumented with the OpenTelemetry GenAI conventions is run on two models; the
+cheaper one costs far less per question but is slower on most of them, and the traces show which
+calls account for the difference.
+
+</Item>
+
+## From ouo11y
+
+<Item id="ours" title="Our week" label="ours" date="2026-11-06"
+  why="We write the hands-on version of what this newsletter reports."
+  sources={[
+    { label: 'Browser SIG, 5 November 2026', href: '/blog/otel-browser-sig-2026-11-05/' },
+    { label: 'Browser SIG, 29 October 2026', href: '/blog/otel-browser-sig-2026-10-29/' },
+    { label: 'The ouo11y container images are public', href: '/announcements/2026-10-31-images-public/' },
+  ]}>
+
+Two more parts of [OpenTelemetry in the browser](/blog/series/opentelemetry-in-the-browser/)
+followed the Browser SIG's meetings of 29 October and 5 November, and our container images became
+public on ghcr.io on 31 October: no login needed to pull them.
+
+</Item>
+
+Seen something we should cover next week, or a mistake? Write to
+[news@ouo11y.com](mailto:news@ouo11y.com).

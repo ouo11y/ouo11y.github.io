@@ -7,18 +7,25 @@ import { fmtDate, listPosts, sections } from '../../lib/site';
 const issues = await listPosts('newsletter');
 const latest = issues[0];
 const month = (d: Date) => d.toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+// Monthly issues (file name YYYY-MM) show their month; weekly issues show the Monday of the week they cover.
+const period = (id: string, d: Date) => {
+  if (/^\d{4}-\d{2}$/.test(id)) return month(d);
+  const m = new Date(d);
+  m.setUTCDate(m.getUTCDate() - ((m.getUTCDay() + 6) % 7) - 7);
+  return `Week of ${fmtDate(m)}`;
+};
 // An issue's number comes from its front matter; older issues without one are counted from the oldest.
 const number = (i: number) => issues[i].data.issue ?? issues.length - i;
 const local = (href: string, id: string) => (href.startsWith('#') ? `/newsletter/${id}/${href}` : href);
 
 const format = [
   { name: 'OpenTelemetry', what: 'Specification, semantic conventions, the Collector and the SDKs: what went stable, what broke, what is next.' },
-  { name: 'Release radar', what: 'The month\'s notable releases on one timeline, with the one change in each that you should know about.' },
+  { name: 'Release radar', what: 'The week\'s notable releases on one timeline, with the one change in each that you should know about.' },
   { name: 'Client-side and RUM', what: 'Browser and mobile telemetry: the Browser SIG, web vitals, sessions, crash and ANR reporting.' },
   { name: 'Vendors', what: 'What observability companies shipped or changed, from their own announcements, without the adjectives.' },
   { name: 'Community and events', what: 'Conferences, SIG meetings, elections and calls for papers, with dates.' },
   { name: 'Reading list', what: 'A few posts from elsewhere worth your time, summarised in our words.' },
-  { name: 'From ouo11y', what: 'Our own posts and releases of the month, last and short.' },
+  { name: 'From ouo11y', what: 'Our own posts and releases of the week, last and short.' },
 ];
 const topics = [
   { area: 'Signals', items: ['traces', 'metrics', 'logs', 'profiles', 'events', 'exemplars'] },
@@ -29,17 +36,17 @@ const topics = [
   { area: 'Backends', items: ['Prometheus', 'Grafana, Loki, Tempo, Mimir', 'Jaeger', 'commercial vendors'] },
 ];
 ---
-<Base title="The o11y radar, a monthly OpenTelemetry newsletter" description={sections.newsletter.blurb}>
+<Base title="The o11y radar, a weekly OpenTelemetry newsletter" description={sections.newsletter.blurb}>
   <section class="nl-head">
     <div class="wrap">
       <p class="eyebrow">ouo11y newsletter</p>
       <h1>The o11y <em>radar</em></h1>
       <p class="lede">
-        Once a month: what changed in OpenTelemetry and across observability, why it matters, and what to do about it.
+        Every week: what changed in OpenTelemetry and across observability, why it matters, and what to do about it.
         For engineers who run telemetry pipelines, instrument apps, or choose the tools, and do not have time to read every changelog.
       </p>
       <ul class="facts">
-        <li><b>Monthly</b><span>last week of the month</span></li>
+        <li><b>Weekly</b><span>early in the week, covering the last one</span></li>
         <li><b>Every item sourced</b><span>release notes, specs, announcements</span></li>
         <li><b>Vendor-neutral</b><span>including about us</span></li>
         <li><b>10 minutes</b><span>scan it in two</span></li>
@@ -56,7 +63,7 @@ const topics = [
       <div class="wrap">
         <article class="hero">
           <div class="hero-main">
-            <p class="meta"><span class="no">Issue #{number(0)}</span> {month(latest.data.date)} · published {fmtDate(latest.data.date)}</p>
+            <p class="meta"><span class="no">Issue #{number(0)}</span> {period(latest.id, latest.data.date)} · published {fmtDate(latest.data.date)}</p>
             <h2><a href={`/newsletter/${latest.id}/`}>{latest.data.title}</a></h2>
             <p class="desc">{latest.data.description}</p>
             <a class="btn primary" href={`/newsletter/${latest.id}/`}>Read issue #{number(0)}</a>
@@ -104,7 +111,7 @@ const topics = [
             <a href={`/newsletter/${e.id}/`}>
               <span class="num">#{number(i)}</span>
               <span class="body">
-                <span class="meta">{month(e.data.date)}{e.data.draft && ' · draft'}</span>
+                <span class="meta">{period(e.id, e.data.date)}{e.data.draft && ' · draft'}</span>
                 <b>{e.data.title}</b>
                 <span class="d">{e.data.description}</span>
               </span>
