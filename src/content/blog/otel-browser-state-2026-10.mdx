@@ -5,6 +5,7 @@ date: 2026-10-29
 tags: [opentelemetry, browser, hands-on]
 series: "OpenTelemetry in the browser"
 part: 1
+updated: 2026-11-13
 ---
 import Note from '../../components/Note.astro';
 import Timeline from '../../components/diagrams/Timeline.astro';
@@ -19,6 +20,10 @@ October 2026 is a confusing month to start. In one week:
 - On 22 October, the Browser SIG released [`@opentelemetry/browser-sdk` 0.6.0](https://github.com/open-telemetry/opentelemetry-browser/releases/tag/browser-sdk-v0.6.0) and [`@opentelemetry/browser-instrumentation` 0.9.0](https://github.com/open-telemetry/opentelemetry-browser/releases/tag/browser-instrumentation-v0.9.0) from its own repository. They are built on OTel JS **2.12**, not 3.0.
 
 So the newest browser packages and the newest JS SDK do not fit together yet. We installed both, hit the edges, and wrote down what works today.
+
+<Note title="Updated 13 November 2026">
+The package advice below has changed. browser-sdk 0.8.0 and browser-instrumentation 0.11.0 are on npm, still with `@opentelemetry/api@1.9.1`, and they carry breaking changes. The classic `instrumentation-fetch` and `instrumentation-xml-http-request` need 0.223.2 or 0.301.2 for a security fix. See [part 5](/blog/otel-browser-sig-2026-11-12/) for what to change; the page below still runs on 0.8.0 unchanged.
+</Note>
 
 <Note type="tip" title="The short answer, 29 October 2026">
 Use `@opentelemetry/browser-sdk@0.6.0` and `@opentelemetry/browser-instrumentation@0.9.0`, with `@opentelemetry/api@1.9.1`. Do not upgrade the API to 1.10 or the SDK packages to 3.0 in a browser app until the browser packages move to 3.x ([PR #525](https://github.com/open-telemetry/opentelemetry-browser/pull/525) is open). If you start from `sdk-trace-web` today, its 2.x line is supported for [one year from 3.0.0](https://github.com/open-telemetry/opentelemetry-js/blob/main/doc/3.x/migration-guide.md).
