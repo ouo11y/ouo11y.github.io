@@ -6,8 +6,8 @@
 // @ouo11y/<pkg> time --json` (npm publish time), docs/compatibility.md (`needs`).
 // Times are UTC, from the GitHub release or the npm publish, whichever is later.
 
-export type PackageId = 'collector' | 'rum-api' | 'grafana' | 'plugin' | 'browser' | 'react-native';
-export type Channel = 'npm' | 'ghcr' | 'inside-grafana';
+export type PackageId = 'collector' | 'rum-api' | 'grafana' | 'plugin' | 'chart' | 'browser' | 'react-native';
+export type Channel = 'npm' | 'ghcr' | 'inside-grafana' | 'on-request';
 
 export interface Package {
   id: PackageId;
@@ -45,6 +45,12 @@ export const packages: Package[] = [
     get: (v) => `inside ghcr.io/ouo11y/grafana:${grafanaWithPlugin(v) ?? '…'}`,
   },
   {
+    id: 'chart', name: 'Helm chart ouo', short: 'Helm chart',
+    what: 'Installs the collector, rum-api and Grafana on Kubernetes, with bundled or your own Loki, Tempo and Mimir.',
+    channel: 'on-request', docs: '/docs/operate/helm/',
+    get: () => 'email hello@ouo11y.com for the chart',
+  },
+  {
     id: 'browser', name: '@ouo11y/browser', short: 'browser',
     what: 'The web SDK: sessions, errors, traces, Web Vitals, rrweb replay.',
     channel: 'npm', docs: '/docs/instrument/ouo-sdk/',
@@ -62,6 +68,7 @@ export const channels: Record<Channel, { label: string; note: string }> = {
   npm: { label: 'npm, public', note: 'Apache-2.0 on npmjs.org.' },
   ghcr: { label: 'GHCR, public', note: 'Public on ghcr.io since 31 October 2026: no account, no login.' },
   'inside-grafana': { label: 'inside the grafana image', note: 'Ships baked into the grafana image; not published on its own.' },
+  'on-request': { label: 'on request', note: 'Its registry package needs a login, so it is not public: email hello@ouo11y.com and we send it.' },
 };
 
 export interface Release {
@@ -77,7 +84,7 @@ export interface Release {
   note: string;          // one line, what a user gets
 }
 
-export type TrainId = 'first-tags' | 'ouo11y-images' | 'sdks-npm' | 'data-lifecycle' | 'funnels';
+export type TrainId = 'first-tags' | 'ouo11y-images' | 'sdks-npm' | 'data-lifecycle' | 'funnels' | 'replay-tiles';
 
 export interface Train { id: TrainId; title: string; announcement: string; }
 
@@ -88,6 +95,7 @@ export const trains: Train[] = [
   { id: 'sdks-npm', title: 'SDKs on npm', announcement: '2026-10-23-sdks-on-npm' },
   { id: 'data-lifecycle', title: 'Data lifecycle, session page, Sentry parity', announcement: '2026-10-24-data-lifecycle-and-session-page' },
   { id: 'funnels', title: 'Funnels, readable stacks, browser 0.3', announcement: '2026-10-26-funnels-stacks-browser-0-3' },
+  { id: 'replay-tiles', title: 'Replay tiles, native crash symbols, React Native 0.3', announcement: '2026-11-01-replay-tiles-react-native-0-3' },
 ];
 
 export const releases: Release[] = [
@@ -151,6 +159,26 @@ export const releases: Release[] = [
   { pkg: 'grafana', version: '0.5.0', at: '2026-10-26T10:31:28Z', train: 'funnels', tagged: true, plugin: '0.9.0',
     image: 'ghcr.io/ouo11y/grafana:0.5.0', digest: 'sha256:57607a3616c88867644be1f69abb4681ca73df05d6bf2682543418f0dfeb622f',
     needs: 'rum-api ≥ 0.4.0 (funnels and mapped stacks: ≥ 0.5.0)', note: 'Grafana 13.2.1 with the app 0.9.0.' },
+
+  // 31 October and 1 November (npm publish times for the SDKs).
+  { pkg: 'rum-api', version: '0.6.0', at: '2026-10-31T10:43:20Z', train: 'replay-tiles', tagged: true,
+    image: 'ghcr.io/ouo11y/rum-api:0.6.0', digest: 'sha256:43adbb2eb96f2b53efa95c7f7f38b2116d635ba492238ea5206c0b624749fcde',
+    note: 'Reads replay schema 2 (tiles), symbolicates native crashes from dSYMs. One-way: no rollback once it has run.' },
+  { pkg: 'collector', version: '0.5.0', at: '2026-10-31T10:57:35Z', train: 'replay-tiles', tagged: true,
+    image: 'ghcr.io/ouo11y/collector:0.5.0', digest: 'sha256:64f2be4da3ee8f19633c8aa078f21a9ee192af48ae0d1ecb4659318e3bbddda5',
+    needs: 'rum-api ≥ 0.2.0 (schema 2 replays: ≥ 0.6.0)', note: 'Accepts and checks replay schema 2; Sentry user feedback becomes a feedback record.' },
+  { pkg: 'plugin', version: '0.10.0', at: '2026-10-31T11:01:19Z', train: 'replay-tiles', tagged: true,
+    needs: 'rum-api ≥ 0.4.0 (native symbolicated frames: ≥ 0.6.0), Grafana ≥ 13.0.0', note: 'Plays tiled replays, readable native crash frames and mobile steps, a feedback list.' },
+  { pkg: 'grafana', version: '0.6.0', at: '2026-10-31T11:22:28Z', train: 'replay-tiles', tagged: true, plugin: '0.10.0',
+    image: 'ghcr.io/ouo11y/grafana:0.6.0', digest: 'sha256:479980fe7dba0969cabd6352de33a44a327b153599ed2cb5adfe718e2ac91eb2',
+    needs: 'rum-api ≥ 0.4.0 (schema 2 replays, native symbolicated frames: ≥ 0.6.0)', note: 'Grafana 13.2.5 with the app 0.10.0; the new base fixes a critical CVE in brotli-libs.' },
+  { pkg: 'chart', version: '0.2.0', at: '2026-10-31T21:17:31Z', train: 'replay-tiles', tagged: true,
+    digest: 'sha256:71e2e37a7b397abf61d04418138e1d01ffa3bb160288df7f44d1322f905041d3',
+    needs: 'collector ≥ 0.5.0, rum-api ≥ 0.6.0, Kubernetes ≥ 1.25', note: 'Defaults to rum-api 0.6.0, collector 0.5.0, grafana 0.6.0; one retention setting for logs, traces, metrics and replays.' },
+  { pkg: 'react-native', version: '0.3.0', at: '2026-11-01T12:33:38Z', train: 'replay-tiles', tagged: true,
+    needs: 'collector ≥ 0.5.0, rum-api ≥ 0.6.0, Grafana app ≥ 0.10.0', note: 'iOS replay tiles, an offline outbox, user feedback, hangs and terminations, readable steps.' },
+  { pkg: 'browser', version: '0.3.1', at: '2026-11-01T12:43:29Z', train: 'replay-tiles', tagged: true,
+    needs: 'collector ≥ 0.2.0, rum-api ≥ 0.2.0 (mapped stacks, device_id: ≥ 0.5.0)', note: 'ouo.sdk.version now reports the real package version. No other change.' },
 ];
 
 // Announcements that are not releases, shown as flags on the timeline.

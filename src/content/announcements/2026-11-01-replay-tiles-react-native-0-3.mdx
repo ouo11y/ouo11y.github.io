@@ -1,0 +1,113 @@
+---
+title: "Replay tiles, native crash symbols, and @ouo11y/react-native 0.3.0"
+description: rum-api 0.6.0, collector 0.5.0 and the grafana image 0.6.0 add replay schema 2 and native crash symbolication. React Native 0.3.0 sends tiled iOS replays, survives being offline and collects user feedback. rum-api 0.6.0 is a one-way upgrade.
+date: 2026-11-01
+kind: release
+tags: [release, rum-api, collector, grafana, helm, react-native, browser, replay, upgrade]
+---
+
+import ReleaseTable from '../../components/announcements/ReleaseTable.astro';
+import Note from '../../components/Note.astro';
+
+Released over two days: rum-api 0.6.0, collector 0.5.0, the Grafana app 0.10.0, the grafana image 0.6.0 and the Helm chart 0.2.0 on 31 October, `@ouo11y/react-native` 0.3.0 and `@ouo11y/browser` 0.3.1 on 1 November. These are the [current versions](/announcements/#current).
+
+<Note type="caution" title="rum-api 0.6.0 is one-way">
+At its first start, rum-api 0.6.0 marks the replay store as schema 2. From then on rum-api 0.4 and 0.5 refuse to start on that store, and 0.3.0 and older, which have no such check, must never run on it. Back up first, and fix a failed upgrade forward. Stored replays are not rewritten and every older replay still plays.
+</Note>
+
+<ReleaseTable train="replay-tiles" />
+
+## For React Native apps
+
+**Smaller iOS replays.** A replay frame is now either a full image or only the 64 px tiles that changed since the last frame, and a static screen sends no image bytes. On the release's simulator journey, a masked replay went from 235 KiB to 120 KiB per minute. The iOS recorder also captures after the run loop's UI work within a budget of 100 ms per second of main-thread time, never during touches, and drops frames whose masked views move. `replay.mode` chooses `auto` (the default), `session` or `navigation`.
+
+**Telemetry that survives being offline.** Every OTLP batch is written to AsyncStorage before it is sent and removed once the collector accepts or finally rejects it. It is retried with backoff from 1 to 30 seconds, honouring `Retry-After`, and sent on the next launch if it has to wait. The store is bounded to 5 MB, 500 requests and 24 hours, oldest dropped first; `transport.offline` changes the bounds, or `false` turns it off. `replay.keepAtNextLaunch(session)` holds a session's replay on the device and decides at the next launch whether to send or delete it.
+
+**User feedback.** `rum.feedback({ message, contact?, screenshot? })` sends one feedback record on the current session, with the session's last 20 events. With replay recording, `screenshot` asks the recorder for a masked frame.
+
+**More of what goes wrong:**
+
+- iOS app hangs of 2 seconds or more are reported as one non-fatal `hang` exception each, with the duration and the main thread's stack;
+- a kill in the foreground without a crash report (out of memory, the watchdog) is a fatal `termination` exception on the next launch, and its session is `crashed`;
+- `rum.reportFullyDisplayed()` adds time to full display, `ouo.screen.ttfd_ms`, to the screen's display event;
+- every `exception` carries the last events, the screen, the device locale and, on iOS, memory and network type. A crash reported on the next launch carries the crashed run's screen and last events;
+- a session whose app crashed in its first second is no longer lost: the crash report carries the session's start.
+
+**Readable steps.** A tap is recorded with its view type, gesture and screen, and reads as a step: `Tap add-to-cart (button) on Product`. `timeline.tapLabels: false` keeps every label on the device.
+
+**Fixed.** `ouo.sdk.version` reports the package version (0.2.1 reported 0.2.0). On iOS, a device clock moved more than a day forward no longer drops every queued replay chunk.
+
+[React Native](/docs/instrument/react-native/) still describes 0.2.1, so these options are documented only here for now.
+
+## On the session page
+
+The Grafana app 0.10.0:
+
+- plays tiled replays, including when you scrub backwards;
+- shows symbolicated native frames as `function (file:line) in binary`, marked `(inlined)` where they are, and as `binary address` when no dSYM was uploaded;
+- reads a mobile tap as a step in the timeline and the activity list;
+- adds a **Feedback** list to the replay panel, with the message, the contact, a screenshot badge, the steps before it and **Replay at feedback**. Feedback also appears in the activity list and as a marker on the replay bar.
+
+## For operators
+
+**Native crash symbolication.** rum-api 0.6.0 stores dSYMs per project, next to the source maps, so retention and delete by project apply to them. When a session is read, native frames are mapped to function, file and line. The upload is `PUT /v1/dsyms` with the project's upload token, up to `limits.max_dsym_bytes` (default 512 MiB). `sourcemaps.cache_bytes` (default 512 MiB) is the budget of the cache source maps and dSYMs now share.
+
+<Note type="caution" title="No published upload tool yet">
+The command-line tool that uploads dSYMs and source maps is not published on npm, the same limit as [the last release](/announcements/2026-10-26-funnels-stacks-browser-0-3/). A frame without a dSYM shows its binary and address.
+</Note>
+
+**The edge checks replay frames.** Collector 0.5.0 accepts schema 2 and checks every frame as rum-api does; a chunk that fails is refused with `400`. Sentry's video replays stay at schema 1.
+
+**Sentry feedback.** Through the [Sentry bridge](/docs/operate/sentry-bridge/), Sentry `feedback` events and legacy `user_report` envelopes become the same feedback records the React Native SDK sends, and show in the same list.
+
+**A critical fix in the Grafana base image.** The grafana image 0.6.0 moves to Grafana 13.2.5 on Alpine 3.24.3, whose `brotli-libs` 1.2.1-r0 fixes CVE-2026-111497 (critical). Images up to 0.5.0 carry the older base.
+
+## The Helm chart 0.2.0
+
+The first published version of the chart defaults to rum-api 0.6.0, collector 0.5.0 and the grafana image 0.6.0. New values:
+
+- `retention`: one entry for Loki, Tempo, Mimir and rum-api's replays, with per-project `retention.projects.<id>.logs` and `.replays`;
+- `adminToken`, `rumApi.sampling` and `rumApi.storage.s3.lifecycleRules`;
+- `grafana.plugin.featureToggles`.
+
+Its limits today: the upload API is reachable only inside the cluster, the collector's rate limit middleware and auth failure counter are not in the chart yet, and with an external stack the chart refuses `lgtm.external.tenantId` and `lokiDeleteUrl`, because rum-api 0.6.0 rejects the keys they turn into.
+
+<Note title="The chart is still on request">
+Its package at `oci://ghcr.io/ouo11y/charts/ouo` needs a registry login; we checked that an anonymous pull gets `401`. Email [hello@ouo11y.com](mailto:hello@ouo11y.com) and we send it. The images it installs are public.
+</Note>
+
+## @ouo11y/browser 0.3.1
+
+A fix only: `ouo.sdk.version`, and the version in the init log, report the package version. 0.3.0 reported 0.2.0, so queries that filter on `ouo.sdk.version` see 0.2.0 for sessions sent by 0.3.0.
+
+## Get it
+
+```bash
+npm install @ouo11y/react-native@0.3.0
+```
+
+```bash
+npm install @ouo11y/browser@0.3.1
+```
+
+In the `.env` next to your stack:
+
+```ini
+OUO_RUM_API_VERSION=0.6.0
+OUO_GRAFANA_VERSION=0.6.0
+OUO_COLLECTOR_VERSION=0.5.0
+```
+
+## Upgrade
+
+Order: **rum-api 0.6.0** and **the grafana image 0.6.0**, then **collector 0.5.0**, then **the SDKs** in your apps. [Upgrading](/docs/operate/upgrade/) has the steps for Compose, the VM and Helm.
+
+- **Back up the replays and Grafana first.** You cannot roll rum-api back across this release, and with schema 2 data in the store a Grafana app older than 0.10 shows tiles as broken images and a collector older than 0.5 refuses the chunks.
+- **`:latest` moves too.** The [one-file stack](/docs/start/quickstart/) uses `:latest` unless you pin it, so its next pull is this release. The file itself was generated for collector 0.4.0, rum-api 0.5.0 and grafana 0.5.0; pin those in `.env` to stay on them.
+- **rum-api before the collector.** rum-api 0.5 and older answer `400` to schema 2 chunks.
+- **React Native on iOS is a breaking upgrade.** Replays are schema 2, so an older collector or rum-api refuses them: finish the server side first, and run `pod install` after upgrading.
+- **Helm:** once rum-api 0.6.0 has run, do not `helm rollback` to chart 0.1.x, by hand or through `--rollback-on-failure` or `--atomic`. To stay on the old images, pin `*.image.tag` in your values.
+
+<Note title="Which versions work together">
+`@ouo11y/react-native` 0.3 needs collector 0.5.0, rum-api 0.6.0 and the Grafana app 0.10.0 or newer. `@ouo11y/browser` 0.3 needs collector and rum-api 0.2.0 or newer, as before; mapped stacks and `device_id` need rum-api 0.5.0. The Grafana app 0.10 and the grafana image 0.6 need rum-api 0.4.0 or newer; tiled replays and native symbolicated frames need rum-api 0.6.0. Collector 0.5 needs rum-api 0.2.0 or newer, and 0.6.0 to carry schema 2. The chart 0.2 needs collector 0.5.0, rum-api 0.6.0 and Kubernetes 1.25 or newer.
+</Note>

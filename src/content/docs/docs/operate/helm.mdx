@@ -7,8 +7,8 @@ sidebar: { order: 3 }
 import { Steps, Aside, Tabs, TabItem } from '@astrojs/starlight/components';
 import Zones from '../../../../components/diagrams/Zones.astro';
 
-<Aside type="caution" title="The chart is not published yet">
-The Helm chart `ouo` will be published at `oci://ghcr.io/ouo11y/charts/ouo`. Until then we send it on request: email [hello@ouo11y.com](mailto:hello@ouo11y.com). The images it installs are already public on ghcr.io, so the cluster needs no pull secret. The commands below install it from the unpacked chart folder, `./ouo`. Everything on this page was checked by rendering and linting that chart with the values shown.
+<Aside type="caution" title="The chart is sent on request">
+The Helm chart `ouo` 0.2.0 is at `oci://ghcr.io/ouo11y/charts/ouo`, but that package needs a registry login, so we send it on request: email [hello@ouo11y.com](mailto:hello@ouo11y.com). The images it installs are already public on ghcr.io, so the cluster needs no pull secret. The commands below install it from the unpacked chart folder, `./ouo`. Everything on this page was checked by rendering and linting that chart with the values shown.
 </Aside>
 
 ## What it installs
@@ -95,7 +95,7 @@ The ouo11y collector (the only ingest), rum-api (ClusterIP only), Grafana with t
    ```yaml
    # ouo11y on Kubernetes: bundled single-binary Loki, Tempo and Mimir.
    collector:
-     image: { tag: "0.4.0" }
+     image: { tag: "0.5.0" }
      existingProjectsSecret: ouo-projects
      allowedOrigins:
        - https://shop.example.com
@@ -108,10 +108,10 @@ The ouo11y collector (the only ingest), rum-api (ClusterIP only), Grafana with t
          nginx.ingress.kubernetes.io/proxy-body-size: 16m   # replay chunks are up to 8 MiB
        tls: { enabled: true, secretName: ouo-collector-tls }
    rumApi:
-     image: { tag: "0.5.0" }
+     image: { tag: "0.6.0" }
      existingSecret: ouo-rum-api-tokens
    grafana:
-     image: { tag: "0.5.0" }
+     image: { tag: "0.6.0" }
      existingSecret: ouo-grafana-admin
      ingress:
        enabled: true
@@ -206,6 +206,8 @@ lgtm:
     # lokiOtlpUrl, mimirOtlpUrl, mimirPrometheusUrl: when write and read paths differ
     # tenantId: ouo   # multi-tenant stacks: X-Scope-OrgID on exports and data sources
 ```
+
+Chart 0.2.0 refuses `tenantId` and `lokiDeleteUrl` while rum-api is at 0.6.0 or older, because that rum-api rejects the keys they turn into.
 
 Your stack needs:
 
