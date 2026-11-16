@@ -1,0 +1,135 @@
+---
+title: "Both SDKs on the client spec, Muninn the replay store, and @ouo11y/kit"
+description: "@ouo11y/browser 0.4 and @ouo11y/react-native 0.4 are rebuilt on the ouo client SDK spec, with consent, beforeSend and replay as OTLP log records; both are breaking. Muninn 0.1 and 0.2, a new replay store, and @ouo11y/kit 0.1, a replay player for your own frontend, are out too."
+date: 2026-11-15
+kind: release
+tags: [release, browser, react-native, muninn, kit, replay, privacy, upgrade]
+---
+
+import ReleaseTable from '../../components/announcements/ReleaseTable.astro';
+import Note from '../../components/Note.astro';
+
+Released over four days: `@ouo11y/browser` 0.4.0 on 12 November, muninn 0.1.0, `@ouo11y/browser` 0.4.1 and `@ouo11y/react-native` 0.4.0 on 13 November, `@ouo11y/kit` 0.1.0 on 14 November and muninn 0.2.0 on 15 November. The collector, rum-api, the grafana image and the Helm chart did not change: they stay at the versions of [the last release](/announcements/2026-11-01-replay-tiles-react-native-0-3/).
+
+<Note type="caution" title="Both SDK upgrades are breaking, and replay does not play in Grafana yet">
+Both SDKs now send replay as OTLP log records, and no released collector or Grafana app plays those. The default collector forwards them to Loki; they can be stored in Muninn, which no released Grafana app reads. Telemetry (sessions, errors, traces) keeps working. If you watch replays in the Grafana app, stay on `@ouo11y/browser@0.3.1` and `@ouo11y/react-native@0.3.0`. npm's `latest` is now 0.4, so pin the version you install.
+</Note>
+
+<ReleaseTable train="spec-sdks" />
+
+## @ouo11y/browser 0.4
+
+The web SDK is rebuilt on the ouo client SDK spec (spec version `0.1.0-draft`). The rule it is built around: the app must not pay for the SDK's failures. No public function throws, every hook contains its own errors, and after 20 internal errors the SDK turns itself off.
+
+**A new API.** `initRUM` is replaced by `init`, which never throws: with a missing `endpoint` or `serviceName` the SDK does nothing, and any other bad value falls back to its default. The functions are `init`, `shutdown`, `flush`, `getSessionId`, `restartSession`, `setUser(id | null)`, `setConsent`, `setGlobalAttributes`, `recordEvent`, `recordException`, `trackNavigation`, `getTracerProvider`, `getLoggerProvider`, `replay.start/stop/capture` and `diagnostics`. Each is safe to call before `init`, after `shutdown` and on the server.
+
+```ts
+import { init } from "@ouo11y/browser";
+
+init({
+  endpoint: "https://otel.example.com",
+  projectId: "demo",
+  projectToken: "pt_public_token",
+  serviceName: "web-store",
+  serviceVersion: "1.4.2",
+  environment: "production",
+  replay: { sessionRate: 0.1 }, // record one session in ten
+});
+```
+
+**Privacy by default.**
+
+- With `consent.required`, nothing is sent or stored until `setConsent({ telemetry, replay })`, and the two consents are separate. Withdrawing consent deletes what was stored and not sent.
+- On every URL the SDK reports, credentials and query values become `REDACTED` and the fragment is removed. `privacy.urlQueryAllow` keeps the values of the keys you list.
+- No user id is sent before `setUser`, and there is no device id any more.
+- `beforeSend` sees every log record and span before it is queued, and can change or drop it.
+
+**Replay.** Replay is off until you set `replay.sessionRate` (sessions recorded whole) or `replay.bufferRate` (sessions that keep the last `replay.bufferSeconds`, 60 by default, in memory and send them after an unhandled error or `replay.capture()`). All text and form values are masked on the device, and images, video and canvas are recorded as empty boxes. Use `data-ouo-unmask` on an element to record it as written, `data-ouo-mask` to mask again inside it, and `data-ouo-block` to leave an element out. Password, payment and one-time-code fields are always masked. Chunks go as `ouo.replay.chunk` log records to `{endpoint}/v1/logs`, in format `rrweb/2`; there is no separate replay endpoint any more.
+
+**Sessions, sampling and delivery.** A session starts on user activity, not on a timer or a request, and ends after 30 minutes without activity or at 4 hours. All tabs of a site share it. `sampling.sessionRate` samples sessions, and a session that is not sampled still sends its unhandled errors, up to `sampling.bypass.perSessionCap`. Batches are gzipped; what the collector could not take waits in an IndexedDB outbox, up to 72 hours and 5 MiB.
+
+**On the session page.** rum-api stores and lists 0.4 sessions, timelines, traces and symbolicated errors, but does not classify the new event names as vitals, clicks or navigations.
+
+**Size and browsers.** Initial JavaScript is about 49 KB gzip; replay loads only in sessions that record. Chrome and Edge 94, Firefox 93, Safari 16.4 and later.
+
+**0.4.1** fixes one thing: the first chunk of a replay stream is always a keyframe.
+
+## @ouo11y/react-native 0.4
+
+**Replay over OTLP, on iOS and Android.** Replay chunks are OTLP log records sent to `{endpoint}/v1/logs`, ended by an `ouo.replay.ended` record. `replayEndpoint` is removed (a value still passed is ignored, with a diagnostic), and the collector's replay port 4319 gets nothing from this SDK. `replay.mode` now names what is recorded: `pixel/frames` (the default) or `pixel/video`; the old values `auto`, `session` and `navigation` moved to `replay.cadence`. `replay.keepAtNextLaunch` is replaced by a buffer: `replay.onErrorSampleRate` with `replay.bufferSeconds` keeps the last seconds on the device and sends them at the first unhandled exception, crash or hang, or on `rum.replay.capture()`. `rum.replay.mask(ref)` and `unmask(ref)` reach the native recorder.
+
+**Android.** Replay capture, gzip delivery and vitals, plus native crashes, hangs, terminations and FrameMetrics frames.
+
+**Failure isolation, consent and the spec API.**
+
+- `initRUM` no longer throws on a missing or invalid `endpoint`, `projectId`, `projectToken` or `service.name`: it returns an instance that does nothing and says why when `debug` is on. `init` is the same function under the spec's name.
+- `consent.required` with `setConsent({ telemetry, replay })`, and `beforeSend`.
+- The spec functions: `shutdown`, `flush`, `getSessionId`, `restartSession`, `setUser(id | null)`, `setGlobalAttributes`, `recordEvent`, `recordException`, `trackNavigation`, `getTracerProvider`, `getLoggerProvider`.
+- Hermes debug ids and source maps that survive over-the-air updates. The upload tool for source maps is still not on npm.
+
+**Behaviour that changes on upgrade:**
+
+- `session.id` is 32 lowercase hex characters. A session stored by an older version keeps its id until it rotates.
+- Sessions start only on activity (a touch, a navigation, the foreground); a background launch starts none. `session.backgroundTimeoutMs` defaults to 15 minutes, and session timeouts below one minute are raised to one minute.
+- An unsampled session still sends its unhandled exceptions, crashes and hangs, capped per session.
+- No `baggage` header unless `propagation.sessionBaggage` is set, and no anonymous `user.id`: records carry one only after `setUser`.
+- Credentials and query values in recorded URLs become `REDACTED`; `privacy.urlQueryAllow` keeps the keys you list.
+- The SDK no longer registers its OpenTelemetry providers as globals; `otel.registerGlobal: true` restores that.
+- Delivery retries only `429` and `502` to `504`, with backoff up to 300 seconds.
+
+## Muninn 0.1 and 0.2, the replay store
+
+Muninn is a new service that stores replays. It takes `ouo.replay.chunk` and `ouo.replay.ended` records over OTLP/HTTP at `POST /otlp/v1/logs`, checks each one and rejects bad ones one by one through OTLP partial success, and writes one create-only object per chunk to S3-compatible storage or a directory. It stores every replay format as sent. It has a read API (a session's replays, a manifest with the stream's state and missing ranges, each chunk as stored), delete with tombstones, a retention sweeper, and its own telemetry over OTLP. It is licensed AGPL-3.0, and the image is built for linux/amd64 and linux/arm64.
+
+**0.2.0** adds debug files and erasure: a public, write-only upload route for source maps and dSYM slices, checked by a per-project upload token, with each file written once; private reads; and project delete with create-only audit entries, behind `auth.admin_token`. It is breaking for the upload tool, which now sends debug files to Muninn instead of rum-api.
+
+<Note title="Not part of the stack yet">
+Muninn is fed by a Collector that has the `file_storage` extension, which no released ouo11y collector has: use an OpenTelemetry Collector contrib build. It is not in [the one-file stack](/docs/start/quickstart/) or the [Helm chart](/docs/operate/helm/), and this site has no Muninn page.
+</Note>
+
+## @ouo11y/kit 0.1, a replay player for your own frontend
+
+`@ouo11y/kit` is a React package (React 18 or later) for showing replays outside Grafana. `ReplayPlayer` plays a Muninn manifest with chunks fetched by a function you supply: it picks a stream, plays from a keyframe up to a gap, and joins the chunks. `RrwebPlayer` wraps `rrweb-player`. `formatInfo` says what a format is: `rrweb/2`, what `@ouo11y/browser` 0.4 records, plays; the pixel and wireframe formats, what `@ouo11y/react-native` 0.4 records, are named but not playable yet. It needs no Grafana and no ouo11y backend other than Muninn.
+
+`0.1.1-rc.0` is a pre-release on npm's `next` tag with no listed changes; `latest` is 0.1.0.
+
+## Get it
+
+```bash
+npm install @ouo11y/browser@0.4.1
+```
+
+```bash
+npm install @ouo11y/react-native@0.4.0
+```
+
+```bash
+npm install @ouo11y/kit@0.1.0
+```
+
+```bash
+docker pull ghcr.io/ouo11y/muninn:0.2.0
+```
+
+To stay on the previous SDKs:
+
+```bash
+npm install @ouo11y/browser@0.3.1
+```
+
+```bash
+npm install @ouo11y/react-native@0.3.0
+```
+
+## Upgrade
+
+Nothing changes on the server side: no collector, rum-api or grafana image upgrade comes with these SDKs. [Upgrading](/docs/operate/upgrade/) has the full table.
+
+- **Browser 0.3 to 0.4** is a code change: replace `initRUM` with `init` and its options (`serviceName`, `serviceVersion`, `environment` instead of `service`), and set `replay.sessionRate` or `replay.bufferRate` if you want replay, which was on by default in 0.3. Text you want to see in replays now needs `data-ouo-unmask`.
+- **React Native 0.3 to 0.4**: remove `replayEndpoint`, move `replay.mode: "auto" | "session" | "navigation"` to `replay.cadence`, and replace `replay.keepAtNextLaunch` with `replay.onErrorSampleRate` and `replay.bufferSeconds`.
+- **Saved queries and dashboards** that filter on SDK attributes may need a look: browser 0.4 uses the spec's attribute and event names (the user is `enduser.id`, set only by `setUser`, and there is no device id), and React Native 0.4 sends 32-hex session ids and no anonymous `user.id`.
+- [Browser SDK](/docs/instrument/ouo-sdk/) and [React Native SDK](/docs/instrument/react-native/) still describe 0.3 and 0.2.1; their install commands are now pinned to 0.3.1 and 0.3.0.
+
+<Note title="Which versions work together">
+`@ouo11y/browser` 0.4 needs collector 0.2.0 and rum-api 0.2.0 or newer. `@ouo11y/react-native` 0.4 needs collector 0.2.0 and rum-api 0.6.0 or newer. Neither SDK's replay plays in a released Grafana app; Muninn 0.1 and later stores it. `@ouo11y/kit` 0.1 plays `rrweb/2` from Muninn 0.1.0 or newer. The collector 0.5.0, rum-api 0.6.0, grafana image 0.6.0 and Helm chart 0.2.0 of [the last release](/announcements/2026-11-01-replay-tiles-react-native-0-3/) are still current.
+</Note>

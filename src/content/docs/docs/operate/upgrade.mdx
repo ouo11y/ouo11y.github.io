@@ -9,7 +9,7 @@ import Stages from '../../../../components/diagrams/Stages.astro';
 
 ## How versions work
 
-Every component has its own semantic version and its own release: `collector`, `rum-api`, `grafana` (the image, with the ouo11y RUM app inside), the Grafana app itself (`plugin`), `@ouo11y/browser`, `@ouo11y/react-native`, and the Helm chart. Everything is `0.y.z` for now: a minor bump (`0.4.0` → `0.5.0`) can carry a breaking change, listed under **Breaking** in that component's changelog; a patch never does.
+Every component has its own semantic version and its own release: `collector`, `rum-api`, `grafana` (the image, with the ouo11y RUM app inside), the Grafana app itself (`plugin`), `@ouo11y/browser`, `@ouo11y/react-native`, `@ouo11y/kit`, `muninn`, and the Helm chart. Everything is `0.y.z` for now: a minor bump (`0.4.0` → `0.5.0`) can carry a breaking change, listed under **Breaking** in that component's changelog; a patch never does.
 
 Release tags and published versions are permanent. A broken release is fixed by the next patch, never by moving a tag.
 
@@ -17,15 +17,19 @@ Release tags and published versions are permanent. A broken release is fixed by 
 
 | Component | Line | Needs | Notes |
 |---|---|---|---|
+| `@ouo11y/browser` | 0.4 | collector ≥ 0.2.0, rum-api ≥ 0.2.0 | breaking rewrite on the client SDK spec; rum-api does not classify its new event names as vitals, clicks or navigations; replay is recorded but no released collector or Grafana app plays it ([announcement](/announcements/2026-11-15-spec-sdks-muninn-kit/)) |
 | `@ouo11y/browser` | 0.3 | collector ≥ 0.2.0, rum-api ≥ 0.2.0 | with rum-api ≥ 0.5, stacks are symbolicated from uploaded source maps and sessions carry `device_id` |
+| `@ouo11y/react-native` | 0.4 | collector ≥ 0.2.0, rum-api ≥ 0.6.0 | breaking; replay goes as OTLP log records to `/v1/logs` and can be stored in Muninn, but no released Grafana app plays it; `replayEndpoint` (port 4319) is gone |
 | `@ouo11y/react-native` | 0.3 | collector ≥ 0.5.0, rum-api ≥ 0.6.0, Grafana app ≥ 0.10.0 | iOS replay as `frames`, schema 2 (tiles) |
 | collector | 0.5 | rum-api ≥ 0.2.0 | accepts replay schema ≤ 2; schema 2 chunks need rum-api ≥ 0.6.0 |
 | rum-api | 0.6 | | reads replay schema ≤ 2; afterwards rum-api 0.4 and 0.5 refuse to start on its store, and 0.3.0 and older must never run on it |
 | Grafana app (plugin) | 0.10 | rum-api ≥ 0.4.0, Grafana ≥ 13.0.0 | plays schema ≤ 2; native symbolicated frames need rum-api ≥ 0.6.0; the Funnels page and source-mapped stacks need rum-api ≥ 0.5.0 |
 | grafana image | 0.6 | rum-api ≥ 0.4.0 | Grafana 13.2.5 with the app 0.10.0; schema 2 replays and native symbolicated frames need rum-api ≥ 0.6.0 |
+| muninn | 0.2 | a Collector with the `file_storage` extension in front | stores any replay format as sent; not in the Compose stack or the Helm chart; no released Grafana app plays from it |
+| `@ouo11y/kit` | 0.1 | Muninn ≥ 0.1.0, React ≥ 18 | plays `rrweb/2` from a Muninn manifest in your own frontend |
 | Helm chart | 0.2 | collector ≥ 0.5.0, rum-api ≥ 0.6.0 | Kubernetes ≥ 1.25; sent on request; roll forward only, no rollback to chart 0.1.x once rum-api 0.6.0 has run |
 
-The newest releases are collector 0.5.0, rum-api 0.6.0, grafana 0.6.0, `@ouo11y/browser` 0.3.1 and `@ouo11y/react-native` 0.3.0. The [one-file stack](/docs/start/quickstart/) was generated for collector 0.4.0, rum-api 0.5.0 and grafana 0.5.0, and follows `:latest` unless you pin it.
+The newest releases are collector 0.5.0, rum-api 0.6.0, grafana 0.6.0, `@ouo11y/browser` 0.4.1, `@ouo11y/react-native` 0.4.0, muninn 0.2.0 and `@ouo11y/kit` 0.1.0. Both SDK 0.4 lines are breaking upgrades; [their announcement](/announcements/2026-11-15-spec-sdks-muninn-kit/) says what changes and when to stay on 0.3. The [one-file stack](/docs/start/quickstart/) was generated for collector 0.4.0, rum-api 0.5.0 and grafana 0.5.0, and follows `:latest` unless you pin it.
 
 ## The order
 

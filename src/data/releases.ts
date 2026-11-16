@@ -6,7 +6,7 @@
 // @ouo11y/<pkg> time --json` (npm publish time), docs/compatibility.md (`needs`).
 // Times are UTC, from the GitHub release or the npm publish, whichever is later.
 
-export type PackageId = 'collector' | 'rum-api' | 'grafana' | 'plugin' | 'chart' | 'browser' | 'react-native';
+export type PackageId = 'collector' | 'rum-api' | 'grafana' | 'plugin' | 'chart' | 'muninn' | 'browser' | 'react-native' | 'kit';
 export type Channel = 'npm' | 'ghcr' | 'inside-grafana' | 'on-request';
 
 export interface Package {
@@ -51,6 +51,12 @@ export const packages: Package[] = [
     get: () => 'email hello@ouo11y.com for the chart',
   },
   {
+    id: 'muninn', name: 'muninn', short: 'muninn',
+    what: 'The replay store: takes replay chunks as OTLP log records from a Collector and keeps them on S3-compatible storage or a directory.',
+    channel: 'ghcr', docs: '/announcements/2026-11-15-spec-sdks-muninn-kit/',
+    get: (v) => `docker pull ghcr.io/ouo11y/muninn:${v}`,
+  },
+  {
     id: 'browser', name: '@ouo11y/browser', short: 'browser',
     what: 'The web SDK: sessions, errors, traces, Web Vitals, rrweb replay.',
     channel: 'npm', docs: '/docs/instrument/ouo-sdk/',
@@ -61,6 +67,12 @@ export const packages: Package[] = [
     what: 'The React Native and Expo SDK, with native replay on iOS.',
     channel: 'npm', docs: '/docs/instrument/react-native/',
     get: (v) => `npm install @ouo11y/react-native@${v}`,
+  },
+  {
+    id: 'kit', name: '@ouo11y/kit', short: 'kit',
+    what: 'A React replay player for your own frontend: plays a Muninn manifest with chunks you fetch.',
+    channel: 'npm', docs: '/announcements/2026-11-15-spec-sdks-muninn-kit/',
+    get: (v) => `npm install @ouo11y/kit@${v}`,
   },
 ];
 
@@ -84,7 +96,7 @@ export interface Release {
   note: string;          // one line, what a user gets
 }
 
-export type TrainId = 'first-tags' | 'ouo11y-images' | 'sdks-npm' | 'data-lifecycle' | 'funnels' | 'replay-tiles';
+export type TrainId = 'first-tags' | 'ouo11y-images' | 'sdks-npm' | 'data-lifecycle' | 'funnels' | 'replay-tiles' | 'spec-sdks';
 
 export interface Train { id: TrainId; title: string; announcement: string; }
 
@@ -96,6 +108,7 @@ export const trains: Train[] = [
   { id: 'data-lifecycle', title: 'Data lifecycle, session page, Sentry parity', announcement: '2026-10-24-data-lifecycle-and-session-page' },
   { id: 'funnels', title: 'Funnels, readable stacks, browser 0.3', announcement: '2026-10-26-funnels-stacks-browser-0-3' },
   { id: 'replay-tiles', title: 'Replay tiles, native crash symbols, React Native 0.3', announcement: '2026-11-01-replay-tiles-react-native-0-3' },
+  { id: 'spec-sdks', title: 'SDKs on the client spec, Muninn, the replay kit', announcement: '2026-11-15-spec-sdks-muninn-kit' },
 ];
 
 export const releases: Release[] = [
@@ -179,6 +192,22 @@ export const releases: Release[] = [
     needs: 'collector ≥ 0.5.0, rum-api ≥ 0.6.0, Grafana app ≥ 0.10.0', note: 'iOS replay tiles, an offline outbox, user feedback, hangs and terminations, readable steps.' },
   { pkg: 'browser', version: '0.3.1', at: '2026-11-01T12:43:29Z', train: 'replay-tiles', tagged: true,
     needs: 'collector ≥ 0.2.0, rum-api ≥ 0.2.0 (mapped stacks, device_id: ≥ 0.5.0)', note: 'ouo.sdk.version now reports the real package version. No other change.' },
+
+  // 12 to 15 November (npm publish times for the npm packages).
+  { pkg: 'browser', version: '0.4.0', at: '2026-11-12T22:11:08Z', train: 'spec-sdks', tagged: true,
+    needs: 'collector ≥ 0.2.0, rum-api ≥ 0.2.0 (replay not playable yet)', note: 'Rebuilt on the client SDK spec: new API (init, recordEvent, …), consent, beforeSend, replay text masked by default. Breaking.' },
+  { pkg: 'muninn', version: '0.1.0', at: '2026-11-13T01:30:11Z', train: 'spec-sdks', tagged: true,
+    image: 'ghcr.io/ouo11y/muninn:0.1.0', digest: 'sha256:9a05bbc26b91f7d801a61f93504d96d79ee981cb57355a04f76552e0260cc4a8',
+    note: 'First release of the replay store: OTLP ingest of replay chunks, one object per chunk, read API, delete, retention.' },
+  { pkg: 'browser', version: '0.4.1', at: '2026-11-13T11:43:19Z', train: 'spec-sdks', tagged: true,
+    needs: 'collector ≥ 0.2.0, rum-api ≥ 0.2.0 (replay not playable yet)', note: 'The first chunk of a replay stream is always a keyframe.' },
+  { pkg: 'react-native', version: '0.4.0', at: '2026-11-13T13:47:09Z', train: 'spec-sdks', tagged: true,
+    needs: 'collector ≥ 0.2.0, rum-api ≥ 0.6.0 (replay stored in Muninn, not playable yet)', note: 'Replay over OTLP on iOS and Android, Android crashes and hangs, consent, beforeSend, the spec API. Breaking.' },
+  { pkg: 'kit', version: '0.1.0', at: '2026-11-14T14:46:30Z', train: 'spec-sdks', tagged: true,
+    needs: 'Muninn ≥ 0.1.0, React ≥ 18', note: 'First release: a replay player for a Muninn manifest; plays rrweb/2.' },
+  { pkg: 'muninn', version: '0.2.0', at: '2026-11-15T02:16:58Z', train: 'spec-sdks', tagged: true,
+    image: 'ghcr.io/ouo11y/muninn:0.2.0', digest: 'sha256:b4a1e95d346572372712aa8f6cd901146b96b9386d403126fe9b39da95fc3172',
+    note: 'Source map and dSYM uploads with a per-project upload token, project delete and an audit log behind an admin token. Breaking.' },
 ];
 
 // Announcements that are not releases, shown as flags on the timeline.
