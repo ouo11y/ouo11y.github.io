@@ -10,6 +10,10 @@ import SessionLanes from '../../../../components/diagrams/SessionLanes.astro';
 
 `@ouo11y/react-native` is a Real User Monitoring SDK for React Native and Expo, built on OpenTelemetry JS. It records sessions, JS errors, native crashes on iOS, `fetch` and XHR traces with W3C Trace Context and Baggage, a timeline of taps, app state changes and requests, mobile vitals, and a native session replay on iOS. Everything goes to the ouo11y collector as plain OTLP. It is Apache-2.0 and on npm. This page describes version **0.2.1**.
 
+<Aside type="caution" title="0.4 changes replay and the options">
+`@ouo11y/react-native` 0.4 (13 November 2026) sends replay as OTLP log records instead of to `replayEndpoint`, renames the replay modes and adds consent and `beforeSend`; no released Grafana app plays its replays yet. The install below is pinned to 0.3.0, the newest version this page still fits (0.3 needs collector 0.5.0 and rum-api 0.6.0). [The 0.4 announcement](/announcements/2026-11-15-spec-sdks-muninn-kit/) has what changed.
+</Aside>
+
 | Part | Needs |
 |---|---|
 | Telemetry: sessions, errors, traces, timeline, JS vitals | nothing native. Runs in Expo Go. |
@@ -18,7 +22,7 @@ import SessionLanes from '../../../../components/diagrams/SessionLanes.astro';
 ## Install
 
 ```bash
-npm install @ouo11y/react-native @react-native-async-storage/async-storage
+npm install @ouo11y/react-native@0.3.0 @react-native-async-storage/async-storage
 ```
 
 Peer dependencies: `react` 18 or later, `react-native` 0.74 or later, `@react-native-async-storage/async-storage`, and optionally `expo-modules-core` (it comes with Expo) for the native parts. The OpenTelemetry packages are bundled into the SDK, so Metro needs no extra configuration.

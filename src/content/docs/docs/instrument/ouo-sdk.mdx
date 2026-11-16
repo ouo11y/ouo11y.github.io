@@ -13,12 +13,16 @@ import SamplingGrid from '../../../../components/diagrams/SamplingGrid.astro';
 
 `@ouo11y/browser` is a Real User Monitoring SDK built on OpenTelemetry JS. It records sessions, errors, fetch and XHR traces, Web Vitals, navigations and an rrweb session replay, and sends them to the ouo11y collector as plain OTLP. It is Apache-2.0 and on npm. This page describes version **0.3.0**.
 
+<Aside type="caution" title="0.4 is a different API">
+`@ouo11y/browser` 0.4 (12 November 2026) is rebuilt on the client SDK spec: `initRUM` is gone, `init` takes other option names, and replay is off until you set a rate. This page and its examples are for 0.3, so the install below is pinned to 0.3.1. [The 0.4 announcement](/announcements/2026-11-15-spec-sdks-muninn-kit/) has the new API.
+</Aside>
+
 The SDK is a convenience, not a lock-in. Everything it sends is described in [the contract](/docs/instrument/bring-your-own-otel/#the-contract), and you can produce the same data with upstream OpenTelemetry packages and no ouo11y code at all. Pick the SDK when you want sessions, replay and delivery done for you; pick [plain OpenTelemetry](/docs/instrument/bring-your-own-otel/) when you want to own every line.
 
 ## Install
 
 ```bash
-npm install @ouo11y/browser
+npm install @ouo11y/browser@0.3.1
 ```
 
 ESM only, TypeScript types included. React integration is a separate entry, `@ouo11y/browser/react` ([below](#react)).
