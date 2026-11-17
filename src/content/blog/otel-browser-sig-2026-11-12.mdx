@@ -1,0 +1,186 @@
+---
+title: "Browser SIG, 12 November 2026: browser-sdk 0.8.0 ships the 0.7.0 breaking changes, and a url.full security fix for fetch and XHR"
+description: browser-sdk 0.8.0 and browser-instrumentation 0.11.0 reached npm on 11 November and carry the breaking changes of the never-published 0.7.0. We ran part 1's page against them. A security advisory fixes url.full in instrumentation-fetch and instrumentation-xml-http-request, and the new packages do not redact by default either. What to do today.
+date: 2026-11-13
+tags: [opentelemetry, browser, community]
+series: "OpenTelemetry in the browser"
+part: 5
+---
+import Note from '../../components/Note.astro';
+import BrowserHistory from '../../components/diagrams/BrowserHistory.astro';
+
+[Part 4](/blog/otel-browser-sig-2026-11-05/) covered the week of 5 November, when browser-sdk 0.7.0 got a GitHub tag and never reached npm. This part covers the meeting of **Thursday 12 November 2026** and what happened from 6 to 13 November. The short version: the next release did reach npm, as 0.8.0, and the version number hides the breaking changes.
+
+<Note title="Sources for this post">
+The SIG's public [meeting notes](https://docs.google.com/document/d/1G3yBAV5SzWBO3mmsBUos5bsn4yxsqkS1MLWl1urVojQ) (read on 13 November 2026), merged and open PRs, issues and releases in [opentelemetry-browser](https://github.com/open-telemetry/opentelemetry-browser) and [opentelemetry-js](https://github.com/open-telemetry/opentelemetry-js), the published security advisories of opentelemetry-js, [semantic-conventions-client-side](https://github.com/open-telemetry/semantic-conventions-client-side) and [semantic-conventions](https://github.com/open-telemetry/semantic-conventions), and the npm registry. No recordings, Slack or YouTube.
+</Note>
+
+<Note type="tip" title="The short answer, 13 November 2026">
+[Part 1](/blog/otel-browser-state-2026-10/)'s package advice changes: use `@opentelemetry/browser-sdk@0.8.0` and `@opentelemetry/browser-instrumentation@0.11.0`, still with `@opentelemetry/api@1.9.1`. Coming from 0.6.0 and 0.9.0, work through [the upgrade notes below](#if-you-use-browser-sdk-and-browser-instrumentation); the release notes alone will not tell you what breaks. If you use the classic `instrumentation-fetch` or `instrumentation-xml-http-request`, [upgrade to 0.223.2 or 0.301.2](#if-you-use-the-classic-fetch-or-xhr-packages) today.
+</Note>
+
+## The week at a glance
+
+<BrowserHistory
+  caption="6 to 13 November 2026. Every entry links its PR, release, advisory or the meeting notes. Untick a track to hide it."
+  tracks={[
+    { id: 'sig', label: 'SIG meetings', tone: 'info' },
+    { id: 'repo', label: 'opentelemetry-browser', tone: 'ok' },
+    { id: 'js', label: 'OTel JS', tone: 'accent' },
+    { id: 'sec', label: 'Security advisories', tone: 'bad' },
+  ]}
+  items={[
+    { date: '2026-11-06', track: 'repo', title: 'Timing events use the entry start time (#540)', body: 'Resource and navigation timing records were stamped with the emit time.', href: 'https://github.com/open-telemetry/opentelemetry-browser/pull/540' },
+    { date: '2026-11-06', track: 'repo', title: 'PR #555 opened: resource detectors in the SDK config (breaking)', href: 'https://github.com/open-telemetry/opentelemetry-browser/pull/555' },
+    { date: '2026-11-09', track: 'js', title: 'OTel JS 3.1.1 and 2.12.1', body: 'Fix the host detector of <code>@opentelemetry/resources</code>.', href: 'https://github.com/open-telemetry/opentelemetry-js/releases/tag/v3.1.1' },
+    { date: '2026-11-09', track: 'repo', title: 'applyCustomLogRecordData deprecated (#462)', href: 'https://github.com/open-telemetry/opentelemetry-browser/pull/462' },
+    { date: '2026-11-11', track: 'repo', title: 'browser-api 0.1.0, browser-instrumentation 0.11.0, browser-sdk 0.8.0 on npm', body: 'From release PR #554.', href: 'https://github.com/open-telemetry/opentelemetry-browser/pull/554' },
+    { date: '2026-11-11', track: 'repo', title: 'Long Animation Frames instrumentation merged (#429)', body: 'Not on npm yet.', href: 'https://github.com/open-telemetry/opentelemetry-browser/pull/429' },
+    { date: '2026-11-12', track: 'js', title: 'instrumentation-fetch and -xml-http-request 0.301.2 and 0.223.2', body: 'Redact credentials and signed URL parameters in <code>url.full</code>.', href: 'https://github.com/open-telemetry/opentelemetry-js/releases/tag/experimental%2Fv0.301.2' },
+    { date: '2026-11-12', track: 'sig', title: 'Browser SIG meeting: seven attendees, four agenda items', href: 'https://docs.google.com/document/d/1G3yBAV5SzWBO3mmsBUos5bsn4yxsqkS1MLWl1urVojQ' },
+    { date: '2026-11-12', track: 'repo', title: 'Document load span merged (#504)', body: 'Not on npm yet. Release PR #562 lists it.', href: 'https://github.com/open-telemetry/opentelemetry-browser/pull/504' },
+    { date: '2026-11-12', track: 'sec', title: 'GHSA-qmwq-c476-x7q2 published', body: 'Signed URL values and URL credentials exported in <code>url.full</code>.', href: 'https://github.com/open-telemetry/opentelemetry-js/security/advisories/GHSA-qmwq-c476-x7q2' },
+  ]}
+/>
+
+## What the SIG discussed on 12 November
+
+The notes list seven attendees, from Grafana Labs, Elastic, Microsoft and Google/Firebase, and four agenda items. Under them the notes record no discussion and no decision, so we report what was put on the table and where each thread stands in GitHub.
+
+- **Config options that invalidate each other** (David Luna). Two threads. [#558](https://github.com/open-telemetry/opentelemetry-browser/issues/558): the SDK always registers its own `DiagConsoleLogger`, so a logger you registered before starting the SDK is replaced. The issue gives Elastic's browser distribution as an example that has to work around this. In the comments, one proposal adds a `diagLogger` option; David Luna prefers fewer overlapping options and suggests replacing `logLevel` with a `logger` option plus a `getDefaultLogger(level)` helper. [#555](https://github.com/open-telemetry/opentelemetry-browser/pull/555), marked breaking, lets you pass resource detectors in the SDK config and makes logs and traces share one resource. A comment after the meeting suggests treating `startTracesSdk()` and `startLogsSdk()` as lower-level APIs that require a `resource`. Neither is settled.
+- **The base export URL** (Martin Kuba). [#493](https://github.com/open-telemetry/opentelemetry-browser/issues/493) reports that the SDK drops the path of a root export URL, so `http://host/otlp-http` exports to `http://host/v1/traces`. The fix in [#495](https://github.com/open-telemetry/opentelemetry-browser/pull/495) went another way: it removes the root URL and makes every signal take its full URL. On 10 November, Martin Kuba [listed the decisions](https://github.com/open-telemetry/opentelemetry-browser/issues/493#issuecomment-6777600888) still open: keep the root URL and fix it, or remove it, and in each case what happens to `quickStartBrowserSdk()`, root headers and the default URL. #495 is approved and still open.
+- **The document load span** (Aditya Reddy). [#504](https://github.com/open-telemetry/opentelemetry-browser/pull/504) merged at 17:12 UTC on 12 November, about forty minutes after the call started. It adds a `documentLoad` span from the navigation entry's `fetchStart` to `loadEventEnd`, with `url.full` redacted by default. It starts its own trace. This is the first of the three document-load changes the SIG agreed on 22 October, according to the [notes](https://docs.google.com/document/d/1G3yBAV5SzWBO3mmsBUos5bsn4yxsqkS1MLWl1urVojQ); the link to the server's trace (a meta tag) comes in a later PR.
+- **Firebase Crashlytics for the web** (Chris Chestnut, Google/Firebase). An FYI: the [Crashlytics Web SDK](https://firebase.google.com/docs/reference/js/crashlytics) is in public preview. We did not check how, or whether, it uses OpenTelemetry.
+
+The notes for 5 November still have an empty agenda, so [part 4](/blog/otel-browser-sig-2026-11-05/#what-the-sig-discussed-on-5-november) stands as written. [#535](https://github.com/open-telemetry/opentelemetry-browser/issues/535), the session id in baggage, had no new comments this week.
+
+## What merged and what shipped
+
+### browser-sdk 0.8.0, browser-instrumentation 0.11.0 and browser-api 0.1.0
+
+Part 4 ended with [#552](https://github.com/open-telemetry/opentelemetry-browser/pull/552), the new `@opentelemetry/browser-api` package, still waiting. It merged on 11 November, release PR [#554](https://github.com/open-telemetry/opentelemetry-browser/pull/554) merged 18 minutes later, and the three packages were on npm at 00:51 UTC:
+
+```bash
+npm view @opentelemetry/browser-sdk dist-tags
+```
+
+```text
+{ latest: '0.8.0' }
+```
+
+npm goes from 0.6.0 straight to 0.8.0. The [0.8.0 release notes](https://github.com/open-telemetry/opentelemetry-browser/releases/tag/browser-sdk-v0.8.0) compare against the 0.7.0 tag, so they list one feature and a dependency update and no breaking change. Coming from npm, you also get everything in [0.7.0](https://github.com/open-telemetry/opentelemetry-browser/releases/tag/browser-sdk-v0.7.0) and [browser-instrumentation 0.10.0](https://github.com/open-telemetry/opentelemetry-browser/releases/tag/browser-instrumentation-v0.10.0), including the two breaking changes: no default HTTP exporter ([#532](https://github.com/open-telemetry/opentelemetry-browser/pull/532)) and the browser-native `InstrumentationBase` ([#278](https://github.com/open-telemetry/opentelemetry-browser/pull/278)). Part 4 expected this; it happened.
+
+What else is new for you, if you come from 0.6.0 and 0.9.0:
+
+- **No more peer dependency between the two packages.** browser-sdk 0.8.0 declares only `@opentelemetry/api` ^1.9.1 as a peer. Both packages depend on `@opentelemetry/browser-api` ^0.1.0 instead.
+- **Still the OTel JS 2.12 line.** The tree resolves `core`, `resources` and `sdk-trace` 2.12.1 and `sdk-logs`, `api-logs` and the exporters 0.223.2. Moving to JS 3.x is still [#548](https://github.com/open-telemetry/opentelemetry-browser/pull/548), open and marked breaking.
+- **`reportSoftNavs`** for web vitals ([#512](https://github.com/open-telemetry/opentelemetry-browser/pull/512)), which part 4 described, is now released, with the new `browser.web_vital.navigation_id` and `browser.web_vital.navigation_url` attributes.
+- **Timing events carry the time they describe** ([#540](https://github.com/open-telemetry/opentelemetry-browser/pull/540)), not the time they were emitted.
+- **`applyCustomLogRecordData` is deprecated** ([#462](https://github.com/open-telemetry/opentelemetry-browser/pull/462)). Use a `LogRecordProcessor` instead.
+- **Writing your own instrumentation:** the published `@opentelemetry/browser-api` 0.1.0 exports `InstrumentationBase` and the `Instrumentation` and `InstrumentationDeps` types from its package root. #552's description said `./experimental/instrumentation`; the published `exports` map has only `.`.
+
+### Merged after the release, not on npm yet
+
+The open release PR [#562](https://github.com/open-telemetry/opentelemetry-browser/pull/562) previews browser-instrumentation 0.12.0 and browser-sdk 0.8.1:
+
+- **Document load span** ([#504](https://github.com/open-telemetry/opentelemetry-browser/pull/504)), described above.
+- **Long Animation Frames** ([#429](https://github.com/open-telemetry/opentelemetry-browser/pull/429)), the successor to the deprecated Long Tasks API. It emits one log record per long frame with its timing breakdown and the scripts behind it. Script URLs are redacted by default.
+- **A sturdier `instrumentations` list** ([#537](https://github.com/open-telemetry/opentelemetry-browser/pull/537)): a `null` entry no longer makes `startBrowserSdk` throw, and a class passed instead of an instance logs one error instead of one per `enable()`.
+
+### OTel JS: a security fix for the classic fetch and XHR packages
+
+On 12 November, opentelemetry-js published advisory [GHSA-qmwq-c476-x7q2](https://github.com/open-telemetry/opentelemetry-js/security/advisories/GHSA-qmwq-c476-x7q2), rated moderate. `@opentelemetry/instrumentation-fetch` and `@opentelemetry/instrumentation-xml-http-request` wrote the request URL into `url.full` exactly as requested, so credentials in a URL and the signatures of presigned S3, GCS and Azure SAS URLs went to your tracing backend. The semantic conventions say `url.full` must not contain credentials and should redact known sensitive query parameters. The fix redacts both, in [0.301.2](https://github.com/open-telemetry/opentelemetry-js/releases/tag/experimental%2Fv0.301.2) for the 3.x line and [0.223.2](https://github.com/open-telemetry/opentelemetry-js/releases/tag/experimental%2Fv0.223.2) for the 2.x line. The redacted parameters are `sig`, `Signature`, `AWSAccessKeyId`, `X-Goog-Signature`, `X-Amz-Signature`, `X-Amz-Credential` and `X-Amz-Security-Token`.
+
+Also this week, [3.1.1 and 2.12.1](https://github.com/open-telemetry/opentelemetry-js/releases/tag/v3.1.1) fix [GHSA-qrww-3xmv-qhgm](https://github.com/open-telemetry/opentelemetry-js/security/advisories/GHSA-qrww-3xmv-qhgm) in the host detector of `@opentelemetry/resources`, which runs the `ioreg` and `kenv` commands. That code path does not run in a browser, but a fresh lock file for browser-sdk picks up 2.12.1 anyway.
+
+### Conventions
+
+A quiet week. The client-side repository merged only dependency updates and is still at [v0.1.0-dev](https://github.com/open-telemetry/semantic-conventions-client-side/releases/tag/v0.1.0-dev). The moves of `session`, `app` and `device` ([client-side #48](https://github.com/open-telemetry/semantic-conventions-client-side/pull/48), [#51](https://github.com/open-telemetry/semantic-conventions-client-side/pull/51); core [#4306](https://github.com/open-telemetry/semantic-conventions/pull/4306), [#4308](https://github.com/open-telemetry/semantic-conventions/pull/4308)) and the INP attribution issue ([#35](https://github.com/open-telemetry/semantic-conventions-client-side/issues/35)) are open with no new comments. In core, no merged PR touched `model/browser` or `model/session`.
+
+**npm deprecation flags** are as in part 4: `sdk-trace-web`, `sdk-trace-base` and `api-events` are flagged; `instrumentation-fetch`, `instrumentation-xml-http-request` and `instrumentation-web-exception` are not.
+
+Mobile: we found nothing this week that changes RUM, so this part has no mobile section.
+
+## What this means if you instrument a web app today
+
+**What we ran.** On macOS on Apple silicon, with Node.js 24.15.0, npm 11.12.1, Docker 29.3.1, Vite 8.3.5, Collector contrib 0.164.0 and headless Chrome for Testing 156.0.8078.4 driven by Playwright 1.58.2, on 13 November 2026. We took [part 1's page](/blog/otel-browser-state-2026-10/#build-it-one-page-the-new-packages-a-local-collector) unchanged, ran it once with its own lock file (0.6.0 and 0.9.0) and once after installing 0.8.0 and 0.11.0, and compared what the collector printed. We also built both with `vite build`.
+
+### If you use browser-sdk and browser-instrumentation
+
+Upgrade both packages in one command and pin them:
+
+```bash
+npm install --save-exact @opentelemetry/browser-sdk@0.8.0 @opentelemetry/browser-instrumentation@0.11.0
+```
+
+Keep `@opentelemetry/api` at 1.9.1. Then go through [part 3's checklist](/blog/otel-browser-sig-2026-10-29/#before-you-upgrade-to-browser-sdk-070), which describes the 0.7.0 changes you now get. Its first item, the matching peer, no longer applies. The others do: give every signal its export URL, use `enabled: false` (not `disabled: true`) for consent, remove `enabled` from instrumentation configs, and pass `instrumentations` only to `startBrowserSdk` or `quickStartBrowserSdk`.
+
+**What changed in our run.** Part 1's `src/otel.js` already gives each signal its full URL and passes `instrumentations` to `startBrowserSdk`, so it ran unchanged. The browser made the same three exports, two `POST /v1/logs` and one `POST /v1/traces`. Comparing attribute names record by record, the only new attribute was `browser.web_vital.navigation_id` on each web vital event. The scope versions changed from 0.9.0 to 0.11.0, so update any query that filters on them.
+
+One timestamp moved. In 0.9.0, the `browser.navigation_timing` record's timestamp was the moment it was emitted. In 0.11.0, it is the start of the navigation entry, 89 ms before the collector-side observed time in our run. If you plot navigation timing records, they now sit at page start.
+
+The bundle stayed the same size: 119.31 kB (35.12 kB gzipped) against 119.30 kB (35.04 kB) for 0.6.0.
+
+**Upgrading only one package now installs.** Without the peer, browser-sdk 0.8.0 with browser-instrumentation 0.9.0 installed with no warning, and in our page it exported the same events. That is one page with five instrumentations, not a guarantee; upgrade both together.
+
+### If you use the classic fetch or XHR packages
+
+Upgrade now, within your generation:
+
+| Your line | Upgrade to |
+|---|---|
+| 2.x, API 1.9.1 | `instrumentation-fetch` and `instrumentation-xml-http-request` 0.223.2 |
+| 3.x, API 1.10.0 | `instrumentation-fetch` and `instrumentation-xml-http-request` 0.301.2 |
+
+The pairing rules from [part 4](/blog/otel-browser-sig-2026-11-05/#if-you-use-the-classic-fetch-or-xhr-packages) still hold. If your app ever requested presigned URLs, those signatures are already in your tracing backend; check how long they stay valid and how long you keep spans.
+
+### The new fetch and XHR do not redact by default either
+
+The advisory covers the classic packages only. We checked the new ones: in browser-instrumentation 0.11.0, the fetch and XHR instrumentations write `url.full` as is unless you pass `sanitizeUrl`. In our page, a request to `/price.json?X-Amz-Signature=abc123&sku=tea-01` reached the collector with the signature intact.
+
+On `main`, a `defaultSanitizeUrl` helper exists and the document load and Long Animation Frames instrumentations use it, and [#472](https://github.com/open-telemetry/opentelemetry-browser/pull/472) (approved, open) adds the signed URL parameters to it. None of that is in 0.11.0. Until then, pass your own function. This is the one we ran:
+
+```js title="src/otel.js (excerpt)"
+// Query parameters the semantic conventions list as sensitive.
+const SENSITIVE = ['AWSAccessKeyId', 'Signature', 'sig', 'X-Goog-Signature',
+  'X-Amz-Credential', 'X-Amz-Security-Token', 'X-Amz-Signature'];
+
+function redactUrl(raw) {
+  const url = new URL(raw, location.href);
+  if (url.username || url.password) {
+    url.username = 'REDACTED';
+    url.password = 'REDACTED';
+  }
+  for (const key of SENSITIVE) {
+    if (url.searchParams.has(key)) url.searchParams.set(key, 'REDACTED');
+  }
+  return url.href;
+}
+
+// in startBrowserSdk({ instrumentations: [...] })
+new FetchInstrumentation({ sanitizeUrl: redactUrl }),
+```
+
+With it, the collector printed:
+
+```text
+-> url.full: Str(http://localhost:5173/price.json?X-Amz-Signature=REDACTED&sku=tea-01)
+```
+
+Add your own parameters to the list (tokens, emails), and pass the same function to `XhrInstrumentation` if you use it. We did not test credentials in the URL, because `fetch()` refuses such URLs; the branch is there for XHR.
+
+### If you write your own instrumentation
+
+Extend `InstrumentationBase` from `@opentelemetry/browser-api`, now on npm, and depend on it as a regular dependency. Its `VERSIONING.md` rules, from #552, say not to check `instanceof InstrumentationBase`, and that until 1.0 a breaking change can still come in a minor, marked as breaking.
+
+### If you configure the export URL at the root
+
+Our page sets a URL per signal. If you pass only a root `exportConfig.url` or `quickStartBrowserSdk({ exportUrl })` with a path, [#493](https://github.com/open-telemetry/opentelemetry-browser/issues/493) applies: the path is dropped. Set full per-signal URLs; that works now and is where #495 is heading.
+
+## What to watch next week
+
+- **Release PR [#562](https://github.com/open-telemetry/opentelemetry-browser/pull/562)**: browser-instrumentation 0.12.0 with the document load span and Long Animation Frames. We will run both.
+- **[#472](https://github.com/open-telemetry/opentelemetry-browser/pull/472)** and whether fetch and XHR in this repository start redacting `url.full` by default.
+- **The root export URL** ([#493](https://github.com/open-telemetry/opentelemetry-browser/issues/493), [#495](https://github.com/open-telemetry/opentelemetry-browser/pull/495)) and **the logger and resource options** ([#558](https://github.com/open-telemetry/opentelemetry-browser/issues/558), [#555](https://github.com/open-telemetry/opentelemetry-browser/pull/555)): three changes to the SDK config, two of them breaking.
+- **[#548](https://github.com/open-telemetry/opentelemetry-browser/pull/548)**, OTel JS 3.x for the browser packages, now unblocked by #552.
+- **The 12 November notes.** If discussion or decisions are added, next week's part will report them.
