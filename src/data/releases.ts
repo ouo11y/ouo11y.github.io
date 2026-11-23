@@ -96,7 +96,7 @@ export interface Release {
   note: string;          // one line, what a user gets
 }
 
-export type TrainId = 'first-tags' | 'ouo11y-images' | 'sdks-npm' | 'data-lifecycle' | 'funnels' | 'replay-tiles' | 'spec-sdks';
+export type TrainId = 'first-tags' | 'ouo11y-images' | 'sdks-npm' | 'data-lifecycle' | 'funnels' | 'replay-tiles' | 'spec-sdks' | 'sentry-mirrors';
 
 export interface Train { id: TrainId; title: string; announcement: string; }
 
@@ -109,6 +109,7 @@ export const trains: Train[] = [
   { id: 'funnels', title: 'Funnels, readable stacks, browser 0.3', announcement: '2026-10-26-funnels-stacks-browser-0-3' },
   { id: 'replay-tiles', title: 'Replay tiles, native crash symbols, React Native 0.3', announcement: '2026-11-01-replay-tiles-react-native-0-3' },
   { id: 'spec-sdks', title: 'SDKs on the client spec, Muninn, the replay kit', announcement: '2026-11-15-spec-sdks-muninn-kit' },
+  { id: 'sentry-mirrors', title: 'Collector 0.6: Sentry mirrors and passthrough', announcement: '2026-11-20-collector-0-6-sentry-mirrors' },
 ];
 
 export const releases: Release[] = [
@@ -208,6 +209,11 @@ export const releases: Release[] = [
   { pkg: 'muninn', version: '0.2.0', at: '2026-11-15T02:16:58Z', train: 'spec-sdks', tagged: true,
     image: 'ghcr.io/ouo11y/muninn:0.2.0', digest: 'sha256:b4a1e95d346572372712aa8f6cd901146b96b9386d403126fe9b39da95fc3172',
     note: 'Source map and dSYM uploads with a per-project upload token, project delete and an audit log behind an admin token. Breaking.' },
+
+  // 20 November. No line in docs/compatibility.md for collector 0.6 yet, so no `needs`.
+  { pkg: 'collector', version: '0.6.0', at: '2026-11-20T13:16:21Z', train: 'sentry-mirrors', tagged: true,
+    image: 'ghcr.io/ouo11y/collector:0.6.0', digest: 'sha256:24c72d71cbf6e38e6221ae8c7c1e60b560eedeb535fd9d078959b26cab314127',
+    note: 'Sentry bridge mirrors and passthrough to production Sentry, user reports held until their error, the file_storage extension Muninn needs.' },
 ];
 
 // Announcements that are not releases, shown as flags on the timeline.
