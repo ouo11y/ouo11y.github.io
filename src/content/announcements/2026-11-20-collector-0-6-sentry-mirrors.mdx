@@ -1,0 +1,65 @@
+---
+title: "Collector 0.6: Sentry bridge mirrors and passthrough, and a collector that can feed Muninn"
+description: "collector 0.6.0 lets the Sentry bridge copy each project's envelopes to more Sentry instances and send what it does not serve on to production Sentry. Sentry user reports now wait for their error, and the image includes the file_storage extension that Muninn's Collector needs."
+date: 2026-11-20
+kind: release
+tags: [release, collector, sentry, muninn, upgrade]
+---
+
+import ReleaseTable from '../../components/announcements/ReleaseTable.astro';
+import Note from '../../components/Note.astro';
+
+collector 0.6.0 came out on 20 November and is the only release this time. rum-api, the grafana image, the Helm chart, Muninn and the SDKs did not change. They stay at the versions in [the last release](/announcements/2026-11-15-spec-sdks-muninn-kit/).
+
+<ReleaseTable train="sentry-mirrors" />
+
+## What is new
+
+### For a Sentry bridge in front of production
+
+**Mirrors.** A project in the bridge's project table can now list `mirrors`. These are other Sentry instances that each get a copy of the project's envelopes. One use is a second, self-hosted Sentry that you want to compare with production on real traffic. The SDK sees only the primary's answer. The bridge sends that answer first and queues the copies after it, so a slow or failing mirror cannot change what production gets or how fast the app hears back. A copy that does not fit in the queue is dropped, and a failed send is not retried. Both are counted in `ouo_sentry_mirror_requests_total`. A mirror can have its own `sentry_project_id` and `public_key`. When it does, the bridge rewrites only those values in the copy.
+
+```yaml
+mirrors:
+  - name: preview
+    upstream: https://sentry-preview.example.com
+    sentry_project_id: "7"                 # optional: the mirror's own project id
+    public_key: "<preview DSN public key>" # optional: the mirror's own key
+```
+
+**Passthrough.** A new `passthrough_upstream` setting takes one base URL, normally your production Sentry ingest host. With it set, every request the bridge does not handle goes there unchanged: an unknown or missing key, an unknown project, or another ingest endpoint such as `store` or `minidump`. Without it, the bridge answers `403`, `404` or `405` as before. Sentry SDKs delete an envelope after a `4xx` other than `429`, so with this set, a missing row in the project table no longer loses production events. Leave it unset when the bridge already gets its traffic as a mirror copy, or production receives those envelopes twice.
+
+### For Sentry user feedback
+
+A Sentry user report that arrives before its error now waits for that error, for up to a minute by default. Then it goes to the error's session, even when the report got there first. If the error never arrives, the report is still stored, without a session.
+
+### For Muninn
+
+The image now includes the OpenTelemetry `file_storage` extension. The Collector configuration that feeds [Muninn](/announcements/2026-11-15-spec-sdks-muninn-kit/) needs that extension, so you no longer need a contrib Collector build for it. Nothing else changes for Muninn: the collector's default configuration still sends replay records from the 0.4 SDKs to Loki, and Muninn is still not in the [one-file stack](/docs/start/quickstart/) or the [Helm chart](/docs/operate/helm/).
+
+### Security
+
+The collector now uses `klauspost/compress` v1.20.2, which fixes GO-2026-6865.
+
+## Get it
+
+```bash
+docker pull ghcr.io/ouo11y/collector:0.6.0
+```
+
+The image is public, built for linux/amd64 and linux/arm64. In the one-file stack, set the version in `.env`:
+
+```ini
+OUO_COLLECTOR_VERSION=0.6.0
+```
+
+## Upgrade
+
+- The collector's changelog marks 0.6.0 as breaking, but the breaking entry is the React Native 0.4 change [announced on 15 November](/announcements/2026-11-15-spec-sdks-muninn-kit/). The release notes list no renamed or removed collector setting.
+- `mirrors` and `passthrough_upstream` are off unless you set them. With neither set, the bridge forwards and answers as it did in 0.5.
+- Upgrade in the usual order: rum-api, then the grafana image, then the collector, then the SDKs. [Upgrading](/docs/operate/upgrade/) has the steps.
+- [Sentry bridge](/docs/operate/sentry-bridge/) and [Collector](/docs/operate/collector/) do not cover mirrors and passthrough yet. They still show older image tags.
+
+<Note title="Which versions work together">
+The compatibility matrix has no line for collector 0.6 yet, and the release notes name no new requirement. Its predecessor, collector 0.5, needs rum-api 0.2.0 or newer, and rum-api 0.6.0 or newer for replay schema 2. The last set released and verified together is still collector 0.5.0, rum-api 0.6.0, grafana image 0.6.0 and Helm chart 0.2.0. The chart's default collector is still 0.5.0.
+</Note>
