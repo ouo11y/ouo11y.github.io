@@ -1,0 +1,120 @@
+---
+title: "Browser SIG, 26 November 2026: no call, session and device leave core semantic conventions, and the OpenTelemetry demo moves to browser-sdk"
+description: "There was no Browser SIG meeting on 26 November and no browser package release. Core semantic conventions deprecated the session, app and device namespaces in favour of the client-side registry, the OpenTelemetry demo's frontend now runs on @opentelemetry/browser-sdk, and release PR #571 previews browser-sdk 0.9.2 with fetch and XHR skipping suppressed requests."
+date: 2026-11-27
+tags: [opentelemetry, browser, community]
+series: "OpenTelemetry in the browser"
+part: 7
+---
+import Note from '../../components/Note.astro';
+import BrowserHistory from '../../components/diagrams/BrowserHistory.astro';
+import Flow from '../../components/diagrams/Flow.astro';
+
+[Part 6](/blog/otel-browser-sig-2026-11-19/) covered the meeting of 19 November and browser-sdk 0.9.1. This part covers **20 to 27 November 2026**. It is a short week: the SIG did not meet, and nothing new reached npm. Two things still matter if you instrument a web app: where `session.id` is defined is changing, and there is now a full reference app on the new browser SDK.
+
+<Note title="Sources for this post">
+The SIG's public [meeting notes](https://docs.google.com/document/d/1G3yBAV5SzWBO3mmsBUos5bsn4yxsqkS1MLWl1urVojQ) (read on 27 November 2026), merged and open PRs, issues and releases in [opentelemetry-browser](https://github.com/open-telemetry/opentelemetry-browser), [opentelemetry-js](https://github.com/open-telemetry/opentelemetry-js), [opentelemetry-demo](https://github.com/open-telemetry/opentelemetry-demo), [semantic-conventions](https://github.com/open-telemetry/semantic-conventions) and [semantic-conventions-client-side](https://github.com/open-telemetry/semantic-conventions-client-side), the [opentelemetry-android](https://github.com/open-telemetry/opentelemetry-android/releases) and [opentelemetry-swift](https://github.com/open-telemetry/opentelemetry-swift/releases) releases, and the npm registry. No recordings, Slack or YouTube.
+</Note>
+
+<Note type="tip" title="The short answer, 27 November 2026">
+[Part 6](/blog/otel-browser-sig-2026-11-19/#what-this-means-if-you-instrument-a-web-app-today)'s package advice stands: `@opentelemetry/browser-sdk@0.9.1` and `@opentelemetry/browser-instrumentation@0.12.1` with `@opentelemetry/api@1.10.0`. Nothing you have deployed changes this week. Keep emitting `session.id`; the name stays, only the registry that defines it moves.
+</Note>
+
+## The week at a glance
+
+<BrowserHistory
+  caption="20 to 27 November 2026. Every entry links its PR, release or the meeting notes. Untick a track to hide it."
+  tracks={[
+    { id: 'sig', label: 'SIG meetings', tone: 'info' },
+    { id: 'repo', label: 'opentelemetry-browser', tone: 'ok' },
+    { id: 'conv', label: 'Conventions', tone: 'accent' },
+    { id: 'mobile', label: 'Mobile and demo', tone: 'warn' },
+  ]}
+  items={[
+    { date: '2026-11-20', track: 'repo', title: 'The sandbox opts in to the browser resource detector (#575)', body: 'Sandbox only. The SDK still leaves the detector off by default.', href: 'https://github.com/open-telemetry/opentelemetry-browser/pull/575' },
+    { date: '2026-11-21', track: 'conv', title: 'Core deprecates session and app (#4306)', body: 'Moved to the client-side registry. Not in a core release yet.', href: 'https://github.com/open-telemetry/semantic-conventions/pull/4306' },
+    { date: '2026-11-23', track: 'conv', title: 'Core reserves the app and session namespaces (#4363)', href: 'https://github.com/open-telemetry/semantic-conventions/pull/4363' },
+    { date: '2026-11-24', track: 'repo', title: 'Fetch and XHR skip requests made under suppressTracing (#559)', body: 'Not on npm yet; release PR #571 lists it.', href: 'https://github.com/open-telemetry/opentelemetry-browser/pull/559' },
+    { date: '2026-11-26', track: 'sig', title: 'No meeting: the notes have no entry for 26 November', href: 'https://docs.google.com/document/d/1G3yBAV5SzWBO3mmsBUos5bsn4yxsqkS1MLWl1urVojQ' },
+    { date: '2026-11-26', track: 'mobile', title: 'The OpenTelemetry demo frontend moves to browser-sdk 0.9.1 (#4329)', href: 'https://github.com/open-telemetry/opentelemetry-demo/pull/4329' },
+    { date: '2026-11-26', track: 'repo', title: 'Breaking PR: the Navigation API by default (#578)', href: 'https://github.com/open-telemetry/opentelemetry-browser/pull/578' },
+    { date: '2026-11-27', track: 'mobile', title: 'OpenTelemetry Swift 3.0.0, pre-release', href: 'https://github.com/open-telemetry/opentelemetry-swift/releases/tag/3.0.0' },
+  ]}
+/>
+
+## No meeting on 26 November
+
+The [meeting notes](https://docs.google.com/document/d/1G3yBAV5SzWBO3mmsBUos5bsn4yxsqkS1MLWl1urVojQ) go from the 19 November entry straight to one for **3 December**. 26 November was US Thanksgiving. The 3 December entry is an agenda written ahead of the call, and its one item so far is the demo change described [below](#the-opentelemetry-demo-now-runs-on-browser-sdk), with a follow-up to update the demo's page on opentelemetry.io. Nothing was discussed or decided this week, so there is nothing to report from the SIG itself.
+
+## Session, app and device leave core semantic conventions
+
+Part 6 said the moves of `session`, `app` and `device` to the client-side registry were still open. Half of each move has now merged in core:
+
+- **Core [#4306](https://github.com/open-telemetry/semantic-conventions/pull/4306)**, merged 21 November, deprecates `session.id`, `session.previous_id`, the session events and the `app` attributes, events and entity. Each keeps its definition with a note that it moved to the client-side repository, and is excluded from dependency resolution, so registries that build on core pick up the client-side copies instead.
+- **Core [#4308](https://github.com/open-telemetry/semantic-conventions/pull/4308)** did the same for `device`. It merged on 18 November, before part 6 was written; part 6 listed it as open, which was wrong.
+- **Core [#4363](https://github.com/open-telemetry/semantic-conventions/pull/4363)**, merged 23 November, reserves `app.*` and `session.*` for the client-side registry, using the namespace policy that [#4332](https://github.com/open-telemetry/semantic-conventions/pull/4332) added on 21 November. New non-deprecated definitions in those namespaces are now rejected in core.
+
+The other half is not merged. [Client-side #48](https://github.com/open-telemetry/semantic-conventions-client-side/pull/48), which adds `session` and `app` there, was pinned to the merged core commit on 23 November and waits for review. [Client-side #51](https://github.com/open-telemetry/semantic-conventions-client-side/pull/51) (`device`) has changes requested. For `browser.*`, core [#4337](https://github.com/open-telemetry/semantic-conventions/pull/4337) now has two approvals (21 and 24 November) and a reviewer request to reserve `browser` as well; [client-side #62](https://github.com/open-telemetry/semantic-conventions-client-side/pull/62) waits for it.
+
+<Flow
+  caption="Where session.id is defined on 27 November 2026. The attribute name does not change at any step."
+  columns={[
+    { label: 'Released', nodes: [{ title: 'Core v1.45.0', sub: '2 November. <code>session.*</code>, <code>app.*</code>, <code>device.*</code> active', tone: 'ok' }], arrow: 'merged' },
+    { label: 'Core main', nodes: [{ title: 'Deprecated, "moved"', sub: '#4306, #4308; namespaces reserved by #4363', tone: 'warn' }], arrow: 'open' },
+    { label: 'Client-side', nodes: [{ title: 'New home', sub: '#48 (session, app), #51 (device); still v0.1.0-dev', tone: 'info' }] },
+  ]}
+/>
+
+**What it means for you.** Nothing breaks today. The last core release is still [v1.45.0](https://github.com/open-telemetry/semantic-conventions/releases/tag/v1.45.0), and the `@opentelemetry/semantic-conventions` package the browser SDK depends on is 1.45.0. Once a core release ships with these changes, expect `session.id` and the `device.*` and `app.*` attributes to show as deprecated in generated constants and docs, with the definition living in the client-side registry under the same name. Your queries and dashboards do not change. If you generate code or docs from the core registry, plan to add the client-side registry as a source.
+
+## What merged in opentelemetry-browser
+
+Three changes merged, none of them on npm yet:
+
+- **Fetch and XHR skip suppressed requests** ([#559](https://github.com/open-telemetry/opentelemetry-browser/pull/559), merged 24 November). When a request runs under `suppressTracing()`, as the OTLP exporters' own requests do, the wrappers now call the original `fetch` or `send` directly: no span, no request hooks, no injected headers. The PR calls this a backstop. A propagator that ignored suppression used to add headers to export requests; that stops. Resource timing entries arrive after the request and outside any context, so [#482](https://github.com/open-telemetry/opentelemetry-browser/pull/482), which matches the export URLs, is still needed. It is approved and still open.
+- **The sandbox runs the browser resource detector** ([#575](https://github.com/open-telemetry/opentelemetry-browser/pull/575), 20 November). Only the repository's sandbox changed. The PR is a useful reminder: `startBrowserSdk` sets only `service.*` and `telemetry.sdk.*` on the resource. You get `user_agent.original` and the `browser.*` Client Hints attributes only if you merge `browserDetector` in yourself, a privacy decision the SDK leaves to the app. [#555](https://github.com/open-telemetry/opentelemetry-browser/pull/555), which adds a resource detectors option to the SDK, is approved and still open.
+- **A README example for the b3 meta tag** ([#574](https://github.com/open-telemetry/opentelemetry-browser/pull/574)), for the document load instrumentation that part 6 saw merged in [#564](https://github.com/open-telemetry/opentelemetry-browser/pull/564).
+
+Release PR [#571](https://github.com/open-telemetry/opentelemetry-browser/pull/571), last updated 26 November, now previews **browser-sdk 0.9.2**, **browser-instrumentation 0.13.0** and **browser-api 0.3.0**: the server trace from meta tags (#564), the kept diag logger ([#566](https://github.com/open-telemetry/opentelemetry-browser/pull/566)), #559 and a dependency update ([#565](https://github.com/open-telemetry/opentelemetry-browser/pull/565)). None of these are breaking.
+
+### The breaking queue
+
+Four open PRs have `!` in their title:
+
+- [#495](https://github.com/open-telemetry/opentelemetry-browser/pull/495): the full export URL per signal in `startBrowserSdk`, as agreed in [#493](https://github.com/open-telemetry/opentelemetry-browser/issues/493#issuecomment-7014837824). Approved.
+- [#555](https://github.com/open-telemetry/opentelemetry-browser/pull/555): resource detectors in the SDK. Approved.
+- [#494](https://github.com/open-telemetry/opentelemetry-browser/pull/494): thrown values that are not `Error` objects are normalized. Its second approval came on 24 November.
+- **New**, [#578](https://github.com/open-telemetry/opentelemetry-browser/pull/578), opened 26 November: `NavigationInstrumentation` uses the Navigation API by default where the browser has it, instead of patching `history.pushState` and `replaceState`. Pass `useNavigationApiIfAvailable: false` to keep the old behaviour. The PR notes that which same-document navigations are recorded can differ, and that the classic `@opentelemetry/instrumentation-browser-navigation` defaults to `false`, so apps that migrate from it switch unless they set the option.
+
+Two non-breaking PRs part 6 tracked also moved: the signed URL redaction [#472](https://github.com/open-telemetry/opentelemetry-browser/pull/472) got a second approval on 24 November, while the document load follow-up [#563](https://github.com/open-telemetry/opentelemetry-browser/pull/563) still waits for review, and INP attribution [#486](https://github.com/open-telemetry/opentelemetry-browser/pull/486) still has the change request from 30 October.
+
+## The OpenTelemetry demo now runs on browser-sdk
+
+[opentelemetry-demo #4329](https://github.com/open-telemetry/opentelemetry-demo/pull/4329), merged 26 November, replaces the demo frontend's hand-built browser setup with `startBrowserSdk` from `@opentelemetry/browser-sdk` 0.9.1 and the fetch instrumentation from `@opentelemetry/browser-instrumentation` 0.12.1. It removes `auto-instrumentations-web`, `context-zone`, `exporter-trace-otlp-http`, `instrumentation` and `opentelemetry-browser-detector` from the frontend, keeps its `SessionIdProcessor`, and resolves one OTel JS generation (core 3.1.1, experimental 0.301.2) for both the Next.js server and the browser. It is marked breaking for people who run or extend the demo.
+
+If you want to see the [migration map from part 1](/blog/otel-browser-state-2026-10/) applied to a real application rather than a single page, the demo's [`src/frontend/utils/telemetry`](https://github.com/open-telemetry/opentelemetry-demo/tree/main/src/frontend/utils/telemetry) folder and its `package.json` are now the place to read. We read the diff; we did not run the demo.
+
+## OpenTelemetry JS, npm and mobile
+
+**OpenTelemetry JS** had no release since 3.1.1 and 0.301.2, which part 5 covered. What merged is more protobuf serializer performance work in `otlp-transformer` ([#7369](https://github.com/open-telemetry/opentelemetry-js/pull/7369), [#7385](https://github.com/open-telemetry/opentelemetry-js/pull/7385), [#7387](https://github.com/open-telemetry/opentelemetry-js/pull/7387)) and dependency updates. As noted in part 6, the browser SDK's exporters send JSON.
+
+**npm.** `@opentelemetry/browser-sdk` is still 0.9.1 (published 17 November) and `@opentelemetry/browser-instrumentation` 0.12.1. The deprecation flags are as in part 6: `sdk-trace-web`, `sdk-trace-base` and `api-events` are flagged (and the old `web` package says it was renamed); `instrumentation-fetch`, `instrumentation-xml-http-request`, `instrumentation-document-load`, `instrumentation-user-interaction`, `instrumentation-long-task`, `instrumentation-web-exception`, `instrumentation-browser-navigation` and `auto-instrumentations-web` are not. The soft deprecation step of [#209](https://github.com/open-telemetry/opentelemetry-browser/issues/209) has not started.
+
+**Mobile.** [OpenTelemetry Swift 3.0.0](https://github.com/open-telemetry/opentelemetry-swift/releases/tag/3.0.0) was published as a pre-release on 27 November. For RUM, its notes list sessions instrumentation that persists cross-signal sampling decisions, a KSCrash crash reporter, launch instrumentation, `app.installation.id` emitted next to `device.id`, many URLSession fixes, and integrations that need third-party packages moved behind SwiftPM package traits. It is a pre-release with renamed and removed semantic convention attributes; read its migration notes before you upgrade. OpenTelemetry Android had no release since [1.9.0](https://github.com/open-telemetry/opentelemetry-android/releases/tag/v1.9.0), covered in part 6.
+
+## What it means if you instrument a web app today
+
+- **If you are on browser-sdk 0.9.1**, there is nothing to do this week.
+- **If you emit `session.id`**, keep it. The name is the same in core and in the client-side registry; only the source of the definition changes, and no released convention version has changed yet.
+- **If you want browser and user agent attributes on your resource**, merge `browserDetector` in yourself, as in [#575](https://github.com/open-telemetry/opentelemetry-browser/pull/575): `detectResources({ detectors: [browserDetector] }).merge(resource)`. Decide first whether you want the raw user agent on every record.
+- **If you use `NavigationInstrumentation`** and rely on it patching `history`, set `useNavigationApiIfAvailable: false` now. It is the default today, and setting it explicitly keeps your behaviour when [#578](https://github.com/open-telemetry/opentelemetry-browser/pull/578) lands.
+- **If your propagator adds headers to the OTLP export requests**, wait for browser-instrumentation 0.13.0, which carries [#559](https://github.com/open-telemetry/opentelemetry-browser/pull/559).
+
+**What we ran.** No package was installed or tested this week, because nothing new reached npm. We ran `npm view` for the versions and deprecation flags above on 27 November 2026, and read the PRs and release notes linked here.
+
+## What to watch next week
+
+- **The 3 December meeting**, the first since 19 November, and the demo documentation follow-up on its agenda.
+- **Release PR [#571](https://github.com/open-telemetry/opentelemetry-browser/pull/571)**: browser-sdk 0.9.2, browser-instrumentation 0.13.0, browser-api 0.3.0. We will run the server trace from meta tags with a real `traceparent`, as planned in part 6.
+- **Which breaking PRs land together**: #495, #555, #494 and the new #578.
+- **Client-side [#48](https://github.com/open-telemetry/semantic-conventions-client-side/pull/48) and [#51](https://github.com/open-telemetry/semantic-conventions-client-side/pull/51)**, which complete the session, app and device moves, and core [#4337](https://github.com/open-telemetry/semantic-conventions/pull/4337) for `browser.*`.
