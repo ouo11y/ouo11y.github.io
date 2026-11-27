@@ -1,14 +1,14 @@
 /* Diagram tokens: work on Starlight pages (--sl-*) and on site pages (--bg, --ink, ...). */
 .dg {
   --dg-bg: var(--sl-color-bg-nav, var(--bg-2, #fff));
-  --dg-node: var(--sl-color-bg, var(--bg, #f7f8fb));
-  --dg-ink: var(--sl-color-white, var(--ink, #0f172a));
-  --dg-ink-2: var(--sl-color-gray-2, var(--ink-2, #475569));
-  --dg-ink-3: var(--sl-color-gray-3, var(--ink-3, #64748b));
-  --dg-line: var(--sl-color-hairline, var(--line, #e2e8f0));
-  --dg-accent: var(--sl-color-accent, var(--accent, #0a6fa6));
-  --dg-accent-soft: var(--sl-color-accent-low, var(--accent-soft, #e0f2fe));
-  --dg-ok: #16a34a; --dg-warn: #d97706; --dg-bad: #e5484d; --dg-info: #7c3aed;
+  --dg-node: var(--sl-color-bg, var(--bg, #faf9f5));
+  --dg-ink: var(--sl-color-white, var(--ink, #1a1915));
+  --dg-ink-2: var(--sl-color-gray-2, var(--ink-2, #5e5b52));
+  --dg-ink-3: var(--sl-color-gray-3, var(--ink-3, #6f6c62));
+  --dg-line: var(--sl-color-hairline, var(--line, #e8e5da));
+  --dg-accent: var(--sl-color-accent, var(--accent, #ad4f2c));
+  --dg-accent-soft: var(--sl-color-accent-low, var(--accent-soft, #f7ece5));
+  --dg-ok: #4f8a3f; --dg-warn: #c27a1e; --dg-bad: #c84a3a; --dg-info: #7a5fb0;
   margin: 1.5rem 0;
   padding: 20px;
   border: 1px solid var(--dg-line);

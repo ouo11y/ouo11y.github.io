@@ -97,12 +97,12 @@ const kindLabel: Record<Kind, string> = { major: 'major', stable: 'stable', brea
 
 <style>
   .rr {
-    --rr-0: #0a6fa6; --rr-1: #7c3aed; --rr-2: #16a34a; --rr-3: #d97706; --rr-4: #db2777; --rr-5: #0891b2; --rr-6: #65a30d; --rr-7: #e5484d; --rr-8: #64748b; --rr-9: #b45309;
+    --rr-0: #ad4f2c; --rr-1: #7c3aed; --rr-2: #16a34a; --rr-3: #d97706; --rr-4: #db2777; --rr-5: #0891b2; --rr-6: #65a30d; --rr-7: #e5484d; --rr-8: #6f6c62; --rr-9: #b45309;
     container-type: inline-size;
   }
-  :global(:root[data-theme="dark"]) .rr { --rr-0: #5ac8fa; --rr-1: #a78bfa; --rr-2: #4ade80; --rr-3: #fbbf24; --rr-4: #f472b6; --rr-5: #22d3ee; --rr-6: #a3e635; --rr-7: #ff7b7b; --rr-8: #94a3b8; --rr-9: #f59e0b; }
+  :global(:root[data-theme="dark"]) .rr { --rr-0: #e08b6a; --rr-1: #a78bfa; --rr-2: #4ade80; --rr-3: #fbbf24; --rr-4: #f472b6; --rr-5: #22d3ee; --rr-6: #a3e635; --rr-7: #ff7b7b; --rr-8: #959185; --rr-9: #f59e0b; }
   @media (prefers-color-scheme: dark) {
-    :global(:root:not([data-theme="light"])) .rr { --rr-0: #5ac8fa; --rr-1: #a78bfa; --rr-2: #4ade80; --rr-3: #fbbf24; --rr-4: #f472b6; --rr-5: #22d3ee; --rr-6: #a3e635; --rr-7: #ff7b7b; --rr-8: #94a3b8; --rr-9: #f59e0b; }
+    :global(:root:not([data-theme="light"])) .rr { --rr-0: #e08b6a; --rr-1: #a78bfa; --rr-2: #4ade80; --rr-3: #fbbf24; --rr-4: #f472b6; --rr-5: #22d3ee; --rr-6: #a3e635; --rr-7: #ff7b7b; --rr-8: #959185; --rr-9: #f59e0b; }
   }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
   .chips button { font: inherit; font-size: 13px; display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--dg-line); background: var(--dg-node); color: var(--dg-ink-2); cursor: pointer; }

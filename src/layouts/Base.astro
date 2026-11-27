@@ -28,7 +28,8 @@ const current = (href: string) => (href.startsWith('/') && path.startsWith(href)
   <meta property="og:description" content={description}>
   <meta property="og:type" content="website">
   <meta property="og:url" content={new URL(path, Astro.site)}>
-  <meta name="theme-color" content="#0b1120">
+  <meta name="theme-color" content="#faf9f5" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#1f1e1c" media="(prefers-color-scheme: dark)">
   <link rel="icon" href="/logo.svg" type="image/svg+xml">
   <link rel="alternate" type="application/rss+xml" title="ouo11y blog" href="/blog/rss.xml">
   <link rel="alternate" type="application/rss+xml" title="ouo11y newsletter" href="/newsletter/rss.xml">
